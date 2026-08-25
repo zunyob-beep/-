@@ -1,0 +1,43 @@
+[project]
+name = "btcbot"
+version = "0.1.0"
+description = "업비트 비트코인 자동매매 봇 — 백테스트 / 페이퍼 / 실거래"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.scripts]
+btcbot = "btcbot.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["btcbot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",    # 줄 길이는 formatter에 맡긴다
+    "RUF001",  # 한글 주석의 전각 문자 경고
+    "RUF002",
+    "RUF003",
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731", "RUF059"]

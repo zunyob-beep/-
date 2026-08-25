@@ -1,0 +1,27 @@
+# 비밀
+.env
+
+# 봇이 만드는 것들
+data/
+runs/
+*.csv
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 도구
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 에디터
+.vscode/
+.idea/
+.DS_Store
