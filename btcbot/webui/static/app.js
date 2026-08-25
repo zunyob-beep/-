@@ -91,6 +91,10 @@ async function boot() {
   $('runCash').value = state.meta.defaults.cash;
   $('btCash').value = state.meta.defaults.cash;
 
+  $('nlHint').textContent = state.meta.has_claude_key
+    ? 'Ctrl(⌘)+Enter로도 실행됩니다'
+    : 'ANTHROPIC_API_KEY를 .env에 넣으면 쓸 수 있습니다';
+
   refreshTicker();
   refreshChart();
   state.tickerTimer = setInterval(refreshTicker, 10000);
@@ -126,6 +130,10 @@ function selectMarket(m) {
   $('mhName').textContent = m.name;
   $('mhCode').textContent = m.market;
   renderMarkets($('marketSearch').value);
+  $('nlHint').textContent = state.meta.has_claude_key
+    ? 'Ctrl(⌘)+Enter로도 실행됩니다'
+    : 'ANTHROPIC_API_KEY를 .env에 넣으면 쓸 수 있습니다';
+
   refreshTicker();
   refreshChart();
 }
@@ -608,6 +616,70 @@ function strategyPayload(selectId) {
   return { strategy: value.slice(8), params: {} };
 }
 
+/* ───────────────────── 말로 설명하기 (Claude 연동) ───────────────────── */
+async function describeStrategy() {
+  const text = $('nlText').value.trim();
+  if (!text) { toast('전략을 문장으로 써주세요', true); return; }
+
+  const button = $('nlRun');
+  const box = $('nlResult');
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner">◐</span> 읽는 중…';
+  box.className = 'nl-result';
+  box.textContent = '전략을 조건으로 옮기는 중입니다…';
+
+  try {
+    const result = await api('/api/strategies/describe', { text });
+    renderTranslation(result);
+  } catch (err) {
+    box.className = 'nl-result bad';
+    box.textContent = err.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '조건으로 바꾸기';
+  }
+}
+
+/* 결과를 화면에 먼저 보여준 뒤에만 빌더에 채운다.
+ * 잘못 읽은 전략이 사용자 확인 없이 적용되는 것이 이 기능의 가장 큰 위험이다. */
+function renderTranslation(result) {
+  const box = $('nlResult');
+  box.className = 'nl-result' + (result.understood ? '' : ' bad');
+  box.innerHTML = '';
+
+  box.appendChild(el('h5', null, result.understood ? '✅ 이렇게 이해했습니다' : '⚠️ 옮기지 못했습니다'));
+  box.appendChild(el('div', null, result.message));
+
+  if (result.warnings && result.warnings.length) {
+    const list = el('ul');
+    result.warnings.forEach((w) => list.appendChild(el('li', null, w)));
+    box.appendChild(list);
+  }
+
+  if (!result.understood) return;
+
+  loadPreset(result.spec);
+
+  const risk = result.risk || {};
+  const keys = Object.keys(risk);
+  if (keys.length) {
+    // 손절·익절은 조건이 아니라 리스크 설정이므로 그쪽 칸에 채운다.
+    ['bt', 'run'].forEach((prefix) => {
+      keys.forEach((key) => {
+        const input = $(`${prefix}_${key}`);
+        if (input) input.value = risk[key];
+      });
+    });
+    const labels = keys
+      .map((k) => (RISK_FIELDS.find((f) => f.key === k) || { label: k }).label + ' ' + risk[k])
+      .join(' · ');
+    box.appendChild(el('div', 'risk-note', '리스크 설정에도 반영했습니다: ' + labels));
+  }
+
+  box.appendChild(el('div', 'applied', '아래 조건에 채워 넣었습니다. 확인하고 고친 뒤 저장하세요.'));
+  $('nlBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 /* ───────────────────────── 리스크 입력칸 ───────────────────────── */
 const RISK_FIELDS = [
   { key: 'max_position_weight', label: '최대 투자 비중', hint: '1 = 전액', step: 0.05 },
@@ -999,6 +1071,11 @@ function bindEvents() {
   document.querySelectorAll('[data-goto]').forEach((node) => {
     node.onclick = () => switchTab(node.dataset.goto);
   });
+
+  $('nlRun').onclick = describeStrategy;
+  $('nlText').onkeydown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') describeStrategy();
+  };
 
   $('addEntry').onclick = () => addCondition('entry');
   $('addExit').onclick = () => addCondition('exit');

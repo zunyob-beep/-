@@ -149,6 +149,48 @@ def test_save_rejects_broken_spec(state):
         post(state, "/api/strategies/save", {"spec": {"label": "빈것"}})
 
 
+# --------------------------------------------------- 말로 설명하기 (Claude)
+def test_describe_returns_translation(state):
+    from tests.test_nlstrategy import FakeClient, payload
+
+    state.translator = FakeClient(payload())
+    result = post(state, "/api/strategies/describe", {"text": "RSI 30 아래면 사줘"})
+    assert result["understood"] is True
+    assert result["spec"]["label"] == "RSI 반등"
+
+
+def test_describe_does_not_auto_apply(state):
+    """변환 결과가 저장된 전략이 되어선 안 된다 — 사람이 확인한 뒤에만."""
+    from tests.test_nlstrategy import FakeClient, payload
+
+    state.translator = FakeClient(payload())
+    post(state, "/api/strategies/describe", {"text": "RSI 30 아래면 사줘"})
+    assert state.load_strategies() == []
+
+
+def test_describe_surfaces_refusal(state):
+    from tests.test_nlstrategy import FakeClient, payload
+
+    state.translator = FakeClient(
+        payload(understood=False, message="김치프리미엄은 지원하지 않습니다.", entry=[], exit=[])
+    )
+    result = post(state, "/api/strategies/describe", {"text": "김프 뜨면 사줘"})
+    assert result["understood"] is False
+    assert result["spec"] is None
+
+
+def test_describe_empty_text_is_rejected(state):
+    with pytest.raises(ApiError, match="입력하세요"):
+        post(state, "/api/strategies/describe", {"text": "  "})
+
+
+def test_meta_reports_claude_key_presence(state, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert get(state, "/api/meta")["has_claude_key"] is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert get(state, "/api/meta")["has_claude_key"] is True
+
+
 def test_validate_returns_message_instead_of_raising(state):
     bad = post(state, "/api/strategies/validate", {"spec": {"label": "x"}})
     assert bad["ok"] is False

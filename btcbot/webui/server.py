@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import threading
 import traceback
 from dataclasses import replace
@@ -26,6 +27,8 @@ from ..backtest import run_backtest
 from ..config import Settings
 from ..exchange.upbit import INTERVALS, UpbitClient
 from ..models import Side
+from ..nlstrategy import ENV_API_KEY as ENV_ANTHROPIC_KEY
+from ..nlstrategy import TranslationError, translate
 from ..risk import RiskConfig
 from ..storage import Journal
 from ..strategies import available, get_strategy, strategy_class
@@ -65,6 +68,8 @@ class AppState:
         #: 화면 갱신용. 실패하면 즉시 포기한다 — 현재가 위젯 하나 때문에
         #: 브라우저가 30초씩 멈춰 있으면 봇이 고장난 것처럼 보인다.
         self.quick = UpbitClient(timeout=4.0, max_retries=0)
+        #: Claude 클라이언트. None이면 호출 시점에 환경변수로 만든다.
+        self.translator: Any = None
         self.store_path = Path(settings.data_dir).parent / STRATEGY_STORE
         self._lock = threading.Lock()
 
@@ -124,6 +129,7 @@ def _handle_get(state: AppState, path: str, query: dict) -> Any:
             "presets": PRESETS,
             "saved": state.load_strategies(),
             "has_api_keys": all(Settings.api_keys()),
+            "has_claude_key": bool(os.getenv(ENV_ANTHROPIC_KEY)),
             "defaults": {
                 "market": state.settings.market,
                 "interval": state.settings.interval,
@@ -177,6 +183,9 @@ def _handle_post(state: AppState, path: str, body: dict) -> Any:
         if not label:
             raise ApiError("삭제할 전략 이름이 없습니다")
         return {"saved": state.delete_strategy(label)}
+
+    if path == "/api/strategies/describe":
+        return _from_text(state, body)
 
     if path == "/api/strategies/validate":
         try:
@@ -251,6 +260,19 @@ def _run_backtest(state: AppState, body: dict) -> dict[str, Any]:
         ],
         "candles": _serialize_candles(candles),
     }
+
+
+def _from_text(state: AppState, body: dict) -> dict[str, Any]:
+    """말로 쓴 설명을 조건으로 옮긴다.
+
+    결과를 바로 적용하지 않고 그대로 돌려준다. 화면이 사용자에게 보여주고,
+    사람이 확인한 뒤에야 빌더에 채워진다.
+    """
+    try:
+        result = translate(str(body.get("text") or ""), client=state.translator)
+    except TranslationError as exc:
+        raise ApiError(str(exc)) from exc
+    return result.to_dict()
 
 
 def _fetch_data(state: AppState, body: dict) -> dict[str, Any]:

@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import data as data_mod
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m btcbot backtest --strategy vb -p k=0.5 --start 2023-01-01\n"
             "  python -m btcbot optimize --strategy vb -g k=0.3,0.4,0.5,0.6\n"
             "  python -m btcbot paper --strategy ma_cross --interval minute60\n"
+            '  python -m btcbot describe "RSI가 30 아래면 사고 55 넘으면 팔아"\n'
         ),
     )
     parser.add_argument("--config", help="설정 파일 (.json 또는 .yaml)")
@@ -103,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="주문 직전까지만 수행하고 실제 전송은 생략"
     )
     live.add_argument("--yes", action="store_true", help="확인 프롬프트 건너뛰기")
+
+    describe = sub.add_parser(
+        "describe", help="말로 설명한 전략을 조건으로 바꾸기 (Claude 연동)"
+    )
+    describe.add_argument("text", help='예: "RSI가 30 아래면 사고 55 넘으면 팔아"')
+    describe.add_argument("--save", metavar="PATH", help="결과를 JSON 파일로 저장")
 
     ui = sub.add_parser("ui", help="웹 화면 열기 (코딩 없이 전략 만들기·백테스트·자동매매)")
     _add_market_args(ui)
@@ -401,6 +409,38 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_describe(args: argparse.Namespace) -> int:
+    import json
+
+    from .nlstrategy import TranslationError, translate
+
+    try:
+        result = translate(args.text)
+    except TranslationError as exc:
+        print(f"오류: {exc}")
+        return 1
+
+    print(f"\n{'✅ 이렇게 이해했습니다' if result.understood else '⚠️ 옮기지 못했습니다'}")
+    print(f"  {result.message}\n")
+
+    for warning in result.warnings:
+        print(f"  ⚠ {warning}")
+    if result.risk:
+        print("  리스크: " + ", ".join(f"{k}={v}" for k, v in result.risk.items()))
+
+    if not result.understood:
+        return 1
+
+    print(json.dumps(result.spec, ensure_ascii=False, indent=2))
+    if args.save:
+        Path(args.save).write_text(
+            json.dumps(result.spec, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"\n저장 → {args.save}")
+        print(f"백테스트:  python -m btcbot backtest --strategy rule -p spec_file={args.save}")
+    return 0
+
+
 def cmd_ui(args: argparse.Namespace) -> int:
     from .webui.server import serve
 
@@ -509,6 +549,7 @@ COMMANDS = {
     "live": cmd_live,
     "status": cmd_status,
     "ui": cmd_ui,
+    "describe": cmd_describe,
 }
 
 

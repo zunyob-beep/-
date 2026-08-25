@@ -70,6 +70,19 @@
           아래 <strong>예시로 시작하기</strong>에서 하나 고른 뒤 숫자만 바꿔보는 것을 추천합니다.
         </p>
 
+        <div class="nl-box" id="nlBox">
+          <label class="nl-label" for="nlText">
+            💬 말로 설명하기
+            <span class="muted">— 원하는 전략을 문장으로 쓰면 조건으로 바꿔줍니다 (Claude 연동)</span>
+          </label>
+          <textarea id="nlText" rows="3" placeholder="예) RSI가 30 아래로 내려가면 사고, 55를 넘으면 판다. 단 200일 이동평균 위일 때만 산다. 5% 빠지면 손절."></textarea>
+          <div class="nl-actions">
+            <button class="primary" id="nlRun">조건으로 바꾸기</button>
+            <span class="muted" id="nlHint"></span>
+          </div>
+          <div class="nl-result hidden" id="nlResult"></div>
+        </div>
+
         <div class="preset-row" id="presetRow"></div>
 
         <div class="field-row">

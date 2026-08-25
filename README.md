@@ -33,7 +33,9 @@ cd btcbot
 pip install -e .            # 또는: pip install requests
 ```
 
-Python 3.10 이상이 필요합니다. 설정 파일을 YAML로 쓰려면 `pip install -e ".[yaml]"`.
+Python 3.10 이상이 필요합니다.
+설정 파일을 YAML로 쓰려면 `pip install -e ".[yaml]"`,
+말로 전략을 설명하는 기능을 쓰려면 `pip install -e ".[ai]"`.
 
 ### API 키 설정 (실거래에만 필요)
 
@@ -66,6 +68,34 @@ python -m btcbot ui
 브라우저가 자동으로 열립니다 (안 열리면 http://127.0.0.1:8765 를 직접 입력하세요).
 
 화면은 세 단계로 되어 있습니다.
+
+**💬 말로 설명하기** — 원하는 전략을 그냥 문장으로 씁니다.
+
+> "RSI가 30 아래로 내려가면 사고 55를 넘으면 팔아. 단 200일선 위일 때만. 5% 빠지면 손절."
+
+Claude가 이걸 조건으로 옮겨서 빌더에 채워줍니다. 손절·익절 같은 말은 조건이 아니라
+**리스크 설정 칸**으로 들어갑니다(진입가 대비로 계산돼야 하니까요).
+
+중요한 건 **바로 실행되지 않는다**는 점입니다. 무엇을 어떻게 이해했는지 한국어로 먼저
+보여주고, 추측해서 채운 값이 있으면 알려줍니다("RSI 기간은 말씀이 없어 14로 가정했습니다").
+확인하고 고친 뒤에 저장하는 건 사람의 몫입니다.
+
+지원하지 않는 개념(뉴스 감성, 김치프리미엄, 호가창 등)을 요청하면 **비슷한 지표로 슬쩍
+바꾸지 않고 거절합니다.** 요청한 것과 다른 전략이 돌아가는 게 가장 나쁜 결과이기 때문입니다.
+
+이 기능에는 [Claude API 키](https://console.anthropic.com)가 필요합니다:
+
+```bash
+pip install "btcbot[ai]"           # 또는: pip install anthropic
+echo 'ANTHROPIC_API_KEY=sk-...' >> .env
+```
+
+터미널에서도 씁니다:
+
+```bash
+python -m btcbot describe "20일선을 위로 뚫으면 사고 아래로 빠지면 판다" --save my.json
+python -m btcbot backtest --strategy rule -p spec_file=my.json
+```
 
 **① 전략 만들기** — 예시를 하나 고르고 숫자만 바꾸면 됩니다.
 "RSI(14)가 30보다 작다" 처럼 조건을 드롭다운으로 조합하고, 조건이 몇 개든
@@ -321,6 +351,15 @@ python -m btcbot live --strategy vb --interval minute60 \
 `LIVE`를 직접 입력해야 시작합니다. `--dry-run`을 붙이면 주문 직전까지만 수행하고
 전송은 생략하므로, 실제 시세로 로직을 점검할 수 있습니다.
 
+### `describe` — 말로 설명한 전략을 조건으로
+
+```bash
+python -m btcbot describe "RSI가 30 아래면 사고 55 넘으면 팔아" --save my.json
+```
+
+`ANTHROPIC_API_KEY`가 필요합니다. 결과를 보여주기만 하고, `--save` 없이는 아무것도
+저장하지 않습니다.
+
 ### `ui` — 웹 화면
 
 ```bash
@@ -382,6 +421,7 @@ btcbot/
 ├── backtest.py      백테스트 러너 + 격자 탐색 + 워크포워드
 ├── metrics.py       성과 지표
 ├── storage.py       체결/거래 기록(JSONL) + 상태 저장(원자적 쓰기)
+├── nlstrategy.py    말로 쓴 설명 -> 조건 (Claude API)
 ├── runner.py        페이퍼/실거래 배선
 └── cli.py           명령줄 인터페이스
 ```
@@ -410,7 +450,7 @@ btcbot/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest            # 213개 테스트, 네트워크 불필요
+python -m pytest            # 280개 테스트, 네트워크 불필요
 python -m ruff check btcbot tests
 ```
 
