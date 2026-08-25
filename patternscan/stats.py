@@ -172,6 +172,19 @@ class Verdict:
     significant: int
 
 
+#: 진입에 필요한 최소 '통과 조합' 수.
+#:
+#: 인접한 길이(30/40/50)와 인접한 지평(10/20)은 거의 같은 정보를 본다.
+#: 그래서 진짜 예측력이 있으면 이웃 조합들이 같이 켜진다. 실제로 확정
+#: 상승을 심어놓고 재보면 통과 조합이 12~24개(중앙값 16) 나오고, 길이 3~5종과
+#: 지평 5종에 고루 퍼진다. 반면 실제 비트코인의 성질(변동성 뭉침·두꺼운
+#: 꼬리·시간대 리듬·빠진 봉)을 가진 순수 잡음 30개를 돌리면 통과 조합이
+#: **많아야 1개**였고 29개 시드는 0개였다.
+#:
+#: 즉 '홀로 살아남은 하나'는 잡음의 서명이다. 2개를 요구하면 잡음에서 나온
+#: 마지막 거짓 신호 1건이 사라지면서 진짜 신호 검출은 10/10 그대로였다.
+MIN_CORROBORATION = 2
+
 #: 진입을 인정하는 q값 상한. FDR 기준(0.10)보다 훨씬 엄격하게 잡는다.
 #: FDR 0.10은 '발견의 10%는 거짓'을 허용한다는 뜻인데, 데이터가 순전한
 #: 잡음이면 발견 전부가 거짓이다. 그 상황에서 진입 신호를 내지 않으려면
@@ -223,6 +236,24 @@ def decide(
             0,
         )
 
+    if winners and len(winners) < MIN_CORROBORATION:
+        # 홀로 살아남은 하나는 잡음일 가능성이 높다 (MIN_CORROBORATION 참고).
+        lone = winners[0]
+        return Verdict(
+            False,
+            "들어가지 마세요 — 근거가 조합 하나뿐입니다.",
+            [
+                f"{lone.label}: 승률 {lone.up_rate:.1%}, 기준 대비 {lone.edge:+.1%} "
+                f"(표본 {lone.samples}건, q={lone.q_value:.3f})",
+                f"그런데 검정한 {tested}개 조합 중 기준을 넘긴 것이 이것 하나뿐입니다.",
+                "인접한 길이와 지평은 거의 같은 구간을 보므로, 진짜 예측력이라면"
+                " 이웃 조합도 같이 켜집니다. 하나만 켜진 건 우연에 더 가깝습니다.",
+            ],
+            lone,
+            tested,
+            len(winners),
+        )
+
     if not winners:
         best = max((f for f in findings if f.enough_samples), key=lambda f: f.edge)
         reasons.append(
@@ -260,8 +291,14 @@ def decide(
         f"시간순 앞쪽 절반 {best.first_half_rate:.0%} / 뒤쪽 절반 {best.second_half_rate:.0%}"
         " — 양쪽 모두에서 성립합니다."
     )
-    if len(winners) > 1:
-        reasons.append(f"같은 방향으로 유의한 조합이 {len(winners)}개입니다.")
+    lengths = sorted({f.length for f in winners})
+    horizons = sorted({f.horizon for f in winners})
+    reasons.append(
+        f"기준을 넘긴 조합이 {len(winners)}개입니다 "
+        f"(길이 {', '.join(str(x) for x in lengths[:6])}"
+        f"{' 등' if len(lengths) > 6 else ''} · 지평 {', '.join(str(x) for x in horizons)}봉)"
+        " — 이웃 조합이 같이 켜졌습니다."
+    )
 
     return Verdict(
         True,

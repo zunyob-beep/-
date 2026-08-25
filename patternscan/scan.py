@@ -36,6 +36,14 @@ DEFAULT_FEE = 0.0005
 #: 매수/매도 사이 호가 차이로 더 잃는 몫(편도).
 DEFAULT_SLIPPAGE = 0.0002
 
+#: 순열검정에서 쓸 최대 오프셋 수. 가능한 오프셋이 이보다 적으면 전수로 돈다.
+#: p값의 해상도가 곧 1/이 값이므로, 285개 조합을 보정하고도 진입 기준
+#: q ≤ 0.02를 넘길 수 있으려면 최소한 조합 수 / 0.02 = 수천은 되어야 한다.
+DEFAULT_NULL_TRIALS = 20_000
+
+#: 순열검정 행렬을 한 번에 몇 오프셋씩 만들지 (메모리 상한용).
+_NULL_CHUNK = 4_000
+
 #: '같은 모양'으로 인정할 최소 상관계수.
 #: 이걸 안 두면 상관이 0인(=아무 관계 없는) 구간까지 표본에 들어와,
 #: 무작위 데이터에서도 초과 승률 +36%짜리 '패턴'이 만들어진다.
@@ -157,7 +165,7 @@ def scan(
     scale: str = "shape",
     fee: float = DEFAULT_FEE,
     slippage: float = DEFAULT_SLIPPAGE,
-    null_trials: int = 400,
+    null_trials: int = DEFAULT_NULL_TRIALS,
     seed: int = 0,
 ) -> ScanResult:
     """`series`의 `query_end` 시점 직전 `length`개 모양을 과거에서 찾는다.
@@ -310,6 +318,20 @@ def _null_up_rates(
     그래서 매치 **위치는 그대로 두고 시점만 통째로 옮긴다**. 위치들의
     뭉침 구조와 수익률의 자기상관은 그대로 유지되고, '이 모양 다음에
     올랐다'는 연결만 끊긴다. 그렇게 얻은 승률 분포가 올바른 비교 기준이다.
+
+    왜 무작위로 뽑지 않고 전수로 도는가
+    ----------------------------------
+    이 귀무분포는 **오프셋 하나로만 결정된다**. 가능한 오프셋이 유한하므로
+    (봉 개수만큼) 표본추출할 이유가 없다 — 전부 계산하면 정확한 분포가 나온다.
+
+    처음엔 400회만 뽑았는데, 그러면 p값의 최솟값이 1/401 = 0.0025로 막힌다.
+    285개 조합을 보정하면 1등이라도 q = 0.0025 × 90 ≈ 0.22가 되어, 진입
+    기준 q ≤ 0.02를 **어떤 데이터로도 넘을 수 없었다**. 실제로 비용의 10배가
+    확정으로 오르는 신호를 심어놓고 돌렸더니 10개 시드 전부 놓쳤다
+    (초과 승률 +71%, p는 바닥인 0.0025인데 q=0.224로 탈락).
+
+    잡음에 안전했던 게 아니라 아예 잠겨 있었던 것이다. 전수로 돌면 해상도가
+    봉 개수분의 1(1분봉 한 달이면 2e-5)이 되어 그 바닥이 사라진다.
     """
     if not match_ends or trials <= 0:
         return np.empty(0, dtype=np.float64)
@@ -319,11 +341,21 @@ def _null_up_rates(
     if usable <= 1:
         return np.empty(0, dtype=np.float64)
 
-    offsets = rng.integers(1, usable, size=trials)
-    # (trials, n) — 각 시행마다 모든 매치를 같은 폭으로 민다
-    shifted = (ends[None, :] + offsets[:, None]) % usable
-    returns = closes[shifted + horizon] / closes[shifted] - 1.0
-    return np.count_nonzero(returns > cost, axis=1) / ends.size
+    available = usable - 1  # 오프셋 1 … usable-1
+    if available <= trials:
+        offsets = np.arange(1, usable, dtype=np.int64)  # 전수
+    else:
+        # 너무 많으면 중복 없이 뽑는다 (같은 오프셋을 두 번 세면 분포가 왜곡된다)
+        offsets = rng.choice(np.arange(1, usable, dtype=np.int64), size=trials, replace=False)
+
+    # (오프셋 수 × 매치 수) 행렬을 통째로 만들면 수십 MB가 되므로 나눠서 센다.
+    rates = np.empty(offsets.size, dtype=np.float64)
+    for start in range(0, offsets.size, _NULL_CHUNK):
+        block = offsets[start : start + _NULL_CHUNK]
+        shifted = (ends[None, :] + block[:, None]) % usable
+        returns = closes[shifted + horizon] / closes[shifted] - 1.0
+        rates[start : start + block.size] = np.count_nonzero(returns > cost, axis=1) / ends.size
+    return rates
 
 
 def _summarize(

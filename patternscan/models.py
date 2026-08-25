@@ -97,6 +97,11 @@ class Series:
             volume=np.array([c.volume for c in candles], dtype=np.float64),
         )
 
+    @classmethod
+    def empty(cls, market: str, timeframe: str) -> Series:
+        """봉이 하나도 없는 시계열. '못 받았다'를 예외 대신 값으로 표현할 때 쓴다."""
+        return cls.from_candles(market, timeframe, [])
+
     def time_at(self, index: int) -> datetime:
         return datetime.fromtimestamp(int(self.ts[index]), tz=timezone.utc)
 

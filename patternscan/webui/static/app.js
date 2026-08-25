@@ -143,8 +143,14 @@ function renderCoverage(analysis) {
     .map((s) => `<b>${s.label}</b> ${s.count.toLocaleString()}개` + (s.gaps ? ` (끊긴 곳 ${s.gaps})` : ''))
     .join(' · ');
   const c = analysis.coverage;
+  // 시세가 없어 아예 못 본 봉 간격은 반드시 알려야 한다 — 조용히 빼면
+  // 사용자는 1·3·5분봉을 다 본 줄 안다.
+  const missing = (analysis.missing || []).length
+    ? `<br><b class="warn">${analysis.missing.map((m) => m.label).join(', ')} 시세가 없어` +
+      ` 이 간격은 판정에서 빠졌습니다.</b>`
+    : '';
   box.innerHTML =
-    `${spans}<br>` +
+    `${spans}${missing}<br>` +
     `조합 ${c.total}개 중 데이터가 모자라 건너뛴 것 ${c.skipped}개, ` +
     `같은 모양을 ${analysis.minSamples}개 미만으로 찾은 것 ${c.thin}개 ` +
     `— 모양이 길수록 똑같은 게 잘 없습니다.`;

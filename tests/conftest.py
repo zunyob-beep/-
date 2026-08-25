@@ -56,6 +56,57 @@ def repeating(pattern, repeats: int, filler: float = 100.0, gap: int = 40):
     return out
 
 
+#: 심어둘 표식 모양. 눈에 띄되 흔하지 않은 모양이면 된다.
+MARKER = [100.0, 99.2, 98.3, 99.6, 101.1]
+
+
+def planted_signal(
+    seed: int = 1, occurrences: int = 90, drift: float = 0.0025, plant: bool = True
+) -> list[float]:
+    """표식 직후 반드시 오르는 종가 열. 마지막이 표식으로 끝난다.
+
+    두 가지를 일부러 지킨다.
+
+    1. **표식 사이 간격을 무작위로** 둔다. 일정한 주기로 두면 순열검정이
+       모든 매치를 같은 폭으로 밀 때 위상이 통째로 맞아떨어져, 귀무분포가
+       관측 승률을 그대로 재현해 버린다(그 경우 "모양이 아니라 주기가
+       원인"이라는 판정이 오히려 옳다).
+    2. **마지막을 표식으로 끝낸다.** 이 도구는 '지금 직전 N개'를 질의하므로,
+       데이터가 잡음 구간에서 끝나면 표식은 질의 대상조차 되지 않는다.
+
+    `plant=False`면 표식 뒤에도 잡음이 이어진다 — 같은 구조에서 신호만
+    없앤 대조군이다.
+    """
+    rng = np.random.default_rng(seed)
+    closes: list[float] = []
+    level = 40_000_000.0
+
+    def noise(count: int) -> None:
+        nonlocal level
+        for _ in range(count):
+            level *= float(np.exp(rng.normal(0, 0.0009)))
+            closes.append(level)
+
+    for _ in range(occurrences):
+        noise(int(rng.integers(40, 160)))
+        base = level
+        for value in MARKER:
+            closes.append(base * value / 100.0)
+        level = closes[-1]
+        if plant:
+            for _ in range(6):
+                level *= 1.0 + drift
+                closes.append(level)
+        else:
+            noise(6)
+        noise(int(rng.integers(10, 40)))
+
+    base = level
+    for value in MARKER:
+        closes.append(base * value / 100.0)
+    return closes
+
+
 @pytest.fixture
 def rng() -> np.random.Generator:
     return np.random.default_rng(12345)

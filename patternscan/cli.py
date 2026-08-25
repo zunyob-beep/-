@@ -13,7 +13,7 @@ import os
 import sys
 
 from .data import fetch, load_cached
-from .models import HORIZONS, WINDOW_LENGTHS, Series
+from .models import HORIZONS, WINDOW_LENGTHS, Series, timeframe_label
 from .report import (
     format_coverage,
     format_detail,
@@ -29,7 +29,7 @@ from .scan import (
     scan_all,
 )
 from .stats import decide, evaluate
-from .upbit import UpbitClient
+from .upbit import UpbitClient, UpbitError
 
 log = logging.getLogger("patternscan")
 
@@ -123,18 +123,28 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def _load_series(args: argparse.Namespace, refresh: bool) -> dict[str, Series]:
+    """봉 간격별로 시세를 확보한다.
+
+    한 간격을 못 받아도 나머지로 계속 간다. 예전에는 여기서 예외가 그대로
+    올라가 **1분봉이 멀쩡히 있는데도 3분봉을 못 받았다는 이유로 판정 전체가
+    죽었다**. 수집이 중간에 끊겼거나 업비트가 잠깐 죽으면 바로 그 상황이 된다.
+    """
     client = UpbitClient()
     out: dict[str, Series] = {}
     for timeframe, count in DEFAULT_COUNT.items():
-        if refresh:
-            out[timeframe] = fetch(
-                client, args.market, timeframe, count, directory=args.data_dir, refresh=True
-            )
-        else:
-            series = load_cached(args.market, timeframe, args.data_dir)
-            if len(series) == 0:
-                series = fetch(client, args.market, timeframe, count, directory=args.data_dir)
-            out[timeframe] = series
+        series = Series.empty(args.market, timeframe) if refresh else load_cached(
+            args.market, timeframe, args.data_dir
+        )
+        if refresh or len(series) == 0:
+            try:
+                series = fetch(
+                    client, args.market, timeframe, count,
+                    directory=args.data_dir, refresh=refresh,
+                )
+            except UpbitError as exc:
+                log.warning("%s 시세를 받지 못했습니다 (%s) — 이 간격은 건너뜁니다", timeframe, exc)
+                series = Series.empty(args.market, timeframe)
+        out[timeframe] = series
     return out
 
 
@@ -144,6 +154,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if not usable:
         print("시세가 없습니다. 먼저 `python -m patternscan fetch`를 실행하세요.")
         return 1
+
+    missing = [tf for tf, s in series_by_tf.items() if len(s) == 0]
+    if missing:
+        # 조용히 빼면 사용자는 3종을 다 본 줄 안다.
+        print(
+            f"  ※ {', '.join(timeframe_label(tf) for tf in missing)} 시세가 없어 "
+            "이 간격은 판정에서 빠집니다."
+        )
 
     cost = round_trip_cost(args.fee, args.slippage)
     print(

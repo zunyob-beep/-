@@ -80,6 +80,8 @@ class Analysis:
     results: list[ScanResult]
     findings: list[Finding]
     verdict: Verdict
+    #: 시세가 없어 판정에서 빠진 봉 간격. 조용히 빼면 3종을 다 본 줄 안다.
+    missing: tuple[str, ...] = ()
 
     def result_for(self, timeframe: str, length: int) -> ScanResult | None:
         for result in self.results:
@@ -209,6 +211,7 @@ def _do_scan(
         Analysis(
             market=market, scale=scale, cost=cost, similarity=similarity,
             series=series, results=results, findings=findings, verdict=verdict,
+            missing=tuple(tf for tf in DEFAULT_COUNT if tf not in series),
         )
     )
     state.job.update(message="판정을 마쳤습니다", done=total, total=total)
@@ -276,6 +279,9 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
         "minSamples": MIN_SAMPLES,
         "series": spans,
         "coverage": {"skipped": skipped, "thin": thin, "total": len(analysis.results)},
+        "missing": [
+            {"timeframe": tf, "label": timeframe_label(tf)} for tf in analysis.missing
+        ],
         "verdict": {
             "enter": verdict.enter,
             "headline": verdict.headline,

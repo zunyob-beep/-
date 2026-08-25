@@ -221,6 +221,32 @@ def test_json_never_contains_nan(client):
 
 
 # ---------------------------------------------------------------- 모양 데이터
+def test_missing_timeframes_are_reported_not_hidden(tmp_path):
+    """일부 간격만 있으면 그것만으로 판정하되, 빠진 걸 반드시 알려야 한다.
+
+    조용히 빼면 사용자는 1·3·5분봉을 다 본 줄 안다.
+    """
+    _write_cache(tmp_path)
+    # 3분·5분봉 캐시를 지운다
+    for timeframe in ("minute3", "minute5"):
+        cache_path("KRW-BTC", timeframe, tmp_path).unlink()
+
+    state = webui.State("KRW-BTC", str(tmp_path))
+    handler = type("BoundHandler", (webui.Handler,), {"state": state})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        c = Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+        _run_scan((c, state), topK=30)
+        analysis = c.get_json("/api/state")["analysis"]
+        assert analysis is not None, "1분봉만으로도 판정은 나와야 합니다"
+        assert {m["timeframe"] for m in analysis["missing"]} == {"minute3", "minute5"}
+        assert {s["timeframe"] for s in analysis["series"]} == {"minute1"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_analysis_id_changes_only_when_the_analysis_does(client):
     """화면은 이 번호로 '다시 그릴지'를 정한다.
 

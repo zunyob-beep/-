@@ -121,6 +121,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .coverage { color: var(--dim); font-size: 12.5px; }
 .coverage b { color: var(--text); font-weight: 600; }
+.coverage b.warn { color: #ffd98a; }
 
 /* ---------------------------------------------------------------- 표 */
 /* 표는 자기 안에서만 옆으로 넘긴다 — 페이지 전체가 가로로 밀리면 안 된다. */
