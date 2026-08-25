@@ -18,7 +18,7 @@ def hourly(prices: list[float], start: datetime | None = None):
 
 
 def test_registry_lists_all_strategies():
-    assert set(available()) == {"vb", "ma_cross", "rsi"}
+    assert set(available()) == {"vb", "ma_cross", "rsi", "rule"}
 
 
 def test_unknown_strategy_raises():

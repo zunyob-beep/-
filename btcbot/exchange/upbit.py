@@ -226,11 +226,15 @@ class UpbitClient:
         candles.sort(key=lambda c: c.ts)
         return candles
 
-    def get_price(self, market: str) -> float:
+    def get_ticker(self, market: str) -> dict[str, Any]:
+        """현재가 스냅샷(변동률, 고저, 거래대금 포함)."""
         rows = self._request("GET", "/v1/ticker", {"markets": market}) or []
         if not rows:
             raise ExchangeError(f"{market} 시세를 가져오지 못했습니다")
-        return float(rows[0]["trade_price"])
+        return rows[0]
+
+    def get_price(self, market: str) -> float:
+        return float(self.get_ticker(market)["trade_price"])
 
     def get_markets(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/market/all", {"isDetails": "false"}) or []

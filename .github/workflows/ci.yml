@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 같은 브랜치에 새 커밋이 오면 이전 실행은 취소한다.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 테스트 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 테스트
+        # 테스트는 전부 오프라인이다. 네트워크를 타는 테스트가 섞여 들어오면
+        # CI가 업비트 장애나 레이트 리밋에 흔들리게 되므로 여기서 막는다.
+        run: python -m pytest -q
+
+  lint:
+    name: 린트
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: ruff check
+        run: python -m ruff check btcbot tests
+
+      - name: 임포트 점검
+        # 패키지가 실제로 import 되고 CLI가 뜨는지 확인한다.
+        # 순환 임포트는 테스트만으로는 놓치기 쉽다.
+        run: |
+          python -c "import btcbot; print(btcbot.__version__)"
+          python -m btcbot strategies

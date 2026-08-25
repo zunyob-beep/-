@@ -61,6 +61,15 @@ def run_backtest(
     interval: str = "day",
     verbose: bool = False,
 ) -> BacktestResult:
+    if len(candles) <= strategy.warmup:
+        # 여기서 막지 않으면 "자산 곡선이 2개 이상이어야 합니다" 같은 엉뚱한
+        # 오류가 뒤에서 터진다. 무엇을 어떻게 고쳐야 하는지 알려준다.
+        raise ValueError(
+            f"봉이 부족합니다. 이 전략은 판단을 시작하는 데 {strategy.warmup}개가 필요한데 "
+            f"{len(candles)}개뿐입니다. 조회 기간을 늘리거나, 더 짧은 봉 간격을 쓰거나, "
+            "전략의 기간 설정(이동평균 기간 등)을 줄이세요."
+        )
+
     feed = BacktestFeed(candles, warmup=strategy.warmup, interval=interval)
     broker = SimulatedBroker(
         market=feed.market, cash=cash, fee_rate=fee_rate, slippage=slippage
