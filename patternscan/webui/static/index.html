@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>모양 찾기 — 단타 진입 판정</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>모양 찾기</h1>
+      <span class="sub">지금 모양이 과거에 있었는지 보고, 그 직후 통계로 판단합니다</span>
+    </div>
+    <div class="market" id="market">KRW-BTC</div>
+  </header>
+
+  <main>
+    <!-- 조작부 -->
+    <section class="panel controls">
+      <div class="row">
+        <label>
+          종목
+          <input id="in-market" type="text" value="KRW-BTC" spellcheck="false">
+        </label>
+        <label>
+          같은 모양 기준 <span class="hint">상관계수</span>
+          <input id="in-similarity" type="number" step="0.01" min="0" max="1" value="0.85">
+        </label>
+        <label>
+          편도 수수료
+          <input id="in-fee" type="number" step="0.0001" min="0" value="0.0005">
+        </label>
+        <label>
+          편도 슬리피지
+          <input id="in-slippage" type="number" step="0.0001" min="0" value="0.0002">
+        </label>
+        <label>
+          비교 방식
+          <select id="in-scale">
+            <option value="shape">모양만 (변동폭 무시)</option>
+            <option value="amplitude">변동폭까지 같아야</option>
+          </select>
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="btn-scan" class="primary">지금 판정하기</button>
+        <button id="btn-fetch">시세 받기</button>
+        <label class="check">
+          <input id="in-refresh" type="checkbox"> 캐시 무시하고 새로 받기
+        </label>
+        <span id="job" class="job"></span>
+      </div>
+      <div id="progress" class="progress" hidden><div id="progress-bar"></div></div>
+      <p id="error" class="error" hidden></p>
+      <p id="stale-note" class="stale-note" hidden>
+        아래는 <b>이전 판정</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.
+      </p>
+    </section>
+
+    <!-- 판정 -->
+    <section id="verdict" class="panel verdict" hidden>
+      <div class="verdict-head">
+        <span id="verdict-mark" class="mark"></span>
+        <h2 id="verdict-headline"></h2>
+      </div>
+      <ul id="verdict-reasons"></ul>
+      <div id="verdict-meta" class="meta"></div>
+    </section>
+
+    <!-- 데이터 범위 -->
+    <section id="coverage" class="panel coverage" hidden></section>
+
+    <!-- 조합 표 -->
+    <section id="table-panel" class="panel" hidden>
+      <h3>조합별 결과 <span class="hint">행을 누르면 아래에 모양이 그려집니다 · 표는 옆으로 넘겨 볼 수 있습니다</span></h3>
+      <div class="table-wrap">
+        <table id="findings">
+          <thead>
+            <tr>
+              <th class="l">조합</th>
+              <th>표본</th>
+              <th>승률</th>
+              <th>기준</th>
+              <th>초과</th>
+              <th>평균수익</th>
+              <th>유사도</th>
+              <th>q값</th>
+              <th>전·후반</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="footnote">
+        승률은 <b>왕복 비용을 넘긴 경우</b>만 상승으로 셉니다. 보합은 분모에 남습니다.
+        <b>기준</b>은 같은 자리에서 시점만 옮겼을 때의 상승 비율이고,
+        <b>초과</b>가 0 근처면 이 모양에는 정보가 없다는 뜻입니다.
+      </p>
+    </section>
+
+    <!-- 모양 겹쳐보기 -->
+    <section id="chart-panel" class="panel" hidden>
+      <h3 id="chart-title"></h3>
+      <div class="charts">
+        <figure>
+          <figcaption>
+            직전 모양 <span class="hint">굵은 선이 지금, 옅은 선이 과거의 같은 모양</span>
+          </figcaption>
+          <div class="svg-box"><svg id="chart-shape" viewBox="0 0 400 200" preserveAspectRatio="none"></svg></div>
+        </figure>
+        <figure>
+          <figcaption>
+            그 직후 <span class="hint">초록이 비용을 넘긴 경우, 빨강이 못 넘긴 경우</span>
+          </figcaption>
+          <div class="svg-box"><svg id="chart-after" viewBox="0 0 400 200" preserveAspectRatio="none"></svg></div>
+        </figure>
+      </div>
+      <p id="chart-note" class="footnote"></p>
+    </section>
+
+    <section class="panel note">
+      <h3>읽는 법</h3>
+      <ul>
+        <li><b>기본값은 "들어가지 마세요"입니다.</b> 근거가 기준을 넘겨야만 뒤집힙니다.</li>
+        <li>3개 봉 간격 × 19개 길이 × 5개 지평 = <b>285개 조합</b>을 한 번에 봅니다.
+            아무 정보가 없는 데이터에서도 이 중 십수 개는 우연히 "승률 60%"가 나옵니다.
+            그래서 q값(다중비교 보정)과 전·후반 검증을 함께 봅니다.</li>
+        <li><b>유사도</b>가 1.00이면 완전히 같은 모양, 0.00이면 아무 관계 없는 모양입니다.
+            기준을 낮추면 표본은 늘지만 닮지 않은 구간이 섞입니다.</li>
+        <li>과거 통계는 미래를 보장하지 않습니다. 이 화면은 판단을 돕는 자료일 뿐이고,
+            주문은 하지 않습니다.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,229 @@
+"""명령줄 인터페이스.
+
+    python -m patternscan fetch --count 40000
+    python -m patternscan scan
+    python -m patternscan ui
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+
+from .data import fetch, load_cached
+from .models import HORIZONS, WINDOW_LENGTHS, Series
+from .report import (
+    format_coverage,
+    format_detail,
+    format_table,
+    format_verdict,
+    summary_header,
+)
+from .scan import (
+    DEFAULT_FEE,
+    DEFAULT_SIMILARITY,
+    DEFAULT_SLIPPAGE,
+    round_trip_cost,
+    scan_all,
+)
+from .stats import decide, evaluate
+from .upbit import UpbitClient
+
+log = logging.getLogger("patternscan")
+
+#: 기본 수집량. 1분봉 30일치. 3분/5분봉은 같은 기간이면 1/3, 1/5면 충분하다.
+DEFAULT_COUNT = {"minute1": 43_200, "minute3": 14_400, "minute5": 8_640}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="patternscan",
+        description="과거에 같은 모양이 있었는지 찾아 단타 진입 여부를 판정합니다",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "예시:\n"
+            "  python -m patternscan fetch                 # 시세 받기 (처음 한 번, 몇 분 걸림)\n"
+            "  python -m patternscan scan                  # 지금 들어갈지 판정\n"
+            "  python -m patternscan scan --detail         # 조합별 상세\n"
+            "  python -m patternscan ui                    # 웹 화면\n"
+        ),
+    )
+    parser.add_argument("--log-level", default="INFO")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    for name, help_text in (
+        ("fetch", "시세를 받아 캐시에 저장"),
+        ("scan", "지금 시점의 모양을 과거와 비교해 판정"),
+        ("ui", "웹 화면 열기"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--market", default="KRW-BTC", help="마켓 코드 (기본 KRW-BTC)")
+        p.add_argument("--data-dir", default="data", help="CSV 캐시 폴더")
+        if name == "fetch":
+            p.add_argument("--count", type=int, default=None, help="1분봉 기준 받을 봉 개수")
+            p.add_argument("--refresh", action="store_true", help="캐시를 무시하고 새로 받기")
+        if name == "scan":
+            p.add_argument("--top-k", type=int, default=60, help="쓸 매치 개수 (기본 60)")
+            p.add_argument(
+                "--similarity", type=float, default=DEFAULT_SIMILARITY,
+                help=(
+                    "'같은 모양'으로 인정할 최소 상관계수 "
+                    f"(기본 {DEFAULT_SIMILARITY}, 1.00=완전히 같음, 0.00=무관). "
+                    "낮추면 표본이 늘지만 안 닮은 구간까지 섞입니다"
+                ),
+            )
+            p.add_argument(
+                "--max-distance", type=float, default=None,
+                help="유사도 대신 거리로 자르고 싶을 때 (0에 가까울수록 똑같은 모양)",
+            )
+            p.add_argument(
+                "--scale", default="shape", choices=["shape", "amplitude"],
+                help="shape=변동폭 무시하고 모양만, amplitude=변동폭도 같아야 함",
+            )
+            p.add_argument("--fee", type=float, default=DEFAULT_FEE, help="편도 수수료율")
+            p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE, help="편도 슬리피지")
+            p.add_argument("--fdr", type=float, default=0.10, help="허용 거짓발견율")
+            p.add_argument("--detail", action="store_true", help="상위 조합 상세 보기")
+            p.add_argument("--refresh", action="store_true", help="시세를 새로 받고 판정")
+        if name == "ui":
+            p.add_argument("--port", type=int, default=8765)
+            p.add_argument("--no-browser", action="store_true")
+
+    return parser
+
+
+def _counts(count: int | None) -> dict[str, int]:
+    if count is None:
+        return dict(DEFAULT_COUNT)
+    # 1분봉 기준으로 주면 나머지는 같은 기간이 되도록 나눈다
+    return {"minute1": count, "minute3": max(count // 3, 300), "minute5": max(count // 5, 300)}
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    client = UpbitClient()
+    wanted = _counts(args.count)
+    for timeframe, count in wanted.items():
+        print(f"{timeframe} 수집 중… (최대 {count:,}개)")
+
+        def progress(done: int, total: int, tf: str = timeframe) -> None:
+            print(f"  {tf}: {done:,}/{total:,}", end="\r", flush=True)
+
+        series = fetch(
+            client, args.market, timeframe, count,
+            directory=args.data_dir, refresh=args.refresh, progress=progress,
+        )
+        span = series.span
+        window = ""
+        if span:
+            window = f"  {span[0]:%Y-%m-%d %H:%M} ~ {span[1]:%Y-%m-%d %H:%M} UTC"
+        print(f"  {timeframe}: 봉 {len(series):,}개 확보{window}          ")
+    return 0
+
+
+def _load_series(args: argparse.Namespace, refresh: bool) -> dict[str, Series]:
+    client = UpbitClient()
+    out: dict[str, Series] = {}
+    for timeframe, count in DEFAULT_COUNT.items():
+        if refresh:
+            out[timeframe] = fetch(
+                client, args.market, timeframe, count, directory=args.data_dir, refresh=True
+            )
+        else:
+            series = load_cached(args.market, timeframe, args.data_dir)
+            if len(series) == 0:
+                series = fetch(client, args.market, timeframe, count, directory=args.data_dir)
+            out[timeframe] = series
+    return out
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    series_by_tf = _load_series(args, args.refresh)
+    usable = {tf: s for tf, s in series_by_tf.items() if len(s) > 0}
+    if not usable:
+        print("시세가 없습니다. 먼저 `python -m patternscan fetch`를 실행하세요.")
+        return 1
+
+    cost = round_trip_cost(args.fee, args.slippage)
+    print(
+        summary_header(
+            args.market,
+            [(tf, len(s), s.gaps()) for tf, s in usable.items()],
+            cost,
+            None if args.max_distance is not None else args.similarity,
+        )
+    )
+
+    results = scan_all(
+        usable,
+        WINDOW_LENGTHS,
+        horizons=HORIZONS,
+        top_k=args.top_k,
+        similarity=args.similarity,
+        max_distance=args.max_distance,
+        scale=args.scale,
+        fee=args.fee,
+        slippage=args.slippage,
+    )
+    findings = evaluate(results, fdr=args.fdr)
+    verdict = decide(findings, fdr=args.fdr)
+
+    print()
+    print(format_verdict(verdict, cost))
+    print(format_table(findings))
+
+    coverage = format_coverage(results)
+    if coverage:
+        print()
+        print(coverage)
+
+    if args.detail:
+        for finding in [f for f in findings if f.enough_samples][:5]:
+            print(format_detail(finding))
+
+    return 0
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    from .webui.server import serve
+
+    serve(
+        market=args.market,
+        data_dir=args.data_dir,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    return 0
+
+
+COMMANDS = {"fetch": cmd_fetch, "scan": cmd_scan, "ui": cmd_ui}
+
+
+def setup_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    setup_logging(args.log_level)
+    try:
+        return COMMANDS[args.command](args)
+    except KeyboardInterrupt:
+        print("\n중단했습니다.")
+        return 130
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
+    except (RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
+        log.error("%s", exc)
+        return 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

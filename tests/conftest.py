@@ -1,63 +1,73 @@
 from __future__ import annotations
 
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
+import numpy as np
 import pytest
 
-from btcbot.models import Candle
+from patternscan.models import Candle, Series, timeframe_length
+
+START = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
-def make_candle(
-    ts: datetime,
-    open_: float,
-    high: float | None = None,
-    low: float | None = None,
-    close: float | None = None,
-    volume: float = 1.0,
+def make_series(
+    closes,
     market: str = "KRW-BTC",
-) -> Candle:
-    close = open_ if close is None else close
-    high = max(open_, close) if high is None else high
-    low = min(open_, close) if low is None else low
-    return Candle(market=market, ts=ts, open=open_, high=high, low=low, close=close, volume=volume)
+    timeframe: str = "minute1",
+    start: datetime | None = None,
+    skip: set[int] | None = None,
+) -> Series:
+    """종가 목록으로 Series를 만든다.
 
-
-def series(prices, start: datetime | None = None, step: timedelta | None = None) -> list[Candle]:
-    """종가 리스트를 일봉 시퀀스로. 시가는 직전 종가로 이어붙인다."""
-    start = start or datetime(2024, 1, 1, tzinfo=timezone.utc)
-    step = step or timedelta(days=1)
+    `skip`에 든 인덱스는 봉을 통째로 빼서 '거래가 없어 빠진 봉'을 흉내낸다.
+    """
+    start = start or START
+    step = timeframe_length(timeframe)
+    skip = skip or set()
     candles = []
-    prev = prices[0]
-    for i, price in enumerate(prices):
+    prev = closes[0]
+    for i, close in enumerate(closes):
+        if i in skip:
+            prev = close
+            continue
         candles.append(
-            make_candle(
-                start + step * i,
-                open_=prev,
-                high=max(prev, price) * 1.002,
-                low=min(prev, price) * 0.998,
-                close=price,
+            Candle(
+                ts=start + step * i,
+                open=prev,
+                high=max(prev, close) * 1.001,
+                low=min(prev, close) * 0.999,
+                close=float(close),
+                volume=1.0,
             )
         )
-        prev = price
-    return candles
+        prev = close
+    return Series.from_candles(market, timeframe, candles)
+
+
+def repeating(pattern, repeats: int, filler: float = 100.0, gap: int = 40):
+    """같은 모양이 여러 번 나오는 종가 열을 만든다.
+
+    모양 사이에는 무의미한 구간(filler)을 넣어 서로 겹치지 않게 한다.
+    """
+    out: list[float] = []
+    for _ in range(repeats):
+        out.extend(pattern)
+        out.extend(filler + 0.01 * i for i in range(gap))
+    return out
 
 
 @pytest.fixture
-def uptrend() -> list[Candle]:
-    return series([100.0 * (1.01**i) for i in range(120)])
+def rng() -> np.random.Generator:
+    return np.random.default_rng(12345)
 
 
 @pytest.fixture
-def downtrend() -> list[Candle]:
-    return series([100.0 * (0.99**i) for i in range(120)])
+def random_walk(rng) -> Series:
+    steps = rng.normal(0, 0.0008, 6000)
+    closes = 40_000_000 * np.exp(np.cumsum(steps))
+    return make_series(closes.tolist())
 
 
 @pytest.fixture
-def choppy() -> list[Candle]:
-    return series([100.0 + 5 * math.sin(i / 3) for i in range(200)])
-
-
-@pytest.fixture
-def sample_candles(uptrend) -> list[Candle]:
-    return uptrend
+def flat_series() -> Series:
+    return make_series([100.0] * 500)

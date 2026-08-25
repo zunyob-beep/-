@@ -1,11 +1,6 @@
-# 비밀
-.env
-
-# 봇이 만드는 것들
+# 받아둔 시세 캐시
 data/
-runs/
 *.csv
-strategies_saved.json
 
 # 파이썬
 __pycache__/
