@@ -5,6 +5,7 @@
 data/
 runs/
 *.csv
+strategies_saved.json
 
 # 파이썬
 __pycache__/

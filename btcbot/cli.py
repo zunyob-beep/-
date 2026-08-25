@@ -104,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--yes", action="store_true", help="확인 프롬프트 건너뛰기")
 
+    ui = sub.add_parser("ui", help="웹 화면 열기 (코딩 없이 전략 만들기·백테스트·자동매매)")
+    _add_market_args(ui)
+    ui.add_argument("--port", type=int, default=8765, help="포트 번호 (기본 8765)")
+    ui.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않기")
+
     status = sub.add_parser("status", help="계좌와 최근 거래 기록 보기")
     status.add_argument("--run-name", default=None, help="기록 이름")
     status.add_argument("--runs-dir", default=None)
@@ -396,6 +401,14 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    from .webui.server import serve
+
+    settings = settings_from_args(args)
+    serve(settings, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     settings = settings_from_args(args)
     journal = Journal(settings.runs_dir, settings.run_name)
@@ -495,6 +508,7 @@ COMMANDS = {
     "paper": cmd_paper,
     "live": cmd_live,
     "status": cmd_status,
+    "ui": cmd_ui,
 }
 
 
