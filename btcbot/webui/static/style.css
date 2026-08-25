@@ -124,7 +124,10 @@ h3, h4 { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
 
 /* ───────────────────────────── 차트 ───────────────────────────── */
 .chart-panel { position: relative; }
-#priceChart, #equityChart { width: 100%; display: block; }
+/* 캔버스 크기는 CSS가 정한다 — app.js의 fitCanvas가 이 값을 읽는다.
+   높이를 여기서 고정하지 않으면 캔버스가 자기 버퍼 크기만큼 늘어난다. */
+#priceChart { width: 100%; height: 320px; display: block; }
+#equityChart { width: 100%; height: 260px; display: block; }
 .chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
 .chart-legend label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .chart-empty {
@@ -290,6 +293,8 @@ table.grid .empty-row td { text-align: center; color: var(--muted); padding: 26p
 .toast.error { background: var(--up); }
 
 @media (max-width: 900px) {
+  #priceChart { height: 240px; }
+  #equityChart { height: 200px; }
   .sidebar { display: none; }
   .mh-stats { display: none; }
   .layout { padding: 8px; }

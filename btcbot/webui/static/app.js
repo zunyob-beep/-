@@ -179,15 +179,27 @@ async function refreshChart() {
   drawCandles();
 }
 
+/* 캔버스를 화면 배율(dpr)에 맞춰 준비한다.
+ *
+ * 크기는 반드시 CSS가 정한 값(clientWidth/clientHeight)에서 읽는다.
+ * `canvas.height = ...`는 버퍼 크기뿐 아니라 HTML의 height '속성'까지
+ * 바꾸기 때문에, 그 속성을 되읽어 dpr을 곱하면 다시 그릴 때마다 배율이
+ * 누적된다 — dpr=2인 화면에서 320 → 640 → 1280 → ... 로 차트가 화면
+ * 밖까지 늘어난다. dpr=1에서는 1을 곱하니 증상이 없어 놓치기 쉽다.
+ */
 function fitCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth || canvas.parentElement.clientWidth;
-  canvas.width = width * dpr;
-  canvas.height = canvas.getAttribute('height') * dpr;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
+  // CSS가 아직 적용되지 않은 순간을 대비해 속성값을 마지막 보루로 둔다.
+  const h = canvas.clientHeight || Number(canvas.getAttribute('height')) || 300;
+
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, canvas.height / dpr);
-  return { ctx, w: width, h: canvas.height / dpr };
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
 }
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();

@@ -19,7 +19,7 @@ from btcbot.data import cache_path, save_csv
 from btcbot.exchange.base import ExchangeError
 from btcbot.strategies.rule import PRESETS
 from btcbot.webui.botmanager import BotManager, LogBuffer
-from btcbot.webui.server import ApiError, AppState, create_server, handle_api
+from btcbot.webui.server import STATIC_DIR, ApiError, AppState, create_server, handle_api
 from tests.conftest import series
 
 
@@ -345,6 +345,40 @@ def test_log_buffer_survives_bad_format():
 
 def test_logs_endpoint(state):
     assert "logs" in get(state, "/api/logs", limit="10")
+
+
+# ------------------------------------------------------------------ 정적 파일
+def test_canvas_heights_are_fixed_in_css():
+    """차트 높이는 CSS가 정해야 한다.
+
+    fitCanvas()는 clientHeight를 읽어 캔버스 버퍼를 만든다. CSS에서 높이가
+    사라지면 캔버스가 자기 버퍼 크기만큼 늘어나고, 화면 배율이 2 이상인
+    기기(아이패드 등)에서는 다시 그릴 때마다 배로 커진다.
+    """
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    for canvas_id in ("#priceChart", "#equityChart"):
+        # 미디어쿼리 안의 규칙이 아니라 '기본' 규칙에 높이가 있어야 한다.
+        # 좁은 화면에서만 높이가 잡히면 큰 화면에서 그대로 늘어난다.
+        base = [
+            line
+            for line in css.splitlines()
+            if line.strip().startswith(canvas_id) and "width:" in line
+        ]
+        assert base, f"{canvas_id} 기본 규칙이 없습니다"
+        assert all("height:" in rule for rule in base), f"{canvas_id} 기본 규칙에 height가 없습니다"
+
+
+def test_fit_canvas_never_reads_back_the_height_attribute():
+    """`canvas.height = ...`는 height 속성도 바꾼다.
+
+    그 속성을 곱셈의 입력으로 다시 쓰면 배율이 누적된다. 실제로 났던
+    버그라 회귀를 막아둔다.
+    """
+    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    start = app_js.index("function fitCanvas")
+    body = app_js[start : app_js.index("\n}", start)]
+    assert "getAttribute('height') * dpr" not in body
+    assert "clientHeight" in body
 
 
 # ------------------------------------------------------------------ HTTP 계층
