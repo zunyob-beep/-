@@ -70,6 +70,10 @@ def run_backtest(
             "전략의 기간 설정(이동평균 기간 등)을 줄이세요."
         )
 
+    # 지표를 미리 계산해둔다(O(n^2) -> O(n)). 인과적 지표만 쓰므로
+    # 미래 봉을 넘겨도 판단에는 과거만 반영된다 — Strategy.prepare 참고.
+    strategy.prepare(candles)
+
     feed = BacktestFeed(candles, warmup=strategy.warmup, interval=interval)
     broker = SimulatedBroker(
         market=feed.market, cash=cash, fee_rate=fee_rate, slippage=slippage

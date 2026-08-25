@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -100,7 +101,14 @@ class Engine:
         self._tracker = TradeTracker()
         self._consecutive_errors = 0
 
-    def run(self) -> RunStats:
+    def run(self, should_stop: Callable[[], bool] | None = None) -> RunStats:
+        """봉을 끝까지 돌린다.
+
+        `should_stop`은 봉 사이마다 확인하는 중단 신호다. 웹 UI의 '중지'
+        버튼이 이걸 쓴다. 예전에는 UI가 이 루프를 따로 구현했는데, 그러다
+        거래소 오류 허용 로직이 빠져서 일시적인 429 하나에 봇이 죽었다.
+        루프는 여기 하나만 둔다.
+        """
         log.info(
             "엔진 시작 — %s %s / %s",
             self.feed.market,
@@ -108,6 +116,9 @@ class Engine:
             self.strategy.describe(),
         )
         for bar in self.feed:
+            if should_stop is not None and should_stop():
+                log.info("중단 요청 — 다음 봉을 기다리지 않고 멈춥니다")
+                break
             try:
                 self.step(bar)
                 self._consecutive_errors = 0
@@ -120,6 +131,9 @@ class Engine:
                     raise
             if self.risk.state.halted:
                 log.critical("리스크 정지: %s", self.risk.state.halt_reason)
+                break
+            if should_stop is not None and should_stop():
+                log.info("중단 요청 — 이번 봉까지 처리하고 멈춥니다")
                 break
         return self.stats
 

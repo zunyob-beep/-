@@ -439,3 +439,95 @@ def test_malformed_json_body_is_rejected(running_server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(request)
     assert "잘못" in json.loads(exc.value.read().decode())["error"]
+
+
+# --------------------------------------------------- 회귀: 조용히 죽거나 안 사는 문제
+def test_engine_run_accepts_stop_signal(with_candles):
+    """웹 UI의 '중지'는 Engine의 루프를 그대로 쓴다.
+
+    예전에는 UI가 루프를 따로 구현하다가 거래소 오류 허용 로직을 빠뜨려,
+    일시적인 429 하나에 봇이 죽었다.
+    """
+    from btcbot.backtest import run_backtest  # noqa: F401  (엔진 경로 확인용)
+    from btcbot.engine import Engine
+    from btcbot.exchange.simulated import SimulatedBroker
+    from btcbot.feed import BacktestFeed
+    from btcbot.strategies import get_strategy
+
+    candles = load_candles(with_candles)
+    feed = BacktestFeed(candles, warmup=2)
+    engine = Engine(
+        feed=feed,
+        broker=SimulatedBroker("KRW-BTC", cash=1_000_000),
+        strategy=get_strategy("ma_cross", fast=3, slow=10),
+    )
+    stats = engine.run(should_stop=lambda: True)
+    assert len(stats.equity_curve) <= 1  # 즉시 멈춘다
+
+
+def test_engine_survives_a_transient_exchange_error(with_candles):
+    from btcbot.engine import Engine
+    from btcbot.exchange.base import RateLimited
+    from btcbot.exchange.simulated import SimulatedBroker
+    from btcbot.feed import BacktestFeed
+    from btcbot.strategies import get_strategy
+
+    candles = load_candles(with_candles)
+    broker = SimulatedBroker("KRW-BTC", cash=1_000_000)
+    calls = {"n": 0}
+    real_buy = broker.market_buy
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimited("일시적인 429")
+        return real_buy(*args, **kwargs)
+
+    broker.market_buy = flaky
+    engine = Engine(
+        feed=BacktestFeed(candles, warmup=2),
+        broker=broker,
+        strategy=get_strategy("ma_cross", fast=3, slow=10),
+    )
+    stats = engine.run()
+    assert stats.errors == 1
+    assert len(stats.equity_curve) > 10  # 죽지 않고 끝까지 돈다
+
+
+def load_candles(state):
+    from btcbot.data import cache_path, load_csv
+
+    return load_csv(cache_path("KRW-BTC", "day", state.settings.data_dir))
+
+
+def test_live_feed_pages_past_the_200_candle_limit():
+    """업비트는 한 번에 200개까지만 준다. 그보다 큰 warmup도 채워야 한다.
+
+    예전에는 200으로 잘라서, SMA 200을 쓰는 프리셋이 영원히 "warmup"만
+    내놓고 한 번도 거래하지 않았다 — 오류도 없이.
+    """
+    from btcbot.feed import LiveFeed
+    from tests.conftest import series
+
+    all_candles = series([100.0 + i for i in range(700)])
+
+    class Paged:
+        def get_candles(self, market, interval="day", count=200, to=None):
+            pool = [c for c in all_candles if to is None or c.ts <= to]
+            return pool[-min(count, 200) :]
+
+    feed = LiveFeed(Paged(), "KRW-BTC", "day", lookback=500)
+    history = feed.fetch_history()
+    assert len(history) == 500
+    assert [c.ts for c in history] == sorted(c.ts for c in history)
+
+
+def test_static_guard_rejects_sibling_directory(tmp_path, monkeypatch):
+    """'static_secret' 같은 형제 폴더가 접두사만으로 통과하면 안 된다."""
+    from pathlib import Path
+
+    from btcbot.webui.server import STATIC_DIR
+
+    sibling = Path(str(STATIC_DIR.resolve()) + "_secret") / "keys.txt"
+    assert str(sibling).startswith(str(STATIC_DIR.resolve()))  # 문자열로는 통과
+    assert not sibling.is_relative_to(STATIC_DIR.resolve())  # 경로로는 막힌다

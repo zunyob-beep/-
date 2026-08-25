@@ -87,7 +87,11 @@ class LiveFeed(Feed):
         self.client = client
         self.market = market
         self.interval = interval
-        self.lookback = min(max(lookback, 2), 200)
+        # 업비트는 한 번에 200개까지만 준다. 그보다 많이 필요하면 여러 번
+        # 나눠 받는다. 예전에는 여기서 200으로 잘라버렸는데, 그러면 warmup이
+        # 200을 넘는 전략(예: SMA 200)이 영원히 "warmup"만 내놓고 한 번도
+        # 거래하지 않는다 — 오류도 안 나서 알아채기가 어렵다.
+        self.lookback = max(int(lookback), 2)
         self.settle_delay = settle_delay
         self.max_bars = max_bars
         self._length = interval_length(interval)
@@ -97,7 +101,7 @@ class LiveFeed(Feed):
         last_ts: datetime | None = None
 
         while self.max_bars is None or emitted < self.max_bars:
-            candles = self.client.get_candles(self.market, self.interval, self.lookback)
+            candles = self.fetch_history()
             if not candles:
                 log.warning("봉 조회 결과가 비었습니다 — 잠시 후 재시도")
                 time.sleep(5)
@@ -120,6 +124,34 @@ class LiveFeed(Feed):
             yield Bar(history=closed, exec_price=price, exec_ts=datetime.now(timezone.utc))
 
             time.sleep(self._sleep_seconds())
+
+    #: 한 번에 요청할 수 있는 최대 봉 수 (업비트 제한)
+    PAGE = 200
+
+    def fetch_history(self) -> list[Candle]:
+        """`lookback`개가 모일 때까지 과거로 거슬러 올라가며 받는다."""
+        if self.lookback <= self.PAGE:
+            return self.client.get_candles(self.market, self.interval, self.lookback)
+
+        collected: dict[datetime, Candle] = {}
+        cursor: datetime | None = None
+        while len(collected) < self.lookback:
+            batch = self.client.get_candles(self.market, self.interval, self.PAGE, to=cursor)
+            if not batch:
+                break
+            before = len(collected)
+            collected.update({c.ts: c for c in batch})
+            if len(collected) == before:
+                break  # 같은 페이지가 반복되면 더 과거 데이터가 없는 것
+            cursor = min(batch, key=lambda c: c.ts).ts - self._length
+
+        candles = sorted(collected.values(), key=lambda c: c.ts)
+        if len(candles) < self.lookback:
+            log.warning(
+                "%s %s: 봉 %d개를 요청했지만 %d개만 받았습니다",
+                self.market, self.interval, self.lookback, len(candles),
+            )
+        return candles[-self.lookback :]
 
     def _is_closed(self, candle: Candle) -> bool:
         return datetime.now(timezone.utc) >= candle.ts + self._length

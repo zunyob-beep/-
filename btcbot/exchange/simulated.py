@@ -8,10 +8,27 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 from ..models import AccountState, Fill, Position, Side
 from .base import DEFAULT_FEE_RATE, MIN_ORDER_KRW, Broker, OrderRejected
+
+
+def _tolerance(scale: float) -> float:
+    """`scale` 규모의 금액을 다룰 때 무시해도 되는 부동소수 오차.
+
+    전액 매수는 `수량 = 예산 / (가격 × (1+수수료))` 로 구한 뒤 다시 곱해
+    금액을 되돌리므로 마지막 자리에 오차가 남는다. 고정값 1e-6을 쓰면
+    100억원대부터는 그 값이 float의 최소 단위(ulp)보다 작아져서, 잔고가
+    충분한데도 '잔고 부족'으로 거부된다 — 백테스트 도중 계좌가 커지자
+    실제로 거래가 막혔다.
+
+    그래서 허용치를 ulp에 맞춘다. 금액이 커지면 같이 커지고, 작은 금액에서는
+    1e-6 아래로 내려가지 않는다. 이 검사의 목적은 '수량보다 많이 팔았다'
+    같은 논리 오류를 잡는 것이지 마지막 자리 먼지를 잡는 게 아니다.
+    """
+    return max(math.ulp(abs(scale)) * 16.0, 1e-6)
 
 
 class SimulatedBroker(Broker):
@@ -75,7 +92,7 @@ class SimulatedBroker(Broker):
 
         gross = fill_price * volume
         fee = gross * self.fee_rate
-        if gross + fee > self.cash + 1e-6:
+        if gross + fee > self.cash + _tolerance(self.cash):
             raise OrderRejected(f"잔고 부족: 필요 {gross + fee:,.0f}, 보유 {self.cash:,.0f}")
 
         fill = Fill(
@@ -116,8 +133,11 @@ class SimulatedBroker(Broker):
 
     def _apply(self, fill: Fill) -> None:
         self.realized_pnl += self.position.apply(fill)
+        # 허용치는 '거래 전 현금'과 '거래 규모' 중 큰 쪽을 기준으로 잡는다.
+        # 뺄셈의 오차는 두 피연산자 중 큰 쪽의 ulp에서 나온다.
+        scale = max(abs(self.cash), fill.gross + fill.fee)
         self.cash += fill.cash_delta
-        if self.cash < -1e-6:
+        if self.cash < -_tolerance(scale):
             raise OrderRejected(f"현금이 음수가 되었습니다: {self.cash}")
         self.cash = max(0.0, self.cash)
         self.fills.append(fill)

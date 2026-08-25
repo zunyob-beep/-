@@ -52,13 +52,13 @@ class VolatilityBreakout(Strategy):
             return Signal(reason="warmup")
 
         last = candles[-1]
-        today = last.kst_date
+        today = last.kst_day
 
         # 오늘(KST) 첫 봉과 어제 마지막 봉을 찾는다.
         first_of_today = last
         prev_day_last: Candle | None = None
         for candle in reversed(candles[:-1]):
-            if candle.kst_date == today:
+            if candle.kst_day == today:
                 first_of_today = candle
             else:
                 prev_day_last = candle
@@ -67,7 +67,7 @@ class VolatilityBreakout(Strategy):
         if prev_day_last is None:
             return Signal(reason="이전 거래일 데이터 없음")
 
-        prev_range = self._prev_day_range(candles, prev_day_last.kst_date)
+        prev_range = self._prev_day_range(candles, prev_day_last.kst_day)
         if prev_range <= 0:
             return Signal(reason="전일 변동폭 0")
 
@@ -106,7 +106,7 @@ class VolatilityBreakout(Strategy):
         return sum(noise(c) for c in window) / len(window)
 
     @staticmethod
-    def _prev_day_range(candles: Sequence[Candle], prev_date: str) -> float:
+    def _prev_day_range(candles: Sequence[Candle], prev_date: int) -> float:
         """전 거래일 봉들을 묶어 (고가 - 저가)를 구한다.
 
         일봉이면 봉 하나의 range와 같고, 분봉이면 그날 전체 범위가 된다.
@@ -114,7 +114,7 @@ class VolatilityBreakout(Strategy):
         highs: list[float] = []
         lows: list[float] = []
         for candle in reversed(candles):
-            if candle.kst_date == prev_date:
+            if candle.kst_day == prev_date:
                 highs.append(candle.high)
                 lows.append(candle.low)
             elif highs:

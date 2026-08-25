@@ -7,6 +7,7 @@ UI에서 만든 전략이 여기서 잘못 해석되면, 사용자는 자기가 
 
 from __future__ import annotations
 
+import itertools
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -313,3 +314,78 @@ def test_spec_file_loading(tmp_path):
 def test_missing_spec_raises():
     with pytest.raises(SpecError, match="전략 정의"):
         get_strategy("rule")
+
+
+# ------------------------------------------------------------ 미리 계산(prepare)
+def _all_operand_samples():
+    """모든 지표 종류의 대표 샘플."""
+    from btcbot.strategies.rule import OPERAND_SPECS
+
+    for spec in OPERAND_SPECS:
+        operand = {"type": spec["type"]}
+        for param in spec["params"]:
+            operand[param["key"]] = param["default"]
+        yield operand
+
+
+@pytest.mark.parametrize(
+    "operand", list(_all_operand_samples()), ids=lambda o: o["type"]
+)
+def test_every_indicator_is_causal(operand, choppy):
+    """i번째 값이 i 이후 봉에 의존하면 안 된다.
+
+    prepare()는 미래 봉까지 포함해 한 번에 계산한 뒤 과거 시점을 조회한다.
+    이 성질이 깨지면 백테스트가 미래를 훔쳐보게 된다 — 이 프로젝트에서
+    가장 위험한 종류의 버그다.
+    """
+    full = series_for(operand, choppy, {})
+    for n in (30, 77, 150, len(choppy)):
+        assert full[:n] == series_for(operand, choppy[:n], {}), f"길이 {n}에서 어긋남"
+
+
+@pytest.mark.parametrize("preset", PRESETS, ids=[p["label"] for p in PRESETS])
+def test_prepare_does_not_change_results(preset):
+    """미리 계산해도 결과는 한 톨도 달라지면 안 된다."""
+    import math
+
+    # SMA(200)을 쓰는 프리셋이 있으므로 넉넉히
+    candles = series([100.0 + 12 * math.sin(i / 21) + i * 0.04 for i in range(500)])
+    with_prepare = run_backtest(candles, rule(preset))
+
+    without = rule(preset)
+    without.prepare = lambda *_: None  # 미리 계산 끄기
+    plain = run_backtest(candles, without)
+
+    assert [(t.entry_ts, t.exit_ts, t.pnl) for t in with_prepare.stats.trades] == [
+        (t.entry_ts, t.exit_ts, t.pnl) for t in plain.stats.trades
+    ]
+    assert with_prepare.performance.final_equity == pytest.approx(
+        plain.performance.final_equity, rel=1e-12
+    )
+
+
+def test_prepared_cache_is_ignored_for_different_data(choppy, uptrend):
+    """다른 데이터로 같은 전략 객체를 재사용해도 캐시가 새면 안 된다."""
+    strategy = rule(PRESETS[1])
+    strategy.prepare(choppy)
+
+    source, cache, index = strategy._evaluation_context(choppy[:50])
+    assert cache is strategy._prepared_cache  # 앞부분이면 캐시 사용
+
+    source, cache, index = strategy._evaluation_context(uptrend[:50])
+    assert cache == {}  # 다른 데이터면 캐시를 버린다
+    assert source is uptrend[:50] or list(source) == list(uptrend[:50])
+
+
+def test_prepare_is_optional(choppy):
+    """라이브에서는 prepare 없이도 똑같이 동작해야 한다."""
+    strategy = rule(PRESETS[1])
+    assert strategy.decide(choppy[:60]) == rule(PRESETS[1]).decide(choppy[:60])
+
+
+def test_kst_day_matches_kst_date_grouping():
+    """빠른 정수 날짜가 문자열 날짜와 같은 그룹을 만들어야 한다."""
+    base = datetime(2023, 12, 31, 14, 0, tzinfo=timezone.utc)
+    candles = [make_candle(base + timedelta(hours=i), 100) for i in range(24 * 40)]
+    for a, b in itertools.pairwise(candles):
+        assert (a.kst_date == b.kst_date) == (a.kst_day == b.kst_day)

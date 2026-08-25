@@ -103,27 +103,53 @@ class RuleStrategy(Strategy):
 
         self.spec = validate_spec(spec)
         self.warmup = required_warmup(self.spec)
+        self._operands = _collect_operands(self.spec)
+        self._prepared: Sequence[Candle] | None = None
+        self._prepared_cache: dict[str, list[float | None]] = {}
 
     def describe(self) -> str:
         return f"rule({self.spec.get('label') or '이름 없음'})"
+
+    def prepare(self, candles: Sequence[Candle]) -> None:
+        """모든 지표를 한 번에 계산해둔다 (백테스트 O(n^2) -> O(n))."""
+        if len(candles) < 2:
+            return
+        self._prepared = list(candles)
+        self._prepared_cache = {}
+        for operand in self._operands:
+            series_for(operand, self._prepared, self._prepared_cache)
+
+    def _evaluation_context(
+        self, candles: Sequence[Candle]
+    ) -> tuple[Sequence[Candle], dict[str, list[float | None]], int]:
+        """(시계열을 계산한 봉들, 캐시, 지금 판단하는 봉의 위치).
+
+        미리 계산해둔 값은 지금 받은 봉들이 그때 그 봉들의 **앞부분**일
+        때만 쓴다. 다른 데이터로 같은 전략 객체를 재사용하면 캐시를 버린다.
+        """
+        prepared = self._prepared
+        n = len(candles)
+        if prepared is not None and 0 < n <= len(prepared) and _same_prefix(candles, prepared, n):
+            return prepared, self._prepared_cache, n - 1
+        return candles, {}, n - 1
 
     def decide(self, candles: Sequence[Candle]) -> Signal:
         if len(candles) < self.warmup:
             return Signal(reason="warmup")
 
-        cache: dict[str, list[float | None]] = {}
+        source, cache, index = self._evaluation_context(candles)
         exit_group = self.spec.get("exit")
         entry_group = self.spec.get("entry")
 
         # 청산이 진입보다 우선한다. 둘 다 참인 애매한 상황에서 계속 들고 있는
         # 것보다 빠져나오는 쪽이 안전하다.
         if exit_group:
-            hit, why = evaluate(exit_group, candles, cache)
+            hit, why = evaluate(exit_group, source, cache, index)
             if hit:
                 return Signal(action=Action.SELL, target_weight=0.0, reason=f"청산: {why}")
 
         if entry_group:
-            hit, why = evaluate(entry_group, candles, cache)
+            hit, why = evaluate(entry_group, source, cache, index)
             if hit:
                 return Signal(
                     action=Action.BUY,
@@ -233,6 +259,47 @@ def _validate_operand(operand: Any, where: str) -> dict[str, Any]:
     return out
 
 
+def _same_prefix(candles: Sequence[Candle], prepared: Sequence[Candle], n: int) -> bool:
+    """`candles`가 `prepared`의 앞 n개와 같은 봉들인지.
+
+    시각만 비교하면 안 된다. 다른 종목의 같은 기간 봉은 시각이 완전히
+    똑같아서(예: BTC 일봉과 ETH 일봉) 엉뚱한 지표값을 재사용하게 된다.
+    백테스트는 같은 리스트를 잘라 쓰므로 객체 자체가 동일하다 — 그걸 본다.
+    아니면 그냥 다시 계산하면 되므로 틀릴 때의 비용도 없다.
+    """
+    return (
+        candles[0] is prepared[0]
+        and candles[n - 1] is prepared[n - 1]
+        and candles[n // 2] is prepared[n // 2]
+    )
+
+
+def _collect_operands(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """정의에 나오는 모든 지표를 모은다 (미리 계산용)."""
+    found: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        for key in ("all", "any"):
+            if key in node:
+                for item in node[key]:
+                    walk(item)
+                return
+        if "not" in node:
+            walk(node["not"])
+            return
+        for side in ("left", "right"):
+            operand = node.get(side)
+            if isinstance(operand, dict):
+                found.append(operand)
+
+    for key in ("entry", "exit"):
+        if spec.get(key):
+            walk(spec[key])
+    return found
+
+
 def required_warmup(spec: dict[str, Any]) -> int:
     """정의에 등장하는 가장 긴 기간 + 여유분."""
     longest = 0
@@ -266,14 +333,22 @@ def evaluate(
     group: dict[str, Any],
     candles: Sequence[Candle],
     cache: dict[str, list[float | None]] | None = None,
+    index: int | None = None,
 ) -> tuple[bool, str]:
-    """조건 묶음을 평가하고 (결과, 사람이 읽을 이유)를 돌려준다."""
+    """조건 묶음을 평가하고 (결과, 사람이 읽을 이유)를 돌려준다.
+
+    `index`는 '지금 판단하는 봉'의 위치다. 미리 계산해둔 긴 시계열을
+    그대로 쓰면서 특정 시점만 보기 위해 필요하다 (자르면 그 자체가
+    봉마다 O(n) 복사라 최적화가 무의미해진다).
+    """
     cache = {} if cache is None else cache
+    if index is None:
+        index = len(candles) - 1
 
     if "all" in group:
         reasons = []
         for node in group["all"]:
-            hit, why = _evaluate_node(node, candles, cache)
+            hit, why = _evaluate_node(node, candles, cache, index)
             if not hit:
                 return False, why
             reasons.append(why)
@@ -282,26 +357,32 @@ def evaluate(
     if "any" in group:
         reasons = []
         for node in group["any"]:
-            hit, why = _evaluate_node(node, candles, cache)
+            hit, why = _evaluate_node(node, candles, cache, index)
             if hit:
                 return True, why
             reasons.append(why)
         return False, " 또는 ".join(reasons)
 
-    hit, why = _evaluate_node(group["not"], candles, cache)
+    hit, why = _evaluate_node(group["not"], candles, cache, index)
     return not hit, f"NOT({why})"
 
 
 def _evaluate_node(
-    node: dict[str, Any], candles: Sequence[Candle], cache: dict[str, list[float | None]]
+    node: dict[str, Any],
+    candles: Sequence[Candle],
+    cache: dict[str, list[float | None]],
+    index: int,
 ) -> tuple[bool, str]:
     if any(key in node for key in ("all", "any", "not")):
-        return evaluate(node, candles, cache)
-    return _evaluate_condition(node, candles, cache)
+        return evaluate(node, candles, cache, index)
+    return _evaluate_condition(node, candles, cache, index)
 
 
 def _evaluate_condition(
-    cond: dict[str, Any], candles: Sequence[Candle], cache: dict[str, list[float | None]]
+    cond: dict[str, Any],
+    candles: Sequence[Candle],
+    cache: dict[str, list[float | None]],
+    index: int,
 ) -> tuple[bool, str]:
     left = series_for(cond["left"], candles, cache)
     right = series_for(cond["right"], candles, cache)
@@ -309,7 +390,7 @@ def _evaluate_condition(
 
     label = f"{describe_operand(cond['left'])} {_op_label(op)} {describe_operand(cond['right'])}"
 
-    lnow, rnow = left[-1], right[-1]
+    lnow, rnow = left[index], right[index]
     if lnow is None or rnow is None:
         return False, f"{label} (값 없음)"
 
@@ -324,9 +405,9 @@ def _evaluate_condition(
     if op == "<=":
         return lnow <= rnow, detail
 
-    if len(left) < 2 or len(right) < 2:
+    if index < 1:
         return False, f"{label} (직전 봉 없음)"
-    lprev, rprev = left[-2], right[-2]
+    lprev, rprev = left[index - 1], right[index - 1]
     if lprev is None or rprev is None:
         return False, f"{label} (직전 값 없음)"
 
@@ -430,37 +511,38 @@ def _window_series(candles: Sequence[Candle], period: int, high: bool) -> list[f
 
 def _vb_target_series(candles: Sequence[Candle], k: float) -> list[float | None]:
     """봉마다 '그날 시가 + 전일 변동폭 × k'를 계산한다."""
-    # 날짜별 (첫 시가, 고가, 저가)를 앞에서부터 누적한다.
-    day_open: dict[str, float] = {}
-    day_high: dict[str, float] = {}
-    day_low: dict[str, float] = {}
-    order: list[str] = []
+    # 날짜 판정은 봉당 한 번만 한다. 예전에는 kst_date(문자열 포맷팅)를
+    # 봉마다 두 번씩 불렀는데, 프로파일링에서 그 strftime 하나가 전체
+    # 실행 시간의 68%였다.
+    days = [c.kst_day for c in candles]
 
-    for candle in candles:
-        day = candle.kst_date
+    day_open: dict[int, float] = {}
+    day_high: dict[int, float] = {}
+    day_low: dict[int, float] = {}
+    prev_day: dict[int, int] = {}
+    last_day: int | None = None
+
+    for candle, day in zip(candles, days, strict=True):
         if day not in day_open:
             day_open[day] = candle.open
             day_high[day] = candle.high
             day_low[day] = candle.low
-            order.append(day)
+            prev_day[day] = last_day if last_day is not None else day
+            last_day = day
         else:
-            day_high[day] = max(day_high[day], candle.high)
-            day_low[day] = min(day_low[day], candle.low)
+            if candle.high > day_high[day]:
+                day_high[day] = candle.high
+            if candle.low < day_low[day]:
+                day_low[day] = candle.low
 
-    index = {day: i for i, day in enumerate(order)}
     out: list[float | None] = []
-    for candle in candles:
-        day = candle.kst_date
-        position = index[day]
-        if position == 0:
-            out.append(None)  # 전일 데이터가 없다
-            continue
-        prev = order[position - 1]
-        prev_range = day_high[prev] - day_low[prev]
-        if prev_range <= 0:
+    for day in days:
+        prev = prev_day[day]
+        if prev == day:  # 첫날은 전일이 없다
             out.append(None)
             continue
-        out.append(day_open[day] + prev_range * k)
+        prev_range = day_high[prev] - day_low[prev]
+        out.append(day_open[day] + prev_range * k if prev_range > 0 else None)
     return out
 
 

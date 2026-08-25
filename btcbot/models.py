@@ -42,8 +42,18 @@ class Candle:
 
     @property
     def kst_date(self) -> str:
-        """봉이 속한 KST 날짜 (YYYY-MM-DD). 업비트 일봉 경계와 맞춘다."""
+        """봉이 속한 KST 날짜 (YYYY-MM-DD). 사람이 읽는 용도."""
         return self.ts.astimezone(KST).strftime("%Y-%m-%d")
+
+    @property
+    def kst_day(self) -> int:
+        """KST 날짜를 정수 하나로. '같은 날인가'만 볼 때 쓴다.
+
+        kst_date는 타임존 변환과 문자열 포맷팅을 하느라 비싸다. 봉마다
+        부르는 코드에서는 그게 백테스트 전체 시간을 좌우한다(프로파일링에서
+        strftime 하나가 68%를 차지했다). 이건 산술 연산 두 번이다.
+        """
+        return int((self.ts.timestamp() + 32400) // 86400)
 
     @property
     def range(self) -> float:

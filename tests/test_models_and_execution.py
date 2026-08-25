@@ -147,3 +147,41 @@ def test_simulated_requires_mark_before_use():
     broker = SimulatedBroker("KRW-BTC", cash=1_000)
     with pytest.raises(RuntimeError):
         broker.snapshot()
+
+
+# ------------------------------------------------- 큰 계좌에서의 부동소수 오차
+def test_full_cash_buy_works_at_any_account_size():
+    """계좌가 커지면 float 오차가 고정 허용치(1e-6)를 넘는다.
+
+    실제로 백테스트 도중 자산이 100억을 넘자 '잔고 부족: 필요 X, 보유 X'
+    (같은 금액인데 거부)가 나면서 거래가 막혔다.
+    """
+    from btcbot.exchange.base import OrderRejected
+
+    for cash in (1_234_567.89, 23_855_793_146.13, 2_477_753_057_752.31, 9.9e14):
+        for price in (41_234_567.13, 39_876_543.21, 137.7):
+            broker = SimulatedBroker("KRW-BTC", cash=cash, fee_rate=0.0005, slippage=0.0005)
+            broker.mark(TS, price)
+            try:
+                fill = broker.market_buy(cash)
+            except OrderRejected as exc:  # pragma: no cover - 회귀 시에만
+                pytest.fail(f"보유 {cash:,.2f} @ {price:,.2f}: {exc}")
+            assert fill is not None
+            assert broker.cash >= 0
+
+
+def test_tolerance_tracks_float_precision():
+    from btcbot.exchange.simulated import _tolerance
+
+    # 작은 금액에서는 최소값을 유지하고, 커지면 같이 커진다
+    assert _tolerance(1_000_000) == pytest.approx(1e-6)
+    assert _tolerance(1e12) > _tolerance(1e9) > 0
+    # 그래도 '의미 있는 금액'을 놓칠 만큼 커지지는 않는다
+    assert _tolerance(1e12) < 1.0
+
+
+def test_oversell_is_still_rejected():
+    """허용치를 늘렸다고 진짜 논리 오류까지 통과시키면 안 된다."""
+    position = Position("KRW-BTC", volume=1.0, avg_price=100.0)
+    with pytest.raises(ValueError):
+        position.apply(Fill("KRW-BTC", Side.SELL, price=100, volume=2.0, fee=0, ts=TS))

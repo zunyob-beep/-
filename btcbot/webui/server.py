@@ -527,7 +527,9 @@ def make_handler(state: AppState):
             name = "index.html" if path in ("/", "") else path.lstrip("/")
             target = (STATIC_DIR / name).resolve()
             # 경로 탈출 방지: static 폴더 밖은 절대 내보내지 않는다.
-            if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+            # 문자열 startswith로 비교하면 'static_secret' 같은 형제 폴더가
+            # 접두사만으로 통과한다. 경로 단위로 비교해야 한다.
+            if not target.is_relative_to(STATIC_DIR.resolve()) or not target.is_file():
                 self.send_error(404, "Not Found")
                 return
 

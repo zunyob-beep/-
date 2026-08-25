@@ -39,6 +39,22 @@ class Strategy(ABC):
     def decide(self, candles: Sequence[Candle]) -> Signal:
         """마지막 봉 기준으로 목표 비중을 결정한다."""
 
+    def prepare(self, candles: Sequence[Candle]) -> None:
+        """백테스트 시작 전에 한 번 불린다. 미리 계산해둘 게 있으면 여기서.
+
+        백테스트는 `decide()`를 봉 개수만큼 부르는데, 매번 지표를 처음부터
+        다시 계산하면 전체가 O(n^2)이 된다. 여기서 미리 계산해두면 O(n)이다.
+
+        **중요**: 여기서 받는 `candles`에는 미래 봉이 들어있다. 지표는
+        인과적(i번째 값이 i 이전 봉에만 의존)이어야만 미리 계산한 값을
+        써도 미래를 훔쳐보지 않는다. 인과적이지 않은 지표를 추가한다면
+        이 최적화를 쓰면 안 된다.
+
+        라이브에서는 부르지 않는다 — 거기서는 봉마다 한 번씩만 판단하므로
+        미리 계산할 이유가 없다.
+        """
+        return  # 기본은 아무것도 안 함 (선택적 훅)
+
     def describe(self) -> str:
         args = ", ".join(f"{k}={v}" for k, v in sorted(self.params.items()))
         return f"{self.name}({args})"

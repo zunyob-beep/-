@@ -91,13 +91,16 @@
             <input type="text" id="specLabel" placeholder="예: 나의 RSI 전략">
           </label>
           <label class="field">
-            <span>매수 비중</span>
-            <select id="specWeight">
-              <option value="1">전액 (100%)</option>
-              <option value="0.75">75%</option>
-              <option value="0.5">절반 (50%)</option>
-              <option value="0.25">25%</option>
-            </select>
+            <span>매수 비중 (총자산 대비)</span>
+            <input type="number" id="specWeight" value="1" min="0.01" max="1" step="0.05"
+                   list="weightPresets">
+            <datalist id="weightPresets">
+              <option value="1" label="전액"></option>
+              <option value="0.75"></option>
+              <option value="0.5" label="절반"></option>
+              <option value="0.25"></option>
+            </datalist>
+            <span class="muted">1 = 전액, 0.5 = 절반</span>
           </label>
         </div>
         <label class="field">

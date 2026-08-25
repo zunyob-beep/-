@@ -109,11 +109,18 @@ python -m btcbot backtest --strategy rule -p spec_file=my.json
 실전을 고르면 손절·일일 손실 한도·최대 낙폭 같은 보호장치가 자동으로 채워지고,
 확인란에 체크해야만 시작됩니다.
 
-화면에서 만든 전략은 터미널에서도 그대로 쓸 수 있습니다:
+화면에서 만든 전략은 터미널에서도 쓸 수 있습니다. 단 `spec_file`은 **전략 하나**를
+담은 파일이어야 합니다(`strategies_saved.json`은 여러 개를 담은 목록이라 그대로는 안 됩니다):
 
 ```bash
-python -m btcbot backtest --strategy rule -p spec_file=strategies_saved.json
+# 저장한 목록에서 원하는 전략 하나만 꺼내기
+python -c "import json;d=json.load(open('strategies_saved.json'));\
+json.dump(next(s for s in d if s['label']=='내 전략'),open('my.json','w'),ensure_ascii=False)"
+
+python -m btcbot backtest --strategy rule -p spec_file=my.json
 ```
+
+`describe` 명령의 `--save`는 처음부터 이 형식으로 저장합니다.
 
 > 이 서버는 **내 컴퓨터에서만(127.0.0.1)** 열립니다. 인터넷에 노출되지 않으므로
 > API 키가 밖으로 나가지 않습니다. 외부에 공개하지 마세요 — 남이 내 계좌로
@@ -450,7 +457,7 @@ btcbot/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest            # 280개 테스트, 네트워크 불필요
+python -m pytest            # 312개 테스트, 네트워크 불필요
 python -m ruff check btcbot tests
 ```
 

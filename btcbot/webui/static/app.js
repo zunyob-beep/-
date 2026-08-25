@@ -189,9 +189,14 @@ async function refreshChart() {
  */
 function fitCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
-  // CSS가 아직 적용되지 않은 순간을 대비해 속성값을 마지막 보루로 둔다.
-  const h = canvas.clientHeight || Number(canvas.getAttribute('height')) || 300;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+
+  // 숨겨진 탭 안에 있으면 두 값이 0이다. 여기서 height 속성 같은 걸로
+  // 대신 채우면 배율이 다시 누적된다(캔버스가 화면 밖까지 늘어남).
+  // 안 보이는 캔버스는 그릴 이유도 없으니 그냥 건너뛴다 — 탭을 열 때
+  // 다시 그린다.
+  if (w <= 0 || h <= 0) return null;
 
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
@@ -205,8 +210,9 @@ function fitCanvas(canvas) {
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function drawCandles() {
-  const canvas = $('priceChart');
-  const { ctx, w, h } = fitCanvas(canvas);
+  const fitted = fitCanvas($('priceChart'));
+  if (!fitted) return;              // 안 보이는 상태 — 탭을 열 때 다시 그린다
+  const { ctx, w, h } = fitted;
   const candles = state.candles;
   if (!candles.length) return;
 
@@ -316,9 +322,10 @@ function drawTradeMarkers(ctx, x, y) {
 }
 
 function drawEquity(curve) {
-  const canvas = $('equityChart');
-  const { ctx, w, h } = fitCanvas(canvas);
   if (!curve || curve.length < 2) return;
+  const fitted = fitCanvas($('equityChart'));
+  if (!fitted) return;              // 안 보이는 상태 — 탭을 열 때 다시 그린다
+  const { ctx, w, h } = fitted;
 
   const padL = 8, padR = 62, padT = 12, padB = 20;
   const plotW = w - padL - padR, plotH = h - padT - padB;
@@ -499,7 +506,9 @@ function collectSpec() {
   const spec = {
     label: $('specLabel').value.trim(),
     note: $('specNote').value.trim(),
-    target_weight: Number($('specWeight').value),
+    // 빈 칸이나 이상한 값이 0으로 흘러가면 "비중은 0 초과" 오류만 뜨고
+    // 사용자는 이유를 모른다. 범위를 벗어나면 1로 되돌린다.
+    target_weight: _weight($('specWeight').value),
   };
   ['entry', 'exit'].forEach((group) => {
     const box = $(group === 'entry' ? 'entryConditions' : 'exitConditions');
@@ -509,6 +518,11 @@ function collectSpec() {
     spec[group] = { [join]: rows };
   });
   return spec;
+}
+
+function _weight(raw) {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 && value <= 1 ? value : 1;
 }
 
 function describeOperand(operand) {
@@ -1072,6 +1086,8 @@ function switchTab(name) {
   document.querySelectorAll('.tab-body').forEach((b) => {
     b.classList.toggle('active', b.id === 'tab-' + name);
   });
+  // 숨어 있는 동안에는 그리지 않으므로, 탭을 열면 반드시 다시 그린다.
+  drawCandles();
   if (name === 'backtest' && state.backtest) drawEquity(state.backtest.equity_curve);
 }
 

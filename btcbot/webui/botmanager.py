@@ -31,10 +31,6 @@ from ..strategies.base import get_strategy
 log = logging.getLogger(__name__)
 
 
-class StopRequested(Exception):
-    """사용자가 중지를 눌렀을 때 루프를 빠져나오기 위한 신호."""
-
-
 @dataclass
 class LogEntry:
     ts: str
@@ -210,6 +206,17 @@ class BotManager:
                 lookback=max(strategy.warmup + 5, 30),
             )
 
+            # 봉이 모자라면 전략이 매 봉 "warmup"만 내놓고 영원히 거래하지
+            # 않는다. 오류도 안 나므로 사용자는 봇이 도는 줄 안다. 시작 전에
+            # 한 번 확인해서 화면에 이유를 띄운다.
+            history = feed.fetch_history()
+            if len(history) < strategy.warmup:
+                raise RuntimeError(
+                    f"이 전략은 판단을 시작하는 데 봉 {strategy.warmup}개가 필요한데 "
+                    f"{len(history)}개만 받을 수 있습니다. 봉 간격을 더 짧게 잡거나, "
+                    "전략의 기간 설정(이동평균 기간 등)을 줄이세요."
+                )
+
             self._engine = Engine(
                 feed=feed,
                 broker=broker,
@@ -227,26 +234,14 @@ class BotManager:
                 settings.interval,
                 strategy.describe(),
             )
-            self._loop(self._engine)
+            # 루프는 Engine 안에 하나만 있다. 여기서 다시 구현하면 거래소
+            # 오류 허용 같은 로직이 빠져 UI 봇만 조용히 약해진다.
+            self._engine.run(should_stop=self._stop.is_set)
             log.info("봇을 멈췄습니다. 포지션은 그대로 유지됩니다.")
 
-        except StopRequested:
-            log.info("봇을 멈췄습니다. 포지션은 그대로 유지됩니다.")
         except Exception as exc:  # 스레드에서 죽으면 화면에 이유가 보여야 한다
             self._error = str(exc)
             log.error("봇이 멈췄습니다: %s", exc)
-
-    def _loop(self, engine: Engine) -> None:
-        """Engine.run()을 대신한다. 봉 사이마다 중지 요청을 확인한다."""
-        for bar in engine.feed:
-            if self._stop.is_set():
-                raise StopRequested
-            engine.step(bar)
-            if engine.risk.state.halted:
-                log.critical("리스크 정지: %s", engine.risk.state.halt_reason)
-                return
-            if self._stop.is_set():
-                raise StopRequested
 
     def _make_broker(
         self,
