@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import Any
 
@@ -507,6 +508,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n중단했습니다.")
         return 130
+    except BrokenPipeError:
+        # `python -m btcbot strategies | head` 처럼 읽는 쪽이 먼저 닫은 경우.
+        # 파이썬이 종료하면서 stdout을 한 번 더 flush하다 같은 오류를 다시
+        # 내므로, stdout을 devnull로 바꿔두고 조용히 끝낸다.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141  # 128 + SIGPIPE
     except (RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
         log.error("%s", exc)
         return 1

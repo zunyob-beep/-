@@ -1,5 +1,7 @@
 # btcbot — 업비트 비트코인 자동매매 봇
 
+[![CI](https://github.com/zunyob-beep/-/actions/workflows/ci.yml/badge.svg)](https://github.com/zunyob-beep/-/actions/workflows/ci.yml)
+
 백테스트 · 페이퍼 트레이딩 · 실거래가 **같은 엔진 위에서** 돌아가는 자동매매 봇입니다.
 외부 의존성은 `requests` 하나뿐입니다.
 
@@ -338,9 +340,11 @@ btcbot/
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 152개 테스트, 네트워크 불필요
-ruff check btcbot tests
+python -m pytest            # 176개 테스트, 네트워크 불필요
+python -m ruff check btcbot tests
 ```
+
+CI는 Python 3.10~3.13에서 테스트와 린트를 돌립니다(`.github/workflows/ci.yml`).
 
 테스트는 전부 오프라인입니다. 업비트 API는 가짜 세션으로 흉내내고, JWT 서명은 검증 로직을
 따로 재현해 대조합니다 — 실거래 중 401을 받고 나서 디버깅하지 않기 위해서입니다.
