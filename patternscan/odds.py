@@ -30,7 +30,7 @@ import numpy as np
 from .models import HORIZONS, Series, timeframe_label, timeframe_length
 from .scan import DEFAULT_FEE, DEFAULT_SIMILARITY, DEFAULT_SLIPPAGE, round_trip_cost
 from .search import distances_within
-from .shape import is_flat, linearity, similarity_to_distance
+from .shape import is_flat, linearity, normalize_window, similarity_to_distance
 from .stats import wilson_interval
 
 #: 이보다 표본이 적으면 확률을 말하지 않는다.
@@ -96,6 +96,129 @@ class Odds:
         return not (low <= self.base_up <= high)
 
 
+@dataclass
+class Example:
+    """실제 사례 하나 — 확률 숫자를 눈으로 확인할 수 있게.
+
+    승률만 보여주면 '정말 닮았나'를 확인할 방법이 없다. 실제로 겹쳐 보게
+    해야 사용자가 스스로 판단할 수 있다.
+    """
+
+    end_index: int
+    at: str  # 그 모양이 끝난 시각 (KST)
+    similarity: float
+    outcome: float  # 지평만큼 뒤의 수익률
+    shape: list[float]  # 정규화한 모양 (지금 모양과 겹쳐 그리기 위해)
+    after: list[float]  # 직후 경로 (진입 시점 0에서 시작)
+
+
+@dataclass
+class Matches:
+    """찾은 과거 구간들. 확률과 사례가 모두 이걸 쓴다."""
+
+    ends: np.ndarray
+    distances: np.ndarray
+    query: np.ndarray
+    limit: int  # 기준 승률을 잴 수 있는 범위 (미래 참조 없음)
+
+
+def find_matches(
+    series: Series,
+    length: int,
+    *,
+    query_end: int | None = None,
+    max_horizon: int = max(HORIZONS),
+    similarity: float = DEFAULT_SIMILARITY,
+    top_k: int = 100,
+) -> Matches | None:
+    """`length`개 모양과 닮은 과거 구간을 찾는다 (미래 참조 없음)."""
+    closes = series.close
+    n = len(series)
+    if query_end is None:
+        query_end = n - 1
+
+    query_start = query_end - length + 1
+    last_allowed = query_start - 1 - max_horizon
+    if query_start < 0 or last_allowed < length - 1:
+        return None
+
+    query = closes[query_start : query_end + 1]
+    if is_flat(query):
+        return None
+
+    usable = closes[: last_allowed + 1]
+    threshold = similarity_to_distance(similarity)
+    positions, distances = distances_within(query, usable, length, threshold)
+    if positions.size == 0:
+        return None
+
+    # 빠진 봉이 있는 구간은 버린다
+    step = int(timeframe_length(series.timeframe).total_seconds())
+    ends = positions + length - 1
+    intact = (series.ts[ends] - series.ts[positions]) == step * (length - 1)
+    ends, distances = ends[intact], distances[intact]
+    if ends.size == 0:
+        return None
+
+    # 가까운 것부터, 겹치지 않게
+    order = np.argsort(distances, kind="stable")
+    chosen: list[int] = []
+    kept: list[float] = []
+    for index in order:
+        end = int(ends[index])
+        if any(abs(end - other) < length for other in chosen):
+            continue
+        chosen.append(end)
+        kept.append(float(distances[index]))
+        if len(chosen) >= top_k:
+            break
+
+    return Matches(
+        ends=np.array(chosen, dtype=np.int64),
+        distances=np.array(kept, dtype=np.float64),
+        query=query,
+        limit=last_allowed + 1,
+    )
+
+
+def examples_for(
+    series: Series,
+    matches: Matches,
+    horizon: int,
+    *,
+    cost: float,
+    count: int = 3,
+) -> tuple[list[Example], list[Example]]:
+    """올랐던 사례와 떨어졌던 사례를, **가장 닮은 것부터** 각각 `count`개.
+
+    닮은 정도 순으로 고르는 이유: 사용자가 보고 싶은 건 '가장 비슷했던
+    과거가 어떻게 됐나'이지, '가장 많이 오른 과거'가 아니다. 후자를 보여주면
+    실제보다 좋아 보인다.
+    """
+    closes = series.close
+    length = matches.query.size
+    returns = closes[matches.ends + horizon] / closes[matches.ends] - 1.0
+
+    def build(index: int) -> Example:
+        end = int(matches.ends[index])
+        window = closes[end - length + 1 : end + 1]
+        entry = float(closes[end])
+        after = closes[end : end + horizon + 1] / entry - 1.0
+        return Example(
+            end_index=end,
+            at=series.kst_at(end).strftime("%Y-%m-%d %H:%M"),
+            similarity=1.0 - (float(matches.distances[index]) ** 2) / 2.0,
+            outcome=float(returns[index]),
+            shape=[round(v, 4) for v in normalize_window(window).tolist()],
+            after=[round(float(v), 6) for v in after],
+        )
+
+    # matches는 이미 닮은 순이므로 앞에서부터 고르면 된다
+    rose = [build(i) for i in range(returns.size) if returns[i] > cost][:count]
+    fell = [build(i) for i in range(returns.size) if returns[i] < 0.0][:count]
+    return rose, fell
+
+
 def _base_rates(closes: np.ndarray, limit: int, horizon: int, cost: float) -> tuple[float, float]:
     end = limit - horizon
     if end <= 0:
@@ -124,56 +247,22 @@ def odds_for(
     시작하기 전에 끝나야 한다.
     """
     closes = series.close
-    n = len(series)
-    if query_end is None:
-        query_end = n - 1
     cost = round_trip_cost(fee, slippage)
-    max_h = max(horizons)
-
-    query_start = query_end - length + 1
-    last_allowed = query_start - 1 - max_h
-    if query_start < 0 or last_allowed < length - 1:
+    matches = find_matches(
+        series, length, query_end=query_end, max_horizon=max(horizons),
+        similarity=similarity, top_k=top_k,
+    )
+    if matches is None:
         return []
 
-    query = closes[query_start : query_end + 1]
-    if is_flat(query):
-        return []
-
-    usable = closes[: last_allowed + 1]
-    threshold = similarity_to_distance(similarity)
-    positions, distances = distances_within(query, usable, length, threshold)
-    if positions.size == 0:
-        return []
-
-    # 빠진 봉이 있는 구간은 버린다
-    step = int(timeframe_length(series.timeframe).total_seconds())
-    ends = positions + length - 1
-    intact = (series.ts[ends] - series.ts[positions]) == step * (length - 1)
-    ends, distances = ends[intact], distances[intact]
-    if ends.size == 0:
-        return []
-
-    # 가까운 것부터, 겹치지 않게
-    order = np.argsort(distances, kind="stable")
-    chosen: list[int] = []
-    kept: list[float] = []
-    for index in order:
-        end = int(ends[index])
-        if any(abs(end - other) < length for other in chosen):
-            continue
-        chosen.append(end)
-        kept.append(float(distances[index]))
-        if len(chosen) >= top_k:
-            break
-
-    picked = np.array(chosen, dtype=np.int64)
-    worst_distance = max(kept) if kept else float("nan")
-    shape_linearity = linearity(query)
+    picked = matches.ends
+    worst_distance = float(matches.distances.max())
+    shape_linearity = linearity(matches.query)
 
     out: list[Odds] = []
     for horizon in horizons:
         returns = closes[picked + horizon] / closes[picked] - 1.0
-        base_up, base_beat = _base_rates(closes, last_allowed + 1, horizon, cost)
+        base_up, base_beat = _base_rates(closes, matches.limit, horizon, cost)
         out.append(
             Odds(
                 timeframe=series.timeframe,

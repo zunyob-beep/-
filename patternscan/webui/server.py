@@ -26,17 +26,16 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from ..data import fetch, load_cached
-from ..models import HORIZONS, WINDOW_LENGTHS, Series, timeframe_label
+from ..models import HORIZONS, Series, timeframe_label
+from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
+from ..odds import Odds, examples_for, find_matches, odds_for
 from ..scan import (
     DEFAULT_FEE,
     DEFAULT_SIMILARITY,
     DEFAULT_SLIPPAGE,
-    ScanResult,
     round_trip_cost,
-    scan_all,
 )
 from ..shape import normalize_window
-from ..stats import MIN_SAMPLES, Finding, Verdict, decide, evaluate, qualifies
 from ..upbit import UpbitClient, UpbitError
 
 log = logging.getLogger(__name__)
@@ -70,24 +69,19 @@ FAVICON = (
 # ---------------------------------------------------------------- 분석 상태
 @dataclass
 class Analysis:
-    """마지막으로 끝난 분석 한 건. 화면이 되묻는 것들에 답하려면 통째로 들고 있어야 한다."""
+    """마지막으로 끝난 계산 한 건."""
 
     market: str
-    scale: str
     cost: float
     similarity: float
+    length: int
     series: dict[str, Series]
-    results: list[ScanResult]
-    findings: list[Finding]
-    verdict: Verdict
-    #: 시세가 없어 판정에서 빠진 봉 간격. 조용히 빼면 3종을 다 본 줄 안다.
+    odds: list[Odds]
+    #: 시세가 없어 빠진 봉 간격. 조용히 빼면 3종을 다 본 줄 안다.
     missing: tuple[str, ...] = ()
-
-    def result_for(self, timeframe: str, length: int) -> ScanResult | None:
-        for result in self.results:
-            if result.timeframe == timeframe and result.length == length:
-                return result
-        return None
+    #: 봉 간격별로 찾아둔 매치. 사례를 볼 때마다 다시 찾으면 몇 초씩 걸리고,
+    #: 그동안 브라우저가 요청을 취소해 서버에 BrokenPipe가 쌓인다.
+    matches: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -172,10 +166,15 @@ def _do_fetch(state: State, market: str, refresh: bool) -> None:
     state.job.update(message="시세 수집을 마쳤습니다", done=0, total=0)
 
 
-def _do_scan(
-    state: State, market: str, similarity: float, fee: float, slippage: float,
-    scale: str, top_k: int, fdr: float,
+def _do_odds(
+    state: State, market: str, similarity: float, fee: float, slippage: float, length: int,
 ) -> None:
+    """확률만 계산한다.
+
+    예전에는 여기서 285개 조합 전체 판정(scan_all)을 돌렸는데, 화면이
+    확률 중심으로 바뀐 뒤로는 쓰지도 않으면서 몇 분씩 잡아먹고 있었다.
+    확률 계산은 빠른 탐색(search.py)을 타므로 초 단위로 끝난다.
+    """
     state.job.update(message="캐시에서 시세를 읽는 중…")
     series = {}
     for timeframe in DEFAULT_COUNT:
@@ -187,67 +186,59 @@ def _do_scan(
         raise RuntimeError("시세가 없습니다. 먼저 '시세 받기'를 눌러 주세요.")
 
     cost = round_trip_cost(fee, slippage)
-    total = len(series) * len(WINDOW_LENGTHS)
-    state.job.update(message="과거에서 같은 모양을 찾는 중…", done=0, total=total)
+    total = len(series)
+    state.job.update(message="닮은 과거를 찾는 중…", done=0, total=total)
 
-    results: list[ScanResult] = []
-    done = 0
-    for one in series.values():
-        chunk = scan_all(
-            {one.timeframe: one}, WINDOW_LENGTHS,
-            horizons=HORIZONS, top_k=top_k, similarity=similarity,
-            scale=scale, fee=fee, slippage=slippage,
+    rows: list[Odds] = []
+    found: dict[str, Any] = {}
+    for done, one in enumerate(series.values(), start=1):
+        rows.extend(
+            odds_for(one, length, horizons=HORIZONS, similarity=similarity,
+                     top_k=100, fee=fee, slippage=slippage)
         )
-        results.extend(chunk)
-        done = min(total, done + len(WINDOW_LENGTHS))
-        state.job.update(
-            done=done,
-            message=f"{timeframe_label(one.timeframe)} 분석 완료",
+        matched = find_matches(
+            one, length, max_horizon=max(HORIZONS), similarity=similarity, top_k=100
         )
+        if matched is not None:
+            found[one.timeframe] = matched
+        state.job.update(done=done, message=f"{timeframe_label(one.timeframe)} 완료")
 
-    findings = evaluate(results, fdr=fdr)
-    verdict = decide(findings, fdr=fdr, cost=cost)
     state.publish(
         Analysis(
-            market=market, scale=scale, cost=cost, similarity=similarity,
-            series=series, results=results, findings=findings, verdict=verdict,
+            market=market, cost=cost, similarity=similarity, length=length,
+            series=series, odds=rows, matches=found,
             missing=tuple(tf for tf in DEFAULT_COUNT if tf not in series),
         )
     )
-    state.job.update(message="판정을 마쳤습니다", done=total, total=total)
+    state.job.update(message="계산을 마쳤습니다", done=total, total=total)
 
 
 # ---------------------------------------------------------------- 직렬화
-def _finding_json(finding: Finding, cost: float) -> dict[str, Any]:
+def _odds_json(row: Odds) -> dict[str, Any]:
+    low, high = row.interval
     return {
-        "timeframe": finding.timeframe,
-        "timeframeLabel": timeframe_label(finding.timeframe),
-        "length": finding.length,
-        "horizon": finding.horizon,
-        "label": finding.label,
-        "samples": finding.samples,
-        "up": finding.up,
-        "flat": finding.flat,
-        "down": finding.down,
-        "upRate": finding.up_rate,
-        "baseUpRate": finding.base_up_rate,
-        "edge": finding.edge,
-        "meanReturn": finding.mean_return,
-        "medianReturn": finding.median_return,
-        "worst": finding.worst,
-        "pValue": finding.p_value,
-        "qValue": finding.q_value,
-        "ciLow": finding.ci_low,
-        "ciHigh": finding.ci_high,
-        "minSimilarity": _finite(finding.min_similarity),
-        "linearity": finding.query_linearity,
-        "mostlyATrend": finding.mostly_a_trend,
-        "firstHalfRate": finding.first_half_rate,
-        "secondHalfRate": finding.second_half_rate,
-        "holdsInBothHalves": finding.holds_in_both_halves,
-        "significant": finding.significant,
-        "enoughSamples": finding.enough_samples,
-        "qualifies": qualifies(finding, cost),
+        "timeframe": row.timeframe,
+        "timeframeLabel": timeframe_label(row.timeframe),
+        "length": row.length,
+        "horizon": row.horizon,
+        "minutes": row.minutes,
+        "samples": row.samples,
+        "up": row.up,
+        "beatCost": row.beat_cost,
+        "upRate": row.up_rate,
+        "beatRate": row.beat_rate,
+        "baseUp": row.base_up,
+        "baseBeat": row.base_beat,
+        "upEdge": row.up_edge,
+        "beatEdge": row.beat_edge,
+        "ciLow": low,
+        "ciHigh": high,
+        "tellsUsAnything": row.tells_us_anything,
+        "minSimilarity": _finite(row.min_similarity),
+        "linearity": row.query_linearity,
+        "medianReturn": row.median_return,
+        "best": row.best,
+        "worst": row.worst,
     }
 
 
@@ -258,7 +249,6 @@ def _finite(value: float) -> float | None:
 
 
 def _analysis_json(analysis: Analysis) -> dict[str, Any]:
-    verdict = analysis.verdict
     spans = []
     for timeframe, series in analysis.series.items():
         span = series.span
@@ -270,28 +260,57 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             "from": span[0].isoformat() if span else None,
             "to": span[1].isoformat() if span else None,
         })
-
-    skipped = sum(1 for r in analysis.results if r.note)
-    thin = sum(1 for r in analysis.results if not r.note and r.sample_size < MIN_SAMPLES)
-
     return {
         "market": analysis.market,
         "cost": analysis.cost,
         "similarity": analysis.similarity,
-        "minSamples": MIN_SAMPLES,
+        "oddsLength": analysis.length,
+        "minSamples": ODDS_MIN_SAMPLES,
         "series": spans,
-        "coverage": {"skipped": skipped, "thin": thin, "total": len(analysis.results)},
         "missing": [
             {"timeframe": tf, "label": timeframe_label(tf)} for tf in analysis.missing
         ],
-        "verdict": {
-            "enter": verdict.enter,
-            "headline": verdict.headline,
-            "reasons": verdict.reasons,
-            "tested": verdict.tested,
-            "significant": verdict.significant,
-        },
-        "findings": [_finding_json(f, analysis.cost) for f in analysis.findings if f.enough_samples],
+        "odds": [_odds_json(r) for r in analysis.odds],
+    }
+
+
+def _examples_json(
+    analysis: Analysis, timeframe: str, horizon: int, count: int = 3
+) -> dict[str, Any]:
+    """가장 닮은 과거 사례를, 올랐던 쪽과 떨어졌던 쪽에서 각각 몇 개.
+
+    확률 숫자만 보면 '정말 닮았나'를 확인할 방법이 없다. 실제 사례를
+    겹쳐 보여줘서 사용자가 직접 판단하게 한다.
+    """
+    series = analysis.series.get(timeframe)
+    if series is None:
+        raise KeyError(f"{timeframe} 시세가 없습니다")
+
+    matches = analysis.matches.get(timeframe)
+    if matches is None:
+        return {"timeframe": timeframe, "rose": [], "fell": [], "query": [], "horizon": horizon}
+
+    rose, fell = examples_for(series, matches, horizon, cost=analysis.cost, count=count)
+
+    def pack(example: Any) -> dict[str, Any]:
+        return {
+            "at": example.at,
+            "similarity": round(example.similarity, 4),
+            "outcome": example.outcome,
+            "shape": example.shape,
+            "after": example.after,
+        }
+
+    return {
+        "timeframe": timeframe,
+        "timeframeLabel": timeframe_label(timeframe),
+        "length": analysis.length,
+        "horizon": horizon,
+        "cost": analysis.cost,
+        "query": [round(v, 4) for v in normalize_window(matches.query).tolist()],
+        "queryAt": series.kst_at(len(series) - 1).strftime("%Y-%m-%d %H:%M"),
+        "rose": [pack(e) for e in rose],
+        "fell": [pack(e) for e in fell],
     }
 
 
@@ -401,10 +420,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._static(route[len("/static/") :])
             elif route == "/api/state":
                 self._json(self._state_payload())
-            elif route == "/api/shape":
-                self._shape(parse_qs(url.query))
+            elif route == "/api/examples":
+                self._examples(parse_qs(url.query))
             else:
                 self._error("없는 주소입니다", 404)
+        except (BrokenPipeError, ConnectionResetError):
+            # 사용자가 다음 행을 빨리 누르면 브라우저가 앞 요청을 끊는다.
+            # 정상적인 일이므로 역추적을 화면에 뿌리지 않는다.
+            log.debug("클라이언트가 연결을 끊었습니다: %s", route)
         except KeyError as exc:
             self._error(str(exc), 404)
         except (ValueError, RuntimeError) as exc:
@@ -420,6 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._start_scan(payload)
             else:
                 self._error("없는 주소입니다", 404)
+        except (BrokenPipeError, ConnectionResetError):
+            log.debug("클라이언트가 연결을 끊었습니다: %s", route)
         except (ValueError, RuntimeError) as exc:
             self._error(str(exc), 400)
 
@@ -475,23 +500,21 @@ class Handler(BaseHTTPRequestHandler):
         similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
         fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
         slippage = _number(payload.get("slippage"), DEFAULT_SLIPPAGE, 0.0, 0.1)
-        scale = payload.get("scale") if payload.get("scale") in ("shape", "amplitude") else "shape"
-        top_k = int(_number(payload.get("topK"), 60, 5, 500))
-        fdr = _number(payload.get("fdr"), 0.10, 0.001, 0.5)
+        length = int(_number(payload.get("oddsLength"), 180, 5, 180))
 
         started = self.state.start(
-            "scan", _do_scan, self.state, market, similarity, fee, slippage, scale, top_k, fdr
+            "scan", _do_odds, self.state, market, similarity, fee, slippage, length
         )
         self._json({"started": started, "job": self.state.job.snapshot()})
 
-    def _shape(self, query: dict[str, list[str]]) -> None:
+    def _examples(self, query: dict[str, list[str]]) -> None:
         analysis = self.state.analysis
         if analysis is None:
-            raise KeyError("아직 판정한 결과가 없습니다")
+            raise KeyError("아직 계산한 결과가 없습니다")
         timeframe = (query.get("timeframe") or [""])[0]
-        length = int((query.get("length") or ["0"])[0])
         horizon = int((query.get("horizon") or ["1"])[0])
-        self._json(_shape_json(analysis, timeframe, length, horizon))
+        self._json(_examples_json(analysis, timeframe, horizon))
+
 
 
 def _number(value: Any, default: float, low: float, high: float) -> float:

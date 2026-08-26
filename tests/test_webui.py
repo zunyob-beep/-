@@ -2,8 +2,11 @@
 
 화면은 CLI와 **같은 숫자**를 보여줘야 한다. 화면에서만 계산을 다시 하면
 언젠가 두 결과가 갈라지고, 사용자는 그중 하나를 믿고 돈을 넣는다.
-그래서 서버는 계산을 직접 하지 않고 scan/stats를 그대로 부른다 —
+그래서 서버는 계산을 직접 하지 않고 odds를 그대로 부른다 —
 이 파일은 그게 유지되는지 확인한다.
+
+그리고 확률은 절대 혼자 나가면 안 된다. 평소 확률과 불확실 범위가
+반드시 함께 실려야, 화면이 "56%"를 홀로 띄우는 일이 없다.
 
 네트워크는 타지 않는다. 시세는 전부 임시 폴더의 CSV로 넣는다.
 """
@@ -164,9 +167,9 @@ def test_state_before_any_scan_lists_the_cache(client):
     assert counts["minute1"] == 2500
 
 
-def test_shape_without_an_analysis_is_404(client):
+def test_examples_without_an_analysis_is_404(client):
     with pytest.raises(urllib.error.HTTPError) as exc:
-        client[0].get("/api/shape?timeframe=minute1&length=20&horizon=1")
+        client[0].get("/api/examples?timeframe=minute1&horizon=1")
     assert exc.value.code == 404
 
 
@@ -176,40 +179,39 @@ def test_scan_produces_an_analysis(client):
     analysis = state["analysis"]
     assert analysis is not None
     assert analysis["market"] == "KRW-BTC"
-    assert analysis["verdict"]["headline"]
     assert analysis["cost"] == pytest.approx(0.0014)
     assert analysis["similarity"] == pytest.approx(0.85)
+    assert analysis["odds"]
 
 
 def test_screen_shows_the_same_numbers_as_the_library(client):
-    """화면 숫자는 stats가 내놓은 값 그대로여야 한다."""
+    """화면 숫자는 odds가 내놓은 값 그대로여야 한다."""
     state = _run_scan(client)
     analysis = client[1].analysis
-    shown = {(f["timeframe"], f["length"], f["horizon"]): f for f in state["analysis"]["findings"]}
+    shown = {(r["timeframe"], r["horizon"]): r for r in state["analysis"]["odds"]}
 
-    for finding in analysis.findings:
-        if not finding.enough_samples:
-            continue
-        row = shown[(finding.timeframe, finding.length, finding.horizon)]
-        assert row["upRate"] == pytest.approx(finding.up_rate)
-        assert row["edge"] == pytest.approx(finding.edge)
-        assert row["qValue"] == pytest.approx(finding.q_value)
-        assert row["samples"] == finding.samples
+    for row in analysis.odds:
+        seen = shown[(row.timeframe, row.horizon)]
+        assert seen["upRate"] == pytest.approx(row.up_rate)
+        assert seen["baseUp"] == pytest.approx(row.base_up)
+        assert seen["samples"] == row.samples
+        assert seen["tellsUsAnything"] == row.tells_us_anything
 
 
-def test_thin_combinations_are_not_shown_as_rows(client):
-    """표본이 모자란 조합을 표에 올리면 '승률 100%'가 맨 위에 뜬다."""
+def test_every_probability_ships_with_its_baseline(client):
+    """확률만 보내면 화면이 '56%'를 혼자 띄우게 된다 — 평소가 반드시 따라와야 한다."""
     state = _run_scan(client)
-    analysis = state["analysis"]
-    assert all(f["samples"] >= analysis["minSamples"] for f in analysis["findings"])
-    # 다만 몇 개가 빠졌는지는 숨기지 않고 알려줘야 한다
-    assert analysis["coverage"]["total"] > 0
+    for row in state["analysis"]["odds"]:
+        assert "baseUp" in row and "baseBeat" in row
+        assert "ciLow" in row and "ciHigh" in row
+        assert row["ciLow"] <= row["upRate"] <= row["ciHigh"]
 
 
-def test_random_data_does_not_show_a_buy_signal_on_screen(client):
-    """CLI와 같은 결론이어야 한다 — 합성 무작위 시세다."""
+def test_noise_is_marked_as_indistinguishable(client):
+    """합성 무작위 시세이므로 '평소와 구분됨'이 나오면 안 된다."""
     state = _run_scan(client)
-    assert state["analysis"]["verdict"]["enter"] is False
+    informative = [r for r in state["analysis"]["odds"] if r["tellsUsAnything"]]
+    assert not informative, f"잡음인데 의미있다고 표시된 조합: {len(informative)}개"
 
 
 def test_json_never_contains_nan(client):
@@ -277,7 +279,7 @@ def test_old_analysis_is_still_served_while_a_new_scan_runs(client):
     if during["job"]["running"]:
         # 옛 판정이 그대로 응답에 실린다. 번호가 같으므로 화면은 '이전 것'임을 안다.
         assert during["analysisId"] == before["analysisId"]
-        assert during["analysis"]["verdict"]["headline"] == before["analysis"]["verdict"]["headline"]
+        assert during["analysis"]["odds"] == before["analysis"]["odds"]
 
     for _ in range(600):
         if not state.job.snapshot()["running"]:
@@ -285,40 +287,39 @@ def test_old_analysis_is_still_served_while_a_new_scan_runs(client):
         threading.Event().wait(0.05)
 
 
-def test_shape_payload_matches_the_request(client):
+def test_examples_come_from_both_outcomes(client):
+    """올랐던 사례와 떨어졌던 사례를 함께 보여줘야 한쪽만 보고 속지 않는다."""
     _run_scan(client)
-    finding = client[0].get_json("/api/state")["analysis"]["findings"][0]
+    row = client[0].get_json("/api/state")["analysis"]["odds"][0]
     data = client[0].get_json(
-        f"/api/shape?timeframe={finding['timeframe']}"
-        f"&length={finding['length']}&horizon={finding['horizon']}"
+        f"/api/examples?timeframe={row['timeframe']}&horizon={row['horizon']}"
     )
-    assert data["length"] == finding["length"]
-    assert len(data["query"]) == finding["length"]
-    assert data["shown"] <= webui.CHART_MATCHES
-    for shape in data["shapes"]:
-        assert len(shape["values"]) == finding["length"]
-        assert shape["similarity"] >= 0.85 - 1e-6
+    assert data["query"], "지금 모양이 없습니다"
+    for example in data["rose"]:
+        assert example["outcome"] > data["cost"]
+        assert len(example["shape"]) == data["length"]
+        assert len(example["after"]) == row["horizon"] + 1
+        assert example["after"][0] == 0.0
+    for example in data["fell"]:
+        assert example["outcome"] < 0.0
 
 
-def test_after_paths_start_at_zero_and_have_one_point_per_bar(client):
-    """직후 경로는 진입 시점(0%)에서 출발해야 비교가 된다."""
+def test_examples_are_the_most_similar_not_the_most_profitable(client):
+    """가장 많이 오른 사례를 보여주면 실제보다 좋아 보인다."""
     _run_scan(client)
-    finding = client[0].get_json("/api/state")["analysis"]["findings"][0]
+    row = client[0].get_json("/api/state")["analysis"]["odds"][0]
     data = client[0].get_json(
-        f"/api/shape?timeframe={finding['timeframe']}"
-        f"&length={finding['length']}&horizon={finding['horizon']}"
+        f"/api/examples?timeframe={row['timeframe']}&horizon={row['horizon']}"
     )
-    for path in data["paths"]:
-        assert path["values"][0] == 0.0
-        assert len(path["values"]) == finding["horizon"] + 1
-        # 'won' 표시는 마지막 값이 왕복 비용을 넘겼는지와 일치해야 한다
-        assert path["won"] == (path["values"][-1] > data["cost"])
+    for group in ("rose", "fell"):
+        sims = [e["similarity"] for e in data[group]]
+        assert sims == sorted(sims, reverse=True), f"{group}이 유사도 순이 아닙니다"
 
 
-def test_shape_for_an_unknown_combination_is_404(client):
+def test_examples_for_an_unknown_timeframe_is_404(client):
     _run_scan(client)
     with pytest.raises(urllib.error.HTTPError) as exc:
-        client[0].get_json("/api/shape?timeframe=minute7&length=20&horizon=1")
+        client[0].get_json("/api/examples?timeframe=minute7&horizon=1")
     assert exc.value.code == 404
 
 
@@ -343,7 +344,7 @@ def test_garbage_body_is_rejected_with_a_message(client):
 def test_scan_without_any_cache_reports_it(tmp_path):
     """시세가 없을 때 조용히 빈 화면을 주면 안 된다."""
     state = webui.State("KRW-BTC", str(tmp_path))
-    state.start("scan", webui._do_scan, state, "KRW-BTC", 0.85, 0.0005, 0.0002, "shape", 40, 0.1)
+    state.start("scan", webui._do_odds, state, "KRW-BTC", 0.85, 0.0005, 0.0002, 180)
     for _ in range(200):
         if not state.job.snapshot()["running"]:
             break
