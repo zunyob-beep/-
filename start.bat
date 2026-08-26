@@ -46,7 +46,15 @@ if not exist "data\%MARKET%_minute1.csv" (
   echo   중간에 끊겨도 받은 만큼 저장되니, 다시 실행하면 이어서 받습니다.
   echo.
 )
+rem 시세를 못 받아도 화면은 연다. 받아둔 것으로도 돌아가고,
+rem 아무것도 없으면 화면이 무엇을 하면 되는지 안내한다.
 python -m patternscan fetch --market "%MARKET%" --count %COUNT%
+if errorlevel 1 (
+  echo.
+  echo   시세를 받지 못했습니다. 그래도 화면은 엽니다.
+  echo   어디가 막혔는지 보려면 다른 창에서: python -m patternscan doctor
+  echo.
+)
 
 set "HOSTARG="
 if "%~1"=="--lan" set "HOSTARG=--host 0.0.0.0"
