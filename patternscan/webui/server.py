@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import webbrowser
 from dataclasses import dataclass, field
@@ -612,6 +613,26 @@ def _number(value: Any, default: float, low: float, high: float) -> float:
     return min(high, max(low, number))
 
 
+def phone_address(port: int, host: str) -> tuple[str | None, str]:
+    """다른 기기(아이패드·폰)에서 열 주소와, 그 주소의 성격.
+
+    "홈 화면에 어떤 주소를 추가하면 되냐"가 매번 막히는 자리였다. 답이
+    실행 방법마다 다른데(Codespaces냐, 집 와이파이냐, 이 컴퓨터뿐이냐)
+    화면에는 늘 127.0.0.1만 찍혀 있었다. **그 주소는 아이패드에서 열면
+    아이패드 자신을 가리키므로 절대 안 된다.**
+    """
+    codespace = os.environ.get("CODESPACE_NAME")
+    domain = os.environ.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    if codespace and domain:
+        # Codespaces는 포트를 https로 넘겨준다. 이 주소는 코드스페이스를
+        # 껐다 켜도 그대로라, 홈 화면에 두기에 가장 안전하다.
+        return f"https://{codespace}-{port}.{domain}/", "codespace"
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return None, "local-only"
+    lan = _lan_address()
+    return (f"http://{lan}:{port}/", "lan") if lan else (None, "lan-unknown")
+
+
 def _lan_address() -> str | None:
     """같은 네트워크에서 이 컴퓨터를 가리키는 주소. 못 찾으면 None."""
     import socket
@@ -625,6 +646,34 @@ def _lan_address() -> str | None:
         return None
     finally:
         probe.close()
+
+
+def _home_screen_lines(port: int, host: str) -> list[str]:
+    """"홈 화면에 뭘 추가하냐"에 대한 답을 시작할 때마다 찍어 준다."""
+    address, kind = phone_address(port, host)
+    if kind == "codespace":
+        return [
+            "  아이패드·폰의 홈 화면에 추가할 주소:",
+            f"    {address}",
+            "    (코드스페이스를 껐다 켜도 이 주소는 그대로입니다)",
+        ]
+    if kind == "lan":
+        return [
+            "  아이패드·폰의 홈 화면에 추가할 주소:",
+            f"    {address}",
+            "    공유기가 이 컴퓨터에 다른 IP를 주면 이 주소는 바뀝니다 —",
+            "    아이콘이 안 열리면 여기 찍힌 새 주소로 다시 추가하세요.",
+        ]
+    if kind == "lan-unknown":
+        return [
+            "  이 컴퓨터의 네트워크 주소를 찾지 못했습니다.",
+            "    다른 기기에서 열려면 IP를 직접 확인해 주세요.",
+        ]
+    return [
+        "  지금은 이 컴퓨터에서만 열립니다.",
+        "    아이패드·폰에서 보려면 --host 0.0.0.0 (또는 ./start.sh --lan)으로 다시 여세요.",
+        "    127.0.0.1은 '이 기기 자신'이라는 뜻이라, 아이패드에 넣으면 아이패드를 가리킵니다.",
+    ]
 
 
 def serve(
@@ -647,14 +696,15 @@ def serve(
 
     print(f"  화면: {url}")
     if host not in ("127.0.0.1", "localhost", "::1"):
-        lan = _lan_address()
         print()
         print(f"  ⚠ 이 컴퓨터 밖에서도 열립니다 ({host}:{port}).")
-        if lan:
-            print(f"    같은 와이파이의 다른 기기에서:  http://{lan}:{port}/")
         print("    인터넷에 공개되지는 않지만, 같은 와이파이의 누구나 볼 수 있습니다.")
         print("    카페·공용 와이파이에서는 쓰지 마세요.")
-        print()
+
+    print()
+    for line in _home_screen_lines(port, host):
+        print(line)
+    print()
     print("  종료: Ctrl+C")
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

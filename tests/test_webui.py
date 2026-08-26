@@ -559,3 +559,48 @@ def test_the_ios_hint_points_at_the_right_corner(client):
     assert "오른쪽 위 주소창 옆" in source   # 아이패드
     # 둘을 갈라놓지 않으면 위 두 문구가 있어도 소용없다.
     assert "iphone ?" in source
+
+
+# ------------------------------------------------- 홈 화면에 넣을 주소
+#
+# "어떤 주소를 추가하냐"가 매번 막히는 자리다. 답이 실행 방법마다 다른데
+# 화면에는 늘 127.0.0.1만 찍혀 있었다.
+def test_localhost_is_never_offered_as_the_home_screen_address(monkeypatch):
+    """127.0.0.1을 아이패드에 넣으면 아이패드 자신을 가리킨다 — 절대 안 열린다."""
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    address, kind = webui.phone_address(8765, "127.0.0.1")
+    assert address is None
+    assert kind == "local-only"
+    lines = "\n".join(webui._home_screen_lines(8765, "127.0.0.1"))
+    assert "127.0.0.1" in lines and "이 기기 자신" in lines
+
+
+def test_a_codespace_is_recognised_and_gets_its_https_address(monkeypatch):
+    """Codespaces는 포트를 https로 넘긴다. IP를 찍어 주면 아무 데도 안 닿는다."""
+    monkeypatch.setenv("CODESPACE_NAME", "fuzzy-space-1234")
+    monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+    address, kind = webui.phone_address(8765, "0.0.0.0")
+    assert kind == "codespace"
+    assert address == "https://fuzzy-space-1234-8765.app.github.dev/"
+
+
+def test_the_codespace_address_wins_even_on_localhost(monkeypatch):
+    """코드스페이스 안에서는 127.0.0.1에 붙어 있어도 밖에서 열 주소가 있다."""
+    monkeypatch.setenv("CODESPACE_NAME", "fuzzy-space-1234")
+    monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+    assert webui.phone_address(8765, "127.0.0.1")[1] == "codespace"
+
+
+def test_a_lan_address_comes_with_the_warning_that_it_can_change(monkeypatch):
+    """IP가 바뀌면 홈 화면 아이콘이 죽는다. 죽고 나서 알면 늦다."""
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    monkeypatch.setattr(webui, "_lan_address", lambda: "192.168.0.7")
+    address, kind = webui.phone_address(8765, "0.0.0.0")
+    assert (address, kind) == ("http://192.168.0.7:8765/", "lan")
+    assert "바뀝니다" in "\n".join(webui._home_screen_lines(8765, "0.0.0.0"))
+
+
+def test_an_undiscoverable_network_says_so_instead_of_guessing(monkeypatch):
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    monkeypatch.setattr(webui, "_lan_address", lambda: None)
+    assert webui.phone_address(8765, "0.0.0.0") == (None, "lan-unknown")
