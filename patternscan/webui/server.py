@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ..data import fetch, load_cached
+from ..data import count_cached, fetch, load_cached
 from ..models import HORIZONS, KST, Series, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
 from ..odds import Odds, examples_for, find_matches, odds_for
@@ -547,11 +547,13 @@ class Handler(BaseHTTPRequestHandler):
         if state.analysis is not None:
             payload["analysis"] = _analysis_json(state.analysis)
         else:
+            # 개수만 센다. 예전에는 CSV 전체를 파싱해 Candle을 다 만들고
+            # 즉시 버렸는데, 이 응답은 수집이 도는 동안 0.5초마다 나간다.
             payload["cached"] = [
                 {
                     "timeframe": tf,
                     "label": timeframe_label(tf),
-                    "count": len(load_cached(state.market, tf, state.data_dir)),
+                    "count": count_cached(state.market, tf, state.data_dir),
                 }
                 for tf in DEFAULT_COUNT
             ]
