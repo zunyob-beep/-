@@ -864,3 +864,104 @@ def test_with_nothing_at_all_it_still_advises(client):
 
     said = _why_nothing_matched([])
     assert said and any("직전 몇 개 봉" in line for line in said)
+
+
+# ------------------------------------------------------- 한 번 죽으면 끝이었다
+def test_polling_survives_any_error(client):
+    """오류가 나도 **다음 폴링은 반드시 잡아야** 한다.
+
+    예전에는 오류 종류를 보고 어떤 경우에만 다시 잡았다. 그래서 예상 못 한
+    오류가 한 번 나면 그 자리에서 폴링이 죽었고, 마지막 응답에서 잠갔던
+    단추가 영영 잠긴 채로 남았다. 새로고침 말고는 되살릴 방법이 없었다.
+    브라우저로 재현하니 오류 뒤 7초 동안 재시도가 0회였다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    body = source[source.index("async function refreshState()"):]
+    body = body[: body.index("\nfunction unlock")]
+    assert "finally" in body, "다음 폴링을 finally에서 잡아야 한다"
+    assert "timer = setTimeout(refreshState, next)" in body
+    # 조건부로 다시 잡던 옛 구조로 돌아가면 안 된다
+    assert "if (err instanceof Unreachable) { stopPolling();" not in source
+
+
+def test_buttons_unlock_when_the_server_stops_answering(client):
+    """서버가 답을 못 하는 동안 단추까지 잠겨 있으면 손쓸 방법이 없어진다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "function unlock()" in source
+    assert "unlock();" in source
+
+
+# ------------------------------------------------------------------ 멈추기
+def test_a_long_job_can_be_stopped(client):
+    """8년치 수집은 40분이 걸린다. 잘못 눌렀을 때 빠져나올 길이 있어야 한다."""
+    api, state = client
+    entered = threading.Event()
+
+    def slow(state_):
+        entered.set()
+        for _ in range(10_000):
+            state_.checkpoint()
+            threading.Event().wait(0.01)
+
+    assert state.start("slow", slow, state)
+    assert entered.wait(3)
+
+    answer = api.post_json("/api/stop", {})
+    assert answer["stopped"] is True
+
+    for _ in range(300):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+    job = state.job.snapshot()
+    assert not job["running"], "멈추라고 했는데 계속 돕니다"
+    # 사용자가 멈춘 것은 고장이 아니다 — 빨간 오류로 띄우면 안 된다
+    assert not job["error"]
+    assert "멈췄" in job["message"]
+
+
+def test_stopping_when_nothing_runs_is_harmless(client):
+    assert client[0].post_json("/api/stop", {})["stopped"] is False
+
+
+def test_a_stopped_job_lets_the_next_one_start(client):
+    """멈춘 뒤에도 못 돌리면 멈추기가 무슨 소용인가."""
+    api, state = client
+
+    def slow(state_):
+        for _ in range(10_000):
+            state_.checkpoint()
+            threading.Event().wait(0.01)
+
+    state.start("slow", slow, state)
+    threading.Event().wait(0.2)
+    api.post_json("/api/stop", {})
+    for _ in range(300):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+
+    assert state.start("again", lambda: None), "멈춘 뒤에 다시 시작하지 못합니다"
+
+
+def test_an_unexpected_failure_still_reports_itself(client):
+    """예상 못 한 예외가 조용히 사라지면 원인을 영영 못 찾는다."""
+    api, state = client
+
+    def broken():
+        raise ZeroDivisionError("0으로 나눴습니다")
+
+    state.start("broken", broken)
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+    job = state.job.snapshot()
+    assert "ZeroDivisionError" in job["error"]
+
+
+def test_pressing_start_twice_says_so(client):
+    """시작이 안 됐는데 아무 말도 안 하면, 눌러도 반응이 없는 것처럼 보인다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "answer.started === false" in source
+    assert "이미 하고 있습니다" in source

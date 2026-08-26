@@ -140,6 +140,8 @@ button {
 }
 button:hover:not(:disabled) { border-color: #3a4150; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.danger { border-color: rgba(208, 66, 79, 0.5); color: #ff9aa3; }
+button.danger:hover:not(:disabled) { border-color: var(--bad); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 .job { color: var(--dim); font-size: 12px; }

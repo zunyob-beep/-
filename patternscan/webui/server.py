@@ -151,12 +151,19 @@ class Prices:
         return ticker
 
 
+class Cancelled(RuntimeError):
+    """사용자가 멈췄다. 고장이 아니므로 오류로 취급하지 않는다."""
+
+
 class State:
     def __init__(self, market: str, data_dir: str) -> None:
         self.market = market
         self.data_dir = data_dir
         self.prices = Prices()
         self.job = Job()
+        #: 8년치 수집은 40분이 걸린다. 잘못 눌렀을 때 빠져나올 길이 없으면
+        #: 서버를 껐다 켜는 수밖에 없다 — 아이패드에서는 그게 제일 어렵다.
+        self.cancel = threading.Event()
         self.analysis: Analysis | None = None
         #: 분석이 새로 끝날 때마다 올라간다. 화면은 이 번호가 바뀔 때만
         #: 표를 다시 그린다 — 매번 다시 그리면 사용자가 누르던 행이
@@ -173,18 +180,39 @@ class State:
         with self._start_lock:
             if self.job.running:
                 return False
+            self.cancel.clear()
             self.job.update(kind=kind, running=True, message="시작하는 중…", done=0, total=0, error="")
         thread = threading.Thread(target=self._run, args=(target, args), daemon=True)
         thread.start()
         return True
 
+    def stop(self) -> bool:
+        """돌고 있으면 멈추라고 알린다. 받아둔 것은 이미 저장돼 있다."""
+        if not self.job.running:
+            return False
+        self.cancel.set()
+        self.job.update(message="멈추는 중…")
+        return True
+
+    def checkpoint(self) -> None:
+        """멈추라고 했으면 여기서 빠져나간다. 오래 도는 자리에서 부른다."""
+        if self.cancel.is_set():
+            raise Cancelled("멈췄습니다")
+
     def _run(self, target: Any, args: tuple[Any, ...]) -> None:
         try:
             target(*args)
+        except Cancelled:
+            # 사용자가 멈춘 것이므로 빨간 오류로 띄우지 않는다.
+            self.job.update(message="멈췄습니다 — 받아둔 만큼은 저장돼 있습니다", error="")
         except (UpbitError, RuntimeError, ValueError, KeyError, OSError) as exc:
             log.exception("작업 실패")
             self.job.update(error=str(exc), message="실패했습니다")
+        except Exception as exc:  # 예상 못 한 것까지 — 조용히 죽으면 원인을 못 찾는다
+            log.exception("작업이 예상 못 한 이유로 실패")
+            self.job.update(error=f"{type(exc).__name__}: {exc}", message="실패했습니다")
         finally:
+            self.cancel.clear()
             self.job.update(running=False)
 
 
@@ -196,8 +224,10 @@ def _do_fetch(state: State, market: str, refresh: bool) -> None:
         state.job.update(message=f"{label} 시세 받는 중…", done=0, total=count)
 
         def progress(done: int, total: int) -> None:
+            state.checkpoint()
             state.job.update(done=done, total=total)
 
+        state.checkpoint()
         fetch(
             client, market, timeframe, count,
             directory=state.data_dir, refresh=refresh, progress=progress,
@@ -215,12 +245,15 @@ def _do_live(
     """
     client = UpbitClient()
     for timeframe in DEFAULT_COUNT:
+        state.checkpoint()
         label = timeframe_label(timeframe)
         wanted = count // _RATIO[timeframe]
         state.job.update(message=f"{label} 받는 중…", done=0, total=wanted)
 
         # 8년치는 40분이 걸린다. 3칸짜리 막대로는 멈춘 것과 구분이 안 된다.
+        # 멈추라는 신호도 여기서 본다 — 페이지마다 불리는 유일한 자리다.
         def progress(done: int, total: int, name: str = label) -> None:
+            state.checkpoint()
             state.job.update(message=f"{name} 받는 중…", done=done, total=total)
 
         try:
@@ -261,6 +294,7 @@ def _do_odds(
     rows: list[Odds] = []
     found: dict[str, Any] = {}
     for done, one in enumerate(series.values(), start=1):
+        state.checkpoint()
         rows.extend(
             odds_for(one, length, horizons=HORIZONS, similarity=similarity,
                      top_k=100, fee=fee, slippage=slippage)
@@ -576,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._start_live(payload)
             elif route == "/api/scan":
                 self._start_scan(payload)
+            elif route == "/api/stop":
+                self._json({"stopped": self.state.stop(), "job": self.state.job.snapshot()})
             else:
                 self._error("없는 주소입니다", 404)
         except (BrokenPipeError, ConnectionResetError):

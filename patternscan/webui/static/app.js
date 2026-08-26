@@ -70,15 +70,35 @@ function report(err) {
 }
 
 // ---------------------------------------------------------------- 상태
+//
+// **다음 폴링은 무슨 일이 있어도 잡는다.**
+//
+// 예전에는 오류 종류를 보고 어떤 경우에만 다시 잡았다. 그래서 예상 못 한
+// 오류가 한 번 나면 그 자리에서 폴링이 죽었고, 마지막 응답에서 잠갔던
+// 단추가 영영 잠긴 채로 남았다. 화면이 통째로 굳어서, 새로고침 말고는
+// 되살릴 방법이 없었다. 실제로 404 한 번에 그렇게 됐다.
 async function refreshState() {
-  let state;
-  try { state = await api('/api/state'); }
-  catch (err) {
+  let next = HEARTBEAT;
+  try {
+    next = applyState(await api('/api/state'));
+  } catch (err) {
     report(err);
-    // 서버가 꺼진 거라면 계속 두드린다. 다시 켜는 순간 알아서 살아나야 한다.
-    if (err instanceof Unreachable) { stopPolling(); timer = setTimeout(refreshState, 5000); }
-    return;
+    // 서버가 답을 못 하는 동안 단추까지 잠겨 있으면 손쓸 방법이 없어진다.
+    unlock();
+    next = 5000;   // 다시 켜는 순간 알아서 살아나도록 계속 두드린다
+  } finally {
+    stopPolling();
+    timer = setTimeout(refreshState, next);
   }
+}
+
+function unlock() {
+  for (const id of ['btn-scan', 'btn-live']) $(id).disabled = false;
+  $('btn-stop').hidden = true;
+  $('progress').hidden = true;
+}
+
+function applyState(state) {
   setOffline(false);
 
   const job = state.job || {};
@@ -89,6 +109,7 @@ async function refreshState() {
   $('ticker-label').textContent = state.marketLabel || state.market;
   $('btn-scan').disabled = job.running;
   $('btn-live').disabled = job.running;
+  $('btn-stop').hidden = !job.running;
   $('job').textContent = job.running ? (job.message || '작업 중…') : (job.message || '');
 
   const bar = $('progress');
@@ -112,10 +133,8 @@ async function refreshState() {
 
   // 작업 중이면 자주, 아니면 가끔. 놀 때도 계속 물어보는 이유는 하나다 —
   // **서버가 꺼진 걸 눈치채기 위해서**다. 예전에는 놀 때 폴링을 아예
-  // 멈춰서, 컴퓨터가 꺼져도 화면은 멀쩡해 보였다. 버튼을 눌러야만
-  // 그제서야 안 된다는 걸 알았다.
-  stopPolling();
-  timer = setTimeout(refreshState, job.running ? 500 : HEARTBEAT);
+  // 멈춰서, 컴퓨터가 꺼져도 화면은 멀쩡해 보였다.
+  return job.running ? 500 : HEARTBEAT;
 }
 
 //: 놀 때 서버가 살아 있는지 확인하는 주기. 로컬이라 부담이 없다.
@@ -446,19 +465,29 @@ function settings() {
   };
 }
 
-$('btn-scan').addEventListener('click', async () => {
-  showError('');
-  try { await post('/api/scan', settings()); refreshState(); }
-  catch (err) { report(err); }
-});
-
+$('btn-scan').addEventListener('click', () => run('/api/scan'));
 $('btn-live').addEventListener('click', () => runLive());
 
-async function runLive() {
+$('btn-stop').addEventListener('click', async () => {
+  $('btn-stop').disabled = true;
+  try { await post('/api/stop', {}); } catch (err) { report(err); }
+  $('btn-stop').disabled = false;
+  refreshState();
+});
+
+async function run(path) {
   showError('');
-  try { await post('/api/live', settings()); refreshState(); }
-  catch (err) { report(err); }
+  try {
+    const answer = await post(path, settings());
+    // 시작 안 됐는데 아무 말도 안 하면, 눌러도 반응이 없는 것처럼 보인다.
+    if (answer && answer.started === false) {
+      showError('이미 하고 있습니다. 끝나기를 기다리거나 멈추기를 누르세요.');
+    }
+  } catch (err) { report(err); }
+  refreshState();
 }
+
+const runLive = () => run('/api/live');
 
 // 1분마다 자동 갱신. 새 봉이 생기는 주기가 1분이므로 그보다 자주 물어도 의미가 없다.
 let auto = null;
