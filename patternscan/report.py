@@ -99,6 +99,96 @@ def format_coverage(results: list[ScanResult]) -> str:
     return "\n".join(lines)
 
 
+def format_validation(scores: list, cost: float, top: int = 20) -> str:
+    """길이별 성적표.
+
+    적중률만 크게 보여주면 안 된다. 1분 뒤에 수수료를 넘겨 오르는 경우는
+    원래 20%도 안 되므로, 무조건 '안 오른다'고 찍어도 적중률 80%가 나온다.
+    그래서 '찍기'(다수 쪽으로만 찍었을 때)와 '실력'(그 차이)을 나란히 둔다.
+    """
+    usable = [s for s in scores if s.predictions >= 30]
+    if not usable:
+        return "  예측을 30번 이상 낼 수 있었던 조합이 없습니다 — 데이터를 더 모으세요."
+
+    lines = [
+        "",
+        f"  {'길이':>5}{'지평':>5}{'예측':>6}{'적중률':>8}{'찍기':>8}{'실력':>8}{'오차':>7}"
+        f"{'부호':>8}{'상승예측 평균':>13}{'전체 평균':>11}",
+        "  " + "─" * 80,
+    ]
+    for score in sorted(usable, key=lambda s: s.skill, reverse=True)[:top]:
+        pays = score.mean_up_return > cost
+        mark = " ←" if score.skill_is_real and pays else (" ·" if pays else "")
+        lines.append(
+            f"  {score.length:>5}{score.horizon:>5}{score.predictions:>6}"
+            f"{score.accuracy:>8.1%}{score.base_accuracy:>8.1%}{score.skill:>+8.1%}"
+            f"{'±' + format(score.skill_error, '.1%'):>7}{score.sign_accuracy:>8.1%}"
+            f"{score.mean_up_return:>+13.4%}{score.mean_all_return:>+11.4%}{mark}"
+        )
+    lines.append("")
+    lines.append("  실력 = 적중률 − 찍기. 0 이하면 그냥 찍는 것만 못합니다.")
+    lines.append(
+        "  오차 = 실력의 표준오차. 예측 150회면 ±4%이므로, **실력이 없어도 ±8%는 그냥 나옵니다.**"
+    )
+    lines.append("  실력이 오차의 2.5배를 넘지 못하면 우연과 구분되지 않습니다.")
+    lines.append(f"  ← = 우연으로 설명 안 되면서 평균 수익도 왕복 비용 {cost:.3%}를 넘긴 조합")
+    lines.append("  · = 평균 수익은 비용을 넘겼지만 실력이 우연과 구분되지 않는 조합")
+    return "\n".join(lines)
+
+
+def format_validation_verdict(scores: list, cost: float) -> str:
+    """가장 나은 길이가 무엇이고, 그게 쓸 만한지."""
+    usable = [s for s in scores if s.predictions >= 30]
+    if not usable:
+        return "  판정할 수 없습니다 — 예측을 충분히 내지 못했습니다."
+
+    winners = [s for s in usable if s.skill_is_real and s.mean_up_return > cost]
+    best = max(usable, key=lambda s: s.skill)
+    lines = ["=" * 66]
+    if winners:
+        top = max(winners, key=lambda s: s.skill)
+        lines.append(f"  🟢 가장 잘 맞은 길이: {top.length}개  ({top.label})")
+        lines.append("=" * 66)
+        lines.append(
+            f"    · 예측 {top.predictions}회 중 적중률 {top.accuracy:.1%} "
+            f"(찍기 {top.base_accuracy:.1%} → 실력 {top.skill:+.1%} ± {top.skill_error:.1%})"
+        )
+        lines.append(
+            f"    · '상승' 예측 {top.said_up}회의 평균 수익 {top.mean_up_return:+.4%} "
+            f"— 왕복 비용 {cost:.3%}를 넘습니다"
+        )
+        lines.append(f"    · 아무 때나 들어갔을 때({top.mean_all_return:+.4%}) 대비 {top.edge_return:+.4%}")
+        lengths = sorted({s.length for s in winners})
+        lines.append(
+            f"    · 같은 기준을 통과한 조합 {len(winners)}개 — 길이 "
+            f"{', '.join(str(x) for x in lengths)}"
+        )
+    else:
+        lines.append("  🔴 어떤 길이도 우연을 넘지 못했습니다")
+        lines.append("=" * 66)
+        lines.append(
+            f"    · 실력이 가장 높은 조합은 {best.label}로 {best.skill:+.1%}입니다."
+        )
+        if not best.skill_is_real:
+            lines.append(
+                f"    · 그런데 예측 {best.predictions}회의 표준오차가 ±{best.skill_error:.1%}라, "
+                "실력이 없어도 이 정도는 그냥 나옵니다."
+            )
+        paying = [s for s in usable if s.mean_up_return > cost]
+        if paying:
+            lines.append(
+                f"    · 평균 수익이 비용을 넘긴 조합은 {len(paying)}개 있지만, "
+                "실력이 우연과 구분되지 않습니다."
+            )
+        else:
+            lines.append(
+                f"    · '상승' 예측 시 평균 수익이 왕복 비용 {cost:.3%}를 넘긴 조합이 "
+                "하나도 없습니다."
+            )
+        lines.append("    · 이 데이터에서는 직전 봉 모양으로 방향을 맞힐 근거가 없습니다.")
+    return "\n".join(lines)
+
+
 def summary_header(
     market: str,
     series_info: list[tuple[str, int, int]],
@@ -121,6 +211,8 @@ __all__ = [
     "format_coverage",
     "format_detail",
     "format_table",
+    "format_validation",
+    "format_validation_verdict",
     "format_verdict",
     "round_trip_cost",
     "summary_header",

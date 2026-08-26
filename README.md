@@ -107,7 +107,41 @@ python -m patternscan scan --scale amplitude     # 변동폭까지 같아야 같
 python -m patternscan scan --refresh             # 시세 새로 받고 판정
 ```
 
-### 3. 화면으로 보기
+### 3. 어느 길이가 실제로 잘 맞았는지 재기
+
+```bash
+python -m patternscan validate
+```
+
+**과거 여러 시점으로 돌아가서**, 그 시점까지의 데이터만 보고 예측을 낸 뒤
+실제로 무슨 일이 있었는지 맞춰봅니다. `scan`이 "지금 들어갈까"를 답한다면
+`validate`는 **"그 답을 믿어도 되는가"**를 답합니다.
+
+```
+   길이   지평    예측   적중률     찍기     실력    오차     부호  상승예측 평균   전체 평균
+  ────────────────────────────────────────────────────────────────────────────
+     20     3     396   63.0%   46.9%  +16.1%  ±2.5%   61.2%     +0.9373%   +0.0980% ←
+```
+
+읽는 법 — **적중률만 보면 반드시 속습니다.**
+
+| 칸 | 뜻 |
+|---|---|
+| **찍기** | 항상 다수 쪽으로만 찍었을 때의 적중률 |
+| **실력** | 적중률 − 찍기. 0 이하면 그냥 찍는 것만 못합니다 |
+| **오차** | 실력의 표준오차. **예측 150회면 ±4%라, 실력이 없어도 ±8%는 그냥 나옵니다** |
+| **상승예측 평균** | '상승'이라 했을 때의 실제 평균 수익. 왕복 비용을 넘어야 돈이 됩니다 |
+
+1분 뒤에 수수료를 넘겨 오르는 경우는 원래 20%도 안 됩니다. 그러니 무조건
+"안 오른다"고 찍기만 해도 **적중률 80%**가 나옵니다. 그래서 찍기와 나란히 둡니다.
+
+```bash
+python -m patternscan validate --points 2000              # 더 많은 시점으로
+python -m patternscan validate --lengths 5,10,20,40       # 특정 길이만
+python -m patternscan validate --timeframe minute5        # 5분봉으로
+```
+
+### 4. 화면으로 보기
 
 ```bash
 python -m patternscan ui
@@ -300,6 +334,8 @@ patternscan/
   upbit.py      공개 시세 API (인증 없음)
   data.py       CSV 캐시
   report.py     터미널 출력
+  search.py     빠른 모양 찾기 (결과는 전수 계산과 동일)
+  validate.py   과거 여러 시점으로 돌아가 적중률 측정
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용)
 ```
@@ -313,7 +349,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 107개 시험, 전부 오프라인
+python -m pytest -q          # 120개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

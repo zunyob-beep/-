@@ -18,6 +18,8 @@ from .report import (
     format_coverage,
     format_detail,
     format_table,
+    format_validation,
+    format_validation_verdict,
     format_verdict,
     summary_header,
 )
@@ -30,6 +32,7 @@ from .scan import (
 )
 from .stats import decide, evaluate
 from .upbit import UpbitClient, UpbitError
+from .validate import validate
 
 log = logging.getLogger("patternscan")
 
@@ -47,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m patternscan fetch                 # 시세 받기 (처음 한 번, 몇 분 걸림)\n"
             "  python -m patternscan scan                  # 지금 들어갈지 판정\n"
             "  python -m patternscan scan --detail         # 조합별 상세\n"
+            "  python -m patternscan validate              # 어느 길이가 잘 맞았는지 측정\n"
             "  python -m patternscan ui                    # 웹 화면\n"
         ),
     )
@@ -56,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("fetch", "시세를 받아 캐시에 저장"),
         ("scan", "지금 시점의 모양을 과거와 비교해 판정"),
+        ("validate", "과거 여러 시점으로 돌아가 길이별 적중률을 측정"),
         ("ui", "웹 화면 열기"),
     ):
         p = sub.add_parser(name, help=help_text)
@@ -87,6 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--fdr", type=float, default=0.10, help="허용 거짓발견율")
             p.add_argument("--detail", action="store_true", help="상위 조합 상세 보기")
             p.add_argument("--refresh", action="store_true", help="시세를 새로 받고 판정")
+        if name == "validate":
+            p.add_argument(
+                "--timeframe", default="minute1", choices=list(DEFAULT_COUNT),
+                help="어느 봉 간격으로 검증할지 (기본 1분봉)",
+            )
+            p.add_argument("--points", type=int, default=500, help="평가할 시점 수 (기본 500)")
+            p.add_argument("--top-k", type=int, default=60, help="쓸 매치 개수")
+            p.add_argument(
+                "--similarity", type=float, default=DEFAULT_SIMILARITY,
+                help=f"'같은 모양' 최소 상관계수 (기본 {DEFAULT_SIMILARITY})",
+            )
+            p.add_argument("--fee", type=float, default=DEFAULT_FEE, help="편도 수수료율")
+            p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE, help="편도 슬리피지")
+            p.add_argument(
+                "--lengths", default=None,
+                help="쉼표로 구분한 길이 목록 (기본: 5,10,20,…,180 전부)",
+            )
+            p.add_argument("--seed", type=int, default=0, help="평가 시점 추출 난수 씨앗")
         if name == "ui":
             p.add_argument("--port", type=int, default=8765)
             p.add_argument("--no-browser", action="store_true")
@@ -203,6 +226,42 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    series = load_cached(args.market, args.timeframe, args.data_dir)
+    if len(series) == 0:
+        print("시세가 없습니다. 먼저 `python -m patternscan fetch`를 실행하세요.")
+        return 1
+
+    lengths = (
+        tuple(int(x) for x in args.lengths.split(",") if x.strip())
+        if args.lengths
+        else WINDOW_LENGTHS
+    )
+    cost = round_trip_cost(args.fee, args.slippage)
+    span = series.span
+    window = f"  {span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d}" if span else ""
+    print(
+        f"\n  {args.market} {timeframe_label(args.timeframe)} 봉 {len(series):,}개{window}\n"
+        f"  평가 시점 {args.points}개 · 길이 {len(lengths)}종 · 왕복 비용 {cost:.3%}\n"
+        f"  각 시점에서 그 이전 데이터만 보고 예측한 뒤, 실제 결과와 맞춰봅니다.\n"
+    )
+
+    def progress(done: int, total: int) -> None:
+        print(f"  검증 중… {done:,}/{total:,}", end="\r", flush=True)
+
+    scores = validate(
+        series, lengths,
+        horizons=HORIZONS, points=args.points, similarity=args.similarity,
+        top_k=args.top_k, fee=args.fee, slippage=args.slippage,
+        seed=args.seed, progress=progress,
+    )
+    print(" " * 40, end="\r")
+
+    print(format_validation_verdict(scores, cost))
+    print(format_validation(scores, cost))
+    return 0
+
+
 def cmd_ui(args: argparse.Namespace) -> int:
     from .webui.server import serve
 
@@ -215,7 +274,12 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return 0
 
 
-COMMANDS = {"fetch": cmd_fetch, "scan": cmd_scan, "ui": cmd_ui}
+COMMANDS = {
+    "fetch": cmd_fetch,
+    "scan": cmd_scan,
+    "validate": cmd_validate,
+    "ui": cmd_ui,
+}
 
 
 def setup_logging(level: str) -> None:
