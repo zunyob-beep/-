@@ -424,7 +424,9 @@ function exampleCard(example, data) {
 function scaleTo(values, height, pad) {
   let low = Math.min(...values), high = Math.max(...values);
   if (!(high > low)) { high = low + 1; low -= 1; }
-  const margin = (high - low) * 0.1;
+  // 위아래 여백. 넉넉히 두면 선이 상자 가운데 작게 눌려 보인다 —
+  // 안 그래도 1분봉 움직임은 0.03% 남짓이라 눌릴 여유가 없다.
+  const margin = (high - low) * 0.06;
   low -= margin; high += margin;
   return (v) => height - pad - ((v - low) / (high - low)) * (height - pad * 2);
 }
@@ -511,69 +513,8 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.register('/sw.js').catch(() => undefined);
 }
 
-const standalone = window.matchMedia('(display-mode: standalone)').matches
-  || window.navigator.standalone === true;
-
-let installPrompt = null;
-
-function showInstallHint(how) {
-  // 할 말이 없으면 띄우지 않는다. "앱처럼 쓰기:"만 덩그러니 뜬 적이 있다.
-  if (!how) return;
-  let dismissed = false;
-  try { dismissed = localStorage.getItem('installHintDismissed') === '1'; }
-  catch (err) { /* 읽을 수 없으면 그냥 보여준다 */ }
-  if (standalone || dismissed) return;
-  $('install-how').textContent = how;
-  $('install-hint').hidden = false;
-}
-
-window.addEventListener('beforeinstallprompt', (event) => {
-  event.preventDefault();
-  installPrompt = event;
-  $('btn-install').hidden = false;
-  showInstallHint('이 버튼을 누르면 홈 화면에 아이콘이 생깁니다.');
-});
-
-$('btn-install').addEventListener('click', async () => {
-  if (!installPrompt) return;
-  installPrompt.prompt();
-  await installPrompt.userChoice;
-  installPrompt = null;
-  $('install-hint').hidden = true;
-});
-
-$('btn-install-close').addEventListener('click', () => {
-  $('install-hint').hidden = true;
-  try { localStorage.setItem('installHintDismissed', '1'); } catch (err) { /* 비공개 모드 */ }
-});
-
-// iOS 사파리에는 설치 버튼이 없다(beforeinstallprompt를 안 쏜다).
-// 공유 버튼을 눌러야 한다는 걸 아는 사람만 아는데, 모르면 영영 못 찾는다.
-//
-// 그런데 그 버튼의 자리가 기기마다 다르다. 아이패드는 **위쪽 주소창 옆**,
-// 아이폰은 **아래쪽 가운데**다. "아래 공유 버튼"이라고만 적어두면
-// 아이패드 사용자는 없는 곳을 쳐다보게 된다.
-const iphone = /iPhone|iPod/.test(navigator.userAgent);
-const ipad = /iPad/.test(navigator.userAgent)
-  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-if (iphone || ipad) {
-  const where = iphone ? '화면 아래 가운데' : '오른쪽 위 주소창 옆';
-  showInstallHint(
-    `${where}의 공유 버튼(□↑)을 누르고, 목록을 내려 "홈 화면에 추가"를 고르세요.`
-  );
-}
-
-// 맨 위 시세는 상태 폴링과 따로 돈다. 계산이 몇십 초 걸려도 시세는 계속
-// 살아 있어야 하고, 반대로 시세를 못 받았다고 계산이 멈추면 안 된다.
-refreshTicker();
-setInterval(refreshTicker, 5000);
-// 탭을 다시 보면 곧바로 맞춘다 — 안 그러면 5초 동안 옛 숫자를 보게 된다.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) refreshTicker();
-});
-
-refreshState();
+// 홈 화면에 얹는 방법은 README에 적어 뒀다. 매번 보는 화면에 붙박이로
+// 두기에는, 한 번 하고 나면 다시 볼 일이 없는 안내였다.
 
 // ------------------------------------------------------------ 떨어지는 글자
 //

@@ -562,20 +562,6 @@ def test_a_dead_server_is_told_apart_from_a_rejected_request(client):
     assert "instanceof Unreachable" in source
 
 
-def test_the_ios_hint_points_at_the_right_corner(client):
-    """공유 버튼 자리가 기기마다 다르다.
-
-    아이패드는 위쪽 주소창 옆, 아이폰은 아래쪽 가운데다. 한쪽만 적어두면
-    다른 쪽 사용자는 없는 곳을 쳐다보게 된다 — 그리고 그 버튼을 못 찾으면
-    홈 화면 추가는 영영 못 한다.
-    """
-    source = client[0].get("/static/app.js")[1].decode("utf-8")
-    assert "화면 아래 가운데" in source     # 아이폰
-    assert "오른쪽 위 주소창 옆" in source   # 아이패드
-    # 둘을 갈라놓지 않으면 위 두 문구가 있어도 소용없다.
-    assert "iphone ?" in source
-
-
 # ------------------------------------------------- 홈 화면에 넣을 주소
 #
 # "어떤 주소를 추가하냐"가 매번 막히는 자리다. 답이 실행 방법마다 다른데
@@ -759,7 +745,8 @@ def test_the_requested_period_actually_reaches_the_fetch(client, monkeypatch):
         asked.append((timeframe, count))
         raise webui.UpbitError("여기서 멈춘다")
 
-    monkeypatch.setattr(webui, "fetch", spy)
+
+    monkeypatch.setattr(webui, "update", spy)
     api.post_json("/api/live", {"market": "KRW-BTC", "count": 4_204_800})
     for _ in range(200):
         if not state.job.snapshot()["running"]:
@@ -795,7 +782,7 @@ def test_fetch_progress_is_finer_than_three_steps(client, monkeypatch):
         seen.append(state.job.snapshot())
         raise webui.UpbitError("여기까지")
 
-    monkeypatch.setattr(webui, "fetch", spy)
+    monkeypatch.setattr(webui, "update", spy)
     api.post_json("/api/live", {"market": "KRW-BTC", "count": 43_200})
     for _ in range(200):
         if not state.job.snapshot()["running"]:

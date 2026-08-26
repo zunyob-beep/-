@@ -555,7 +555,7 @@ patternscan/
   scan.py       과거에서 찾기 + 직후 결과 집계 + 순열검정
   stats.py      다중비교 보정, 신뢰구간, 최종 판정
   upbit.py      공개 시세 API (인증 없음)
-  data.py       CSV 캐시
+  data.py       CSV 캐시 — 과거 봉은 안 바뀌므로 새 봉만 뒤에 이어 붙인다
   report.py     터미널 출력
   search.py     빠른 모양 찾기 (결과는 전수 계산과 동일)
   validate.py   과거 여러 시점으로 돌아가 적중률 측정
@@ -580,7 +580,7 @@ tools/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 276개 시험, 전부 오프라인
+python -m pytest -q          # 284개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

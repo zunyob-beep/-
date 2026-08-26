@@ -12,7 +12,15 @@ import logging
 import os
 import sys
 
-from .data import cache_path, fetch, load_cached, save
+from .data import (
+    cache_path,
+    count_cached,
+    fetch,
+    load_cached,
+    save,
+    span_cached,
+    update,
+)
 from .models import HORIZONS, KST, MARKETS, WINDOW_LENGTHS, Series, timeframe_label
 from .odds import format_odds, odds_all
 from .report import (
@@ -185,15 +193,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         def progress(done: int, total: int, tf: str = timeframe) -> None:
             print(f"  {tf}: {done:,}/{total:,}", end="\r", flush=True)
 
-        series = fetch(
+        update(
             client, args.market, timeframe, count,
             directory=args.data_dir, refresh=args.refresh, progress=progress,
         )
-        span = series.span
+        # 받은 것이 아니라 **파일에 있는 것**을 말한다. 그게 사실이고,
+        # 게다가 420만 봉을 다시 만들지 않아도 된다.
+        have = count_cached(args.market, timeframe, args.data_dir)
+        span = span_cached(args.market, timeframe, args.data_dir)
         window = ""
         if span:
             window = f"  {span[0]:%Y-%m-%d %H:%M} ~ {span[1]:%Y-%m-%d %H:%M} UTC"
-        print(f"  {timeframe}: 봉 {len(series):,}개 확보{window}          ")
+        print(f"  {timeframe}: 봉 {have:,}개 확보{window}          ")
     return 0
 
 

@@ -330,3 +330,165 @@ def test_span_does_not_read_the_whole_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(data_module, "load", forbidden)
     assert data_module.span_cached("KRW-BTC", "minute1", tmp_path) is not None
+
+
+# --------------------------------------------- 과거 봉은 안 바뀐다, 다시 쓰지도 마라
+#
+# 새 봉 세 개를 얻자고 8년치 420만 줄을 통째로 읽고 다시 쓰고 있었다.
+# 재보니 1년치에서 5.15초, 8년치면 버튼 한 번에 41초. 1분마다 자동 갱신을
+# 켜 두면 그 짓을 계속한다.
+class OnlyNew:
+    """새 봉만 주는 업비트. 몇 번 불렸는지 센다."""
+
+    def __init__(self, after, how_many=3):
+        self.after = after
+        self.how_many = how_many
+        self.calls = []
+
+    def collect(self, market, timeframe, count, end=None, progress=None,
+                stop_at=None, on_batch=None):
+        self.calls.append({"count": count, "end": end, "stop_at": stop_at})
+        base = stop_at or self.after
+        # 업비트는 이미 가진 구간에 '닿으면' 멈출 뿐, 겹치는 봉도 같이 준다.
+        return [
+            Candle(ts=base + timedelta(minutes=i), open=2.0, high=2.0, low=2.0,
+                   close=2.0, volume=1.0)
+            for i in range(0, self.how_many + 1)
+        ]
+
+
+def _recent(count, behind=0):
+    """지금 시각 기준의 시계열. `behind`분만큼 뒤처져 끝난다.
+
+    '뒤처진 정도'는 마지막 봉과 지금 사이의 분 수로 잰다. behind=0이면
+    받을 게 없고, behind=3이면 새 봉이 세 개 생긴 상황이다.
+    """
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    last = now - timedelta(minutes=behind)
+    start = last - timedelta(minutes=count - 1)
+    return [
+        Candle(ts=start + timedelta(minutes=i), open=1.0, high=1.0, low=1.0,
+               close=1.0 + i, volume=1.0)
+        for i in range(count)
+    ]
+
+
+def test_updating_does_not_rewrite_the_whole_file(tmp_path, monkeypatch):
+    """붙이기만 해야 한다. 통째로 다시 쓰면 8년치에서 41초가 걸린다."""
+    from patternscan import data as data_module
+
+    have = _recent(3000, behind=3)
+    save(cache_path("KRW-BTC", "minute1", tmp_path), have)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("파일을 통째로 다시 썼습니다")
+
+    monkeypatch.setattr(data_module, "save", forbidden)
+    client = OnlyNew(have[-1].ts)
+    data_module.update(client, "KRW-BTC", "minute1", 3000, directory=tmp_path)
+
+
+def test_updating_does_not_reparse_the_whole_file(tmp_path, monkeypatch):
+    """읽는 쪽도 마찬가지다. 420만 줄을 파싱할 이유가 없다."""
+    from patternscan import data as data_module
+
+    have = _recent(3000, behind=3)
+    save(cache_path("KRW-BTC", "minute1", tmp_path), have)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("파일을 통째로 다시 읽었습니다")
+
+    monkeypatch.setattr(data_module, "load", forbidden)
+    monkeypatch.setattr(data_module, "_load_or_set_aside", forbidden)
+    client = OnlyNew(have[-1].ts)
+    data_module.update(client, "KRW-BTC", "minute1", 3000, directory=tmp_path)
+
+
+def test_only_the_genuinely_new_candles_are_appended(tmp_path):
+    """업비트가 겹치는 봉까지 줘도 파일에 두 번 들어가면 안 된다."""
+    from patternscan.data import update
+
+    have = _recent(2000, behind=3)
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    save(path, have)
+
+    update(OnlyNew(have[-1].ts, how_many=3), "KRW-BTC", "minute1", 2000, directory=tmp_path)
+
+    after = load(path)
+    stamps = [c.ts for c in after]
+    assert len(stamps) == len(set(stamps)), "같은 시각의 봉이 두 번 들어갔습니다"
+    assert stamps == sorted(stamps), "시간 순서가 어긋났습니다"
+    assert len(after) == len(have) + 3
+
+
+def test_nothing_new_means_nothing_written(tmp_path):
+    """새 봉이 없으면 파일에 손대지 않아야 한다."""
+    from patternscan.data import update
+
+    have = _recent(1000)
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    save(path, have)
+    before = path.stat().st_mtime_ns
+
+    class Nothing:
+        def collect(self, *args, **kwargs):
+            raise AssertionError("받을 게 없는데 업비트를 불렀습니다")
+
+    # 마지막 봉이 방금 것이라 '뒤처진 정도'가 0이다
+    update(Nothing(), "KRW-BTC", "minute1", 1000, directory=tmp_path)
+    assert path.stat().st_mtime_ns == before
+
+
+def test_a_short_cache_still_extends_backwards(tmp_path):
+    """가진 게 모자라면 붙이기로는 안 된다 — 원래 경로로 가야 한다."""
+    from patternscan.data import update
+
+    have = _recent(500, behind=5)
+    save(cache_path("KRW-BTC", "minute1", tmp_path), have)
+
+    client = FakeUpbit(candles(3000, start=have[0].ts - timedelta(minutes=2500)) + have)
+    update(client, "KRW-BTC", "minute1", 3000, directory=tmp_path)
+    assert client.requests, "더 과거로 늘리지 않았습니다"
+
+
+def test_a_half_written_last_line_costs_one_candle_not_the_file(tmp_path):
+    """붙이다가 죽으면 마지막 줄이 잘린다. 그 봉 하나만 잃으면 된다."""
+    from patternscan.data import load_tail
+
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    save(path, _recent(500))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("1767225600,158000")     # 쓰다 만 줄
+
+    tail = load_tail(path, 10)
+    assert len(tail) == 10, "잘린 줄 하나 때문에 나머지까지 잃었습니다"
+
+
+# ------------------------------------------------------------ 끝만 읽기
+def test_load_tail_returns_the_last_ones(tmp_path):
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    from patternscan.data import load_tail
+
+    everything = _fake(5000)
+    save(path, everything)
+    tail = load_tail(path, 120)
+    assert len(tail) == 120
+    assert [c.ts for c in tail] == [c.ts for c in everything[-120:]]
+    assert tail[-1].close == everything[-1].close
+
+
+def test_load_tail_handles_asking_for_more_than_there_is(tmp_path):
+    from patternscan.data import load_tail
+
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    save(path, _fake(30))
+    assert len(load_tail(path, 500)) == 30
+
+
+def test_load_tail_never_returns_the_header(tmp_path):
+    """머리말을 봉으로 읽으면 그 자리에서 터진다."""
+    from patternscan.data import load_tail
+
+    path = cache_path("KRW-BTC", "minute1", tmp_path)
+    save(path, _fake(3))
+    assert len(load_tail(path, 100)) == 3

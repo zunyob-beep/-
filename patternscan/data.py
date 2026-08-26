@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import Candle, Series, timeframe_length
@@ -24,6 +24,18 @@ HEADER = ["ts", "open", "high", "low", "close", "volume"]
 
 def cache_path(market: str, timeframe: str, directory: Path | str = CACHE_DIR) -> Path:
     return Path(directory) / f"{market}_{timeframe}.csv"
+
+
+def _row(candle: Candle) -> list[object]:
+    """repr()로 쓴다 — 소수점을 잘라 저장하면 읽을 때 값이 달라진다."""
+    return [
+        int(candle.ts.timestamp()),
+        repr(candle.open),
+        repr(candle.high),
+        repr(candle.low),
+        repr(candle.close),
+        repr(candle.volume),
+    ]
 
 
 def save(path: Path | str, candles: list[Candle]) -> Path:
@@ -50,19 +62,33 @@ def save(path: Path | str, candles: list[Candle]) -> Path:
             writer = csv.writer(handle)
             writer.writerow(HEADER)
             for candle in candles:
-                writer.writerow(
-                    [
-                        int(candle.ts.timestamp()),
-                        repr(candle.open),
-                        repr(candle.high),
-                        repr(candle.low),
-                        repr(candle.close),
-                        repr(candle.volume),
-                    ]
-                )
+                writer.writerow(_row(candle))
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+    return path
+
+
+def append(path: Path | str, candles: list[Candle]) -> Path:
+    """이미 있는 파일 **뒤에만** 붙인다.
+
+    과거 봉은 안 바뀐다. 새 봉 세 개를 얻자고 8년치 420만 줄을 통째로
+    읽고 다시 쓰는 건 낭비다 — 재보니 버튼 한 번에 41초였다.
+
+    붙이는 도중에 죽으면 마지막 줄이 잘릴 수 있다. 그건 load가 알아서
+    버린다(아래) — 봉 하나는 다음번에 다시 받으면 그만이다.
+    """
+    path = Path(path)
+    if not candles:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        if new:
+            writer.writerow(HEADER)
+        for candle in candles:
+            writer.writerow(_row(candle))
     return path
 
 
@@ -88,6 +114,60 @@ def load(path: Path | str) -> list[Candle]:
             for row in reader
             if row
         ]
+
+
+def load_tail(path: Path | str, count: int) -> list[Candle]:
+    """마지막 `count`개만. 파일 끝에서부터 필요한 만큼만 읽는다.
+
+    분석은 전 구간을 봐야 하지만, "새 봉을 붙이고 최근 것만 돌려주기"는
+    끝만 있으면 된다. 8년치 420만 줄을 파싱해서 뒤 5만 줄만 쓰는 건
+    낭비다.
+    """
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size == 0 or count <= 0:
+        return []
+
+    # 한 줄이 대략 60바이트. 넉넉히 잡고, 모자라면 두 배씩 늘린다.
+    want = count + 1
+    block = min(size, max(1 << 16, want * 96))
+    with path.open("rb") as handle:
+        while True:
+            handle.seek(max(0, size - block))
+            chunk = handle.read()
+            lines = chunk.splitlines()
+            if block >= size or len(lines) > want:
+                break
+            block *= 2
+
+    if block < size:
+        lines = lines[1:]      # 처음 줄은 중간에서 잘렸을 수 있다
+    rows = [line for line in lines if line and not line.startswith(b"ts,")]
+    # 잘린 줄은 _parse_rows가 버리므로, 자르기 전에 파싱해야 개수가 맞는다.
+    # 먼저 잘라 버리면 잘린 줄 하나 때문에 결과가 하나 모자라게 된다.
+    return _parse_rows(rows)[-count:]
+
+
+def _parse_rows(rows: list[bytes]) -> list[Candle]:
+    out: list[Candle] = []
+    for row in rows:
+        parts = row.decode("utf-8").rstrip("\r\n").split(",")
+        if len(parts) != len(HEADER):
+            continue      # 붙이다 만 마지막 줄. 그 봉은 다음번에 다시 받는다.
+        try:
+            out.append(
+                Candle(
+                    ts=datetime.fromtimestamp(int(parts[0]), tz=timezone.utc),
+                    open=float(parts[1]), high=float(parts[2]), low=float(parts[3]),
+                    close=float(parts[4]), volume=float(parts[5]),
+                )
+            )
+        except (ValueError, OSError, OverflowError):
+            continue
+    return out
 
 
 def merge(*groups: list[Candle]) -> list[Candle]:
@@ -118,6 +198,51 @@ def _load_or_set_aside(path: Path) -> list[Candle]:
         return []
 
 
+def _just_the_new_ones(
+    client: UpbitClient,
+    market: str,
+    timeframe: str,
+    count: int,
+    directory: Path | str,
+    step: timedelta,
+    progress: object,
+) -> int | None:
+    """가진 게 이미 충분하면, 새로 생긴 봉만 **뒤에 붙이고** 끝낸다.
+
+    이게 거의 모든 경우다. 과거 봉은 안 바뀌므로 다시 받을 것도, 다시
+    쓸 것도 없다. 그런데 예전에는 새 봉 세 개를 붙이자고 파일 전체를
+    읽고(3.1초) 합치고(0.8초) 다시 썼다(1.3초). 1년치에서 5초, 8년치면
+    **버튼 한 번에 41초**다. 1분마다 자동 갱신을 켜 두면 그 짓을 계속한다.
+
+    쓸 수 없는 경우(캐시가 모자라거나 없을 때)에는 None을 돌려주고
+    원래 경로로 넘긴다.
+    """
+    path = cache_path(market, timeframe, directory)
+    span = span_cached(market, timeframe, directory)
+    if span is None or count_cached(market, timeframe, directory) < count:
+        return None      # 더 과거로 늘려야 한다 — 붙이기로는 안 된다
+
+    last = span[1]
+    behind = int((datetime.now(timezone.utc) - last) / step)
+    fresh: list[Candle] = []
+    if behind > 0:
+        try:
+            got = client.collect(
+                market, timeframe, min(behind + 1, count),
+                stop_at=last, progress=progress,
+            )
+        except UpbitError as exc:
+            log.warning("새 봉을 못 받았습니다(%s) — 가진 것으로 갑니다", exc)
+            got = []
+        # collect는 이미 가진 구간에 '닿으면' 멈출 뿐, 걸러 주지는 않는다.
+        fresh = [c for c in got if c.ts > last]
+
+    if fresh:
+        append(path, fresh)
+        log.info("%s에 %d개 이어 붙였습니다", path, len(fresh))
+    return count_cached(market, timeframe, directory)
+
+
 def fetch(
     client: UpbitClient,
     market: str,
@@ -137,9 +262,35 @@ def fetch(
     2. 개수가 모자라면 캐시 **앞쪽**(더 과거)으로만 늘리고,
     3. 페이지를 받을 때마다 저장해 중간에 끊겨도 남긴다.
     """
+    update(client, market, timeframe, count, directory, refresh, progress)
+    return load_cached(market, timeframe, directory, count)
+
+
+def update(
+    client: UpbitClient,
+    market: str,
+    timeframe: str,
+    count: int,
+    directory: Path | str = CACHE_DIR,
+    refresh: bool = False,
+    progress: object = None,
+) -> int:
+    """캐시가 `count`개를 갖도록 맞추고, 몇 개가 됐는지만 돌려준다.
+
+    시세를 받는 쪽은 대부분 봉 자체가 필요 없다 — 파일만 최신이면 된다.
+    그런데 예전에는 fetch가 늘 Series를 만들어 돌려줬고, 화면은 그걸
+    받자마자 버렸다. 8년치면 **아무도 안 쓰는 420만 개를 만드느라**
+    30초가 넘게 걸렸다.
+    """
     path = cache_path(market, timeframe, directory)
-    cached = [] if refresh else _load_or_set_aside(path)
     step = timeframe_length(timeframe)
+
+    if not refresh:
+        quick = _just_the_new_ones(client, market, timeframe, count, directory, step, progress)
+        if quick is not None:
+            return quick
+
+    cached = _load_or_set_aside(path) if not refresh else []
 
     def keep(candles: list[Candle]) -> None:
         """받는 도중에도 저장해 둔다 — 끊겨도 다시 받지 않게."""
@@ -173,7 +324,7 @@ def fetch(
     if candles:
         save(path, candles)
         log.info("%s에 %d개 저장", path, len(candles))
-    return Series.from_candles(market, timeframe, candles[-count:])
+    return len(candles)
 
 
 #: 경로 → (크기, 수정시각, 봉 개수). 파일이 바뀌면 앞의 둘이 안 맞아 다시 센다.

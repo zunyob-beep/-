@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ..data import count_cached, fetch, load_cached, span_cached
+from ..data import count_cached, load_cached, span_cached, update
 from ..models import HORIZONS, KST, MARKETS, Series, market_label, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
 from ..odds import Odds, examples_for, find_matches, odds_for
@@ -228,7 +228,8 @@ def _do_fetch(state: State, market: str, refresh: bool) -> None:
             state.job.update(done=done, total=total)
 
         state.checkpoint()
-        fetch(
+        # 봉은 여기서 안 쓴다. 파일만 최신이면 된다.
+        update(
             client, market, timeframe, count,
             directory=state.data_dir, refresh=refresh, progress=progress,
         )
@@ -257,8 +258,8 @@ def _do_live(
             state.job.update(message=f"{name} 받는 중…", done=done, total=total)
 
         try:
-            fetch(client, market, timeframe, wanted,
-                  directory=state.data_dir, progress=progress)
+            update(client, market, timeframe, wanted,
+                   directory=state.data_dir, progress=progress)
         except UpbitError as exc:
             log.warning("%s 갱신 실패(%s) — 가진 것으로 계산합니다", timeframe, exc)
     _do_odds(state, market, similarity, fee, slippage, length)
