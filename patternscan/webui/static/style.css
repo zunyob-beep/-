@@ -310,7 +310,7 @@ figcaption { color: var(--text); font-size: 12.5px; margin-bottom: 8px; }
 .odds-group:last-child { margin-bottom: 0; }
 .odds-group h4 { margin: 0 0 10px; font-size: 13.5px; font-weight: 600; }
 
-table.odds { min-width: 640px; }
+table.odds { min-width: 660px; }
 table.odds td.big { font-size: 15px; font-weight: 600; }
 table.odds td .sub2 {
   display: block; font-size: 11px; font-weight: 400;
@@ -393,6 +393,15 @@ main, .top { position: relative; z-index: 2; }
 .ahead-legend { font-size: 12.5px; line-height: 1.9; font-variant-numeric: tabular-nums; }
 .ahead-row.big { font-size: 15px; }
 .ahead-row.big b { color: var(--text); }
+/* 금액은 %보다 크게. "+0.02%"는 아무 느낌이 없지만 "+200원"은 바로 온다. */
+.ahead-money {
+  margin-top: 10px; padding: 9px 11px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 12.5px; line-height: 1.8;
+}
+.ahead-money b { font-size: 16px; }
+.ahead-money b.up { color: var(--up); }
+.ahead-money b.down { color: var(--down); }
 .rule-cost { color: var(--warn); letter-spacing: -2px; }
 .ahead-warn {
   margin-top: 8px; padding: 7px 9px; font-size: 12px;

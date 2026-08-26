@@ -174,6 +174,8 @@ class State:
         #: 8년치 수집은 40분이 걸린다. 잘못 눌렀을 때 빠져나올 길이 없으면
         #: 서버를 껐다 켜는 수밖에 없다 — 아이패드에서는 그게 제일 어렵다.
         self.cancel = threading.Event()
+        #: 미리 받기를 멈추라는 신호. 사용자가 뭘 누르면 곧바로 세운다.
+        self._warm_stop = threading.Event()
         self.analysis: Analysis | None = None
         #: 분석이 새로 끝날 때마다 올라간다. 화면은 이 번호가 바뀔 때만
         #: 표를 다시 그린다 — 매번 다시 그리면 사용자가 누르던 행이
@@ -190,11 +192,27 @@ class State:
         with self._start_lock:
             if self.job.running:
                 return False
+            # 미리 받던 게 있으면 비키게 한다. 본업이 먼저다.
+            self._warm_stop.set()
             self.cancel.clear()
             self.job.update(kind=kind, running=True, message="시작하는 중…", done=0, total=0, error="")
         thread = threading.Thread(target=self._run, args=(target, args), daemon=True)
         thread.start()
         return True
+
+    def warm(self, market: str, count: int) -> None:
+        """다른 종목들을 미리 받아둔다. **작업 자리를 차지하지 않는다.**
+
+        사용자가 버튼을 누르면 곧바로 비켜야 하므로 job과 따로 돈다.
+        job 자리를 쓰면 미리 받는 동안 버튼이 잠겨 버린다.
+        """
+        self._warm_stop.set()
+        self._warm_stop = threading.Event()
+        mine = self._warm_stop
+        thread = threading.Thread(
+            target=_do_warm, args=(self, market, count, mine), daemon=True
+        )
+        thread.start()
 
     def stop(self) -> bool:
         """돌고 있으면 멈추라고 알린다. 받아둔 것은 이미 저장돼 있다."""
@@ -224,6 +242,35 @@ class State:
         finally:
             self.cancel.clear()
             self.job.update(running=False)
+
+
+def _do_warm(state: State, market: str, count: int, stop: threading.Event) -> None:
+    """지금 안 보고 있는 종목들을 조용히 받아둔다.
+
+    이더리움을 처음 누르면 거기서 몇 분을 기다리게 된다. 비트코인을
+    보는 동안 나머지를 미리 받아두면 누르는 즉시 나온다.
+
+    **본업을 밀어내지 않는 게 조건이다.** 그래서
+      · 사용자가 뭘 누르면 곧바로 비켜준다 (checkpoint)
+      · 봉 간격당 한 번씩만 확인한다
+      · 실패해도 조용히 넘어간다 — 이건 미리 해두는 일이지 시킨 일이 아니다
+    """
+    client = UpbitClient()
+    others = [code for code in MARKETS if code != market]
+    for code in others:
+        for timeframe in DEFAULT_COUNT:
+            if stop.is_set():
+                return
+            try:
+                update(client, code, timeframe, count // _RATIO[timeframe],
+                       directory=state.data_dir)
+            except Exception as exc:
+                # **무엇이 나든** 조용히 넘어간다. 이건 미리 해두는 일이지
+                # 시킨 일이 아니다. 여기서 새는 예외는 사용자가 부탁한 적
+                # 없는 작업 때문에 화면에 오류를 띄우게 된다.
+                log.debug("%s %s 미리 받기 실패 — 넘어갑니다 (%s)", code, timeframe, exc)
+        state.job.update(message=f"{market_label(code)} 미리 받아두는 중…")
+    state.job.update(message="")
 
 
 # ---------------------------------------------------------------- 작업 본체
@@ -273,6 +320,8 @@ def _do_live(
         except UpbitError as exc:
             log.warning("%s 갱신 실패(%s) — 가진 것으로 계산합니다", timeframe, exc)
     _do_odds(state, market, similarity, fee, slippage, length)
+    # 보고 있는 종목이 끝났으니, 나머지는 조용히 받아둔다.
+    state.warm(market, count)
 
 
 #: 1분봉 개수를 기준으로 각 간격이 몇 분의 1인지
@@ -528,8 +577,34 @@ def _level_json(one: Level) -> dict[str, Any]:
     }
 
 
-def _projection_json(forward: Projection) -> dict[str, Any]:
+#: 예상 앞에 붙일 **실제 봉** 개수. 지나온 길이 없으면 그림이 허공에서
+#: 시작해 진짜 차트로 안 보인다.
+RECENT_BARS = 40
+
+
+def _recent_candles(series: Series, count: int = RECENT_BARS) -> list[dict[str, float]]:
+    """마지막 봉 몇 개를 그대로. 종가만 주면 꼬리가 사라져 밋밋해진다."""
+    take = min(count, len(series))
+    if take <= 0:
+        return []
+    base = float(series.close[-1])
+    if base <= 0:
+        return []
+    out = []
+    for i in range(len(series) - take, len(series)):
+        out.append({
+            "o": round(float(series.open[i]) / base - 1.0, 6),
+            "h": round(float(series.high[i]) / base - 1.0, 6),
+            "l": round(float(series.low[i]) / base - 1.0, 6),
+            "c": round(float(series.close[i]) / base - 1.0, 6),
+        })
+    return out
+
+
+def _projection_json(forward: Projection, series: Series | None = None) -> dict[str, Any]:
     return {
+        "recent": _recent_candles(series) if series is not None else [],
+        "walks": forward.walks,
         "timeframe": forward.timeframe,
         "label": timeframe_label(forward.timeframe),
         "samples": forward.samples,
@@ -577,7 +652,8 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             for tf, found in analysis.fibonacci.items()
         },
         "projection": {
-            tf: _projection_json(p) for tf, p in analysis.projection.items()
+            tf: _projection_json(p, analysis.series.get(tf))
+            for tf, p in analysis.projection.items()
         },
         "verdict": _verdict(analysis.odds, analysis.cost),
         "updatedAt": analysis.updated_at,

@@ -952,3 +952,116 @@ def test_pressing_start_twice_says_so(client):
     source = client[0].get("/static/app.js")[1].decode("utf-8")
     assert "answer.started === false" in source
     assert "이미 하고 있습니다" in source
+
+
+# ================================================= 다른 종목 미리 받아두기
+#
+# 이더리움을 처음 누르면 거기서 몇 분을 기다리게 된다. 비트코인을 보는
+# 동안 나머지를 받아두면 누르는 즉시 나온다. 단, **본업을 밀어내면 안 된다.**
+def test_warming_fetches_the_other_coins(client, monkeypatch):
+    api, state = client
+    asked = []
+    monkeypatch.setattr(webui, "update",
+                        lambda c, market, tf, n, **kw: asked.append((market, tf)))
+
+    state.warm("KRW-BTC", 43_200)
+    for _ in range(200):
+        if len(asked) >= 9:
+            break
+        threading.Event().wait(0.02)
+
+    coins = {market for market, _ in asked}
+    assert "KRW-BTC" not in coins, "보고 있는 종목을 또 받았습니다"
+    assert coins == {"KRW-ETH", "KRW-XRP", "KRW-SOL"}
+
+
+def test_warming_does_not_take_the_job_slot(client, monkeypatch):
+    """미리 받는 동안 단추가 잠기면, 사용자는 도구가 멈춘 줄 안다."""
+    api, state = client
+    monkeypatch.setattr(webui, "update", lambda *a, **k: threading.Event().wait(0.05))
+
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.1)
+    assert not state.job.snapshot()["running"], "미리 받기가 작업 자리를 차지했습니다"
+    assert state.start("real", lambda: None), "미리 받는 중이라고 본업을 막았습니다"
+
+
+def test_warming_yields_the_moment_a_real_job_starts(client, monkeypatch):
+    """사용자가 누른 일이 먼저다. 미리 받던 건 곧바로 비켜야 한다."""
+    api, state = client
+    asked = []
+
+    def slow(c, market, tf, n, **kw):
+        asked.append(market)
+        threading.Event().wait(0.05)
+
+    monkeypatch.setattr(webui, "update", slow)
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.08)
+
+    state.start("real", lambda: None)      # 본업 시작 → 미리 받기는 멈춰야 한다
+    count = len(asked)
+    threading.Event().wait(0.3)
+    assert len(asked) <= count + 1, "본업이 시작됐는데 계속 받고 있습니다"
+
+
+def test_a_failure_while_warming_is_silent(client, monkeypatch):
+    """부탁한 적 없는 작업 때문에 화면에 오류가 뜨면 안 된다."""
+    api, state = client
+
+    def explode(*args, **kwargs):
+        raise ZeroDivisionError("미리 받다 터졌다")
+
+    monkeypatch.setattr(webui, "update", explode)
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.3)
+    assert not state.job.snapshot()["error"], "미리 받기 실패가 화면에 새어 나왔습니다"
+
+
+# ======================================================== 돈으로 보여주기
+def test_the_page_can_turn_percentages_into_money(client):
+    """"+0.02%"는 아무 느낌이 없다. "100만원에 +200원"은 바로 온다."""
+    body = client[0].get("/")[1].decode("utf-8")
+    assert 'id="in-amount"' in body, "넣을 금액을 입력할 곳이 없습니다"
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "function cash(" in source
+    assert "function moneyCell(" in source
+
+
+def test_money_is_shown_after_fees(client):
+    """수수료를 빼기 전 금액을 보여주면 실제보다 좋아 보인다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    spot = source.index("function moneyCell(")
+    body = source[spot : spot + 400]
+    assert "analysis.cost" in body, "수수료를 안 빼고 금액을 냈습니다"
+
+
+# ================================================== 실제 봉으로 그린 그래프
+def test_the_projection_carries_real_candles(client):
+    """예상만 덜렁 그리면 허공에서 시작해 진짜 차트로 안 보인다."""
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    forward = state["analysis"]["projection"]
+    if not forward:
+        pytest.skip("이 데이터로는 예상을 그릴 수 없습니다")
+    one = next(iter(forward.values()))
+    assert one["recent"], "지나온 봉이 없습니다"
+    first = one["recent"][0]
+    assert set(first) == {"o", "h", "l", "c"}, "고가·저가가 빠져 꼬리를 못 그립니다"
+    assert first["l"] <= first["o"] <= first["h"]
+    assert first["l"] <= first["c"] <= first["h"]
+
+
+def test_the_projection_shows_real_paths_not_just_the_average(client):
+    """중앙값은 100개의 중앙값이라 매끄러울 수밖에 없다.
+
+    그것만 보면 "앞으로 이렇게 미끄러지듯 간다"로 읽힌다. 실제로 갔던
+    길을 몇 개 겹쳐 그려야 톱니처럼 꺾이는 진짜 모습이 보인다.
+    """
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    forward = state["analysis"]["projection"]
+    if not forward:
+        pytest.skip("이 데이터로는 예상을 그릴 수 없습니다")
+    one = next(iter(forward.values()))
+    assert one["walks"], "실제로 갔던 길이 하나도 없습니다"
+    assert all(w[0] == 0.0 for w in one["walks"]), "지금 값에서 시작하지 않습니다"
+    assert all(len(w) == len(one["median"]) for w in one["walks"])

@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -386,6 +386,10 @@ class Projection:
     worst: list[float]    # 10%
     best: list[float]     # 90%
     price_now: float
+    #: 닮았던 과거 중 **실제로 간 길** 몇 개. 중앙값은 매끄러울 수밖에
+    #: 없지만(100개의 중앙값이니까) 실제 경로는 톱니처럼 꺾인다. 그
+    #: 꺾임을 안 보여주면 "앞으로 이렇게 미끄러지듯 간다"로 읽힌다.
+    walks: list[list[float]] = field(default_factory=list)
 
     @property
     def minutes(self) -> int:
@@ -400,6 +404,10 @@ class Projection:
     def prices(self, which: str) -> list[float]:
         """비율을 실제 금액으로."""
         return [self.price_now * (1.0 + v) for v in getattr(self, which)]
+
+
+#: 실제 경로를 몇 개나 겹쳐 그릴지.
+SHOWN_WALKS = 8
 
 
 def project(
@@ -428,6 +436,11 @@ def project(
     if len(paths) < MIN_SAMPLES:
         return None
     grid = np.vstack(paths)
+
+    # 가장 닮았던 것부터 몇 개만 실제 경로로 겹쳐 그린다. 너무 많으면
+    # 선이 뭉개져서 띠와 구분이 안 된다.
+    order = np.argsort(matches.distances)[:SHOWN_WALKS]
+    keep = [int(i) for i in order if i < len(paths)]
     def pick(q: float) -> list[float]:
         # 0에서 시작한다 — 지금 값이 기준점이라 그래야 선이 이어진다.
         return [0.0] + [round(float(v), 6) for v in np.percentile(grid, q, axis=0)]
@@ -439,4 +452,5 @@ def project(
         median=pick(50), low=pick(25), high=pick(75),
         worst=pick(10), best=pick(90),
         price_now=float(closes[-1]),
+        walks=[[0.0] + [round(float(v), 6) for v in paths[i]] for i in keep],
     )

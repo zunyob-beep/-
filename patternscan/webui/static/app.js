@@ -207,6 +207,23 @@ function showPeriodNote() {
   $('period-note').textContent = picked ? picked.dataset.note : '';
 }
 
+// ------------------------------------------------------------ 돈으로 보기
+//
+// "+0.02%"는 아무 느낌이 없다. "100만원에 +200원"은 바로 온다. 그리고
+// 수수료가 왜 문제인지도 그제서야 보인다 — 0.14%면 100만원에 1,400원이고,
+// 그건 20분 동안 벌 수 있는 돈보다 크다.
+function amount() {
+  const value = parseFloat($('in-amount').value);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** 손익 금액. 부호를 꼭 붙인다 — 0원 근처에서 방향이 헷갈리면 안 된다. */
+function cash(value) {
+  const rounded = Math.round(value);
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '';
+  return `${sign}${Math.abs(rounded).toLocaleString('ko-KR')}원`;
+}
+
 // ------------------------------------------------------------ 지금 시세
 const won = (x) => x >= 1000
   ? Math.round(x).toLocaleString('ko-KR')
@@ -338,8 +355,9 @@ function renderOdds(analysis) {
       </h4>${warn}
       <div class="table-wrap"><table class="odds">
         <thead><tr>
-          <th class="l">시간</th><th>올라 있을 확률</th><th>평소</th><th>차이</th>
-          <th>불확실 범위</th><th>수수료까지 넘길 확률</th><th>평소</th>
+          <th class="l">시간</th><th>올라 있을 확률</th><th>차이</th>
+          <th>불확실 범위</th><th>수수료까지 넘길 확률</th>
+          <th>넣었다면</th>
         </tr></thead><tbody></tbody>
       </table></div>`;
 
@@ -350,19 +368,28 @@ function renderOdds(analysis) {
       tr.className = row.tellsUsAnything ? 'informative' : '';
       tr.innerHTML = `
         <td class="l">${row.minutes}분 뒤</td>
-        <td class="big">${pct(row.upRate)}<span class="sub2">${row.samples}개 중 ${row.up}개</span></td>
-        <td class="dim">${pct(row.baseUp)}</td>
+        <td class="big">${pct(row.upRate)}<span class="sub2">${row.samples}개 중 ${row.up}개 ·
+          평소 ${pct(row.baseUp)}</span></td>
         <td class="${row.upEdge >= 0 ? 'pos' : 'neg'}">${signed(row.upEdge, 0)}</td>
         <td class="dim">${pct(row.ciLow)}~${pct(row.ciHigh)}${
           row.tellsUsAnything ? '' : '<span class="sub2">평소와 구분 안 됨</span>'}</td>
-        <td class="big">${pct(row.beatRate)}</td>
-        <td class="dim">${pct(row.baseBeat)}</td>`;
+        <td class="big">${pct(row.beatRate)}<span class="sub2">평소 ${pct(row.baseBeat)}</span></td>
+        ${moneyCell(row, analysis)}`;
       tr.addEventListener('click', () => select(row.timeframe, row.horizon, analysis));
       tbody.appendChild(tr);
     }
     body.appendChild(section);
   }
   markSelected();
+}
+
+/** 중앙 수익을 금액으로. **수수료를 뺀 뒤**의 숫자여야 의미가 있다. */
+function moneyCell(row, analysis) {
+  const stake = amount();
+  if (!stake) return '<td class="dim">—</td>';
+  const net = row.medianReturn - (analysis.cost || 0);
+  return `<td class="big ${net >= 0 ? 'pos' : 'neg'}">${cash(stake * net)}
+    <span class="sub2">중앙 ${signed(row.medianReturn, 3)}</span></td>`;
 }
 
 function markSelected() {
@@ -601,43 +628,96 @@ function renderAhead(analysis) {
 }
 
 function drawAhead(p, analysis) {
-  const W = 640, H = 260, PAD = 10;
-  const every = [...p.worst, ...p.best];
-  const y = scaleTo(every, H, PAD);
-  const x = (i) => PAD + (i / Math.max(1, p.median.length - 1)) * (W - PAD * 2);
+  const W = 640, H = 260, PAD = 8;
+  const past = p.recent || [];
+  const ahead = p.median.length;
+  // 지나온 길과 앞으로를 같은 자 위에 놓는다. 그래야 이어져 보인다.
+  const total = past.length + ahead - 1;
+  const x = (i) => PAD + (i / Math.max(1, total - 1)) * (W - PAD * 2);
+  const split = past.length - 1;
 
+  const every = [
+    ...past.flatMap((k) => [k.h, k.l]),
+    ...p.worst, ...p.best, ...p.walks.flat(),
+  ];
+  const y = scaleTo(every, H, PAD);
+
+  // ── 지나온 길: 진짜 봉으로 그린다. 종가 선만 그으면 꼬리가 사라져
+  //    밋밋해지고, 실제 차트로 안 보인다.
+  const width = Math.max(1.4, (W - PAD * 2) / Math.max(1, total) * 0.62);
+  const bars = past.map((k, i) => {
+    const up = k.c >= k.o;
+    const colour = up ? '#ff5566' : '#4aa3ff';   // 업비트와 같은 색
+    const cx = x(i);
+    const top = y(Math.max(k.o, k.c)), bottom = y(Math.min(k.o, k.c));
+    const body = Math.max(0.8, bottom - top);
+    return `<line x1="${cx.toFixed(1)}" y1="${y(k.h).toFixed(1)}"
+                  x2="${cx.toFixed(1)}" y2="${y(k.l).toFixed(1)}"
+                  stroke="${colour}" stroke-width="1" stroke-opacity="0.75"
+                  vector-effect="non-scaling-stroke"/>
+            <rect x="${(cx - width / 2).toFixed(1)}" y="${top.toFixed(1)}"
+                  width="${width.toFixed(1)}" height="${body.toFixed(1)}"
+                  fill="${colour}" fill-opacity="${up ? 0.85 : 0.85}"/>`;
+  }).join('');
+
+  // ── 앞으로: 띠 + 실제로 갔던 길 몇 개 + 중앙값
+  const at = (i) => x(split + i);
   const band = (lo, hi, fill) => {
-    const up = lo.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-    const down = hi.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).reverse();
+    const up = lo.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`);
+    const down = hi.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`).reverse();
     return `<polygon points="${up.concat(down).join(' ')}" fill="${fill}" stroke="none"/>`;
   };
+  const path = (values, colour, stroke, alpha) => {
+    const pts = values.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    return `<polyline points="${pts}" fill="none" stroke="${colour}"
+             stroke-width="${stroke}" stroke-opacity="${alpha}"
+             stroke-linejoin="round" stroke-linecap="round"
+             vector-effect="non-scaling-stroke"/>`;
+  };
+
   const zero = y(0).toFixed(1);
   const cost = analysis.cost || 0;
+  const edge = x(split).toFixed(1);
 
   $('ahead-chart').innerHTML =
-      band(p.worst, p.best, 'rgba(0,255,102,0.07)')
-    + band(p.low, p.high, 'rgba(0,255,102,0.16)')
-    // 본전선(0)과 수수료선 — 이 위로 올라가야 실제로 돈이 된다
+      band(p.worst, p.best, 'rgba(0,255,102,0.06)')
+    + band(p.low, p.high, 'rgba(0,255,102,0.14)')
+    // 실제로 갔던 길. 톱니처럼 꺾이는 게 진짜 모습이다 — 중앙값은
+    // 100개의 중앙값이라 매끄러울 수밖에 없고, 그것만 보면
+    // "앞으로 미끄러지듯 간다"로 읽힌다.
+    + p.walks.map((w) => path(w, '#00ff66', 1, 0.28)).join('')
     + `<line x1="${PAD}" y1="${zero}" x2="${W - PAD}" y2="${zero}"
              stroke="#3f7a5c" stroke-width="1" stroke-dasharray="4 4"
              vector-effect="non-scaling-stroke"/>`
-    + `<line x1="${PAD}" y1="${y(cost).toFixed(1)}" x2="${W - PAD}" y2="${y(cost).toFixed(1)}"
+    + `<line x1="${edge}" y1="${y(cost).toFixed(1)}" x2="${W - PAD}" y2="${y(cost).toFixed(1)}"
              stroke="#d8ff6b" stroke-width="1" stroke-dasharray="2 5"
-             stroke-opacity="0.8" vector-effect="non-scaling-stroke"/>`
-    + polyline(p.median, y, W, PAD, '#00ff66', 2.4, 1);
+             stroke-opacity="0.85" vector-effect="non-scaling-stroke"/>`
+    + bars
+    // 지금 자리. 왼쪽은 일어난 일, 오른쪽은 아직 아닌 일이다.
+    + `<line x1="${edge}" y1="${PAD}" x2="${edge}" y2="${H - PAD}"
+             stroke="#00ff66" stroke-width="1" stroke-opacity="0.5"
+             stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`
+    + path(p.median, '#00ff66', 2.4, 1);
 
   const end = p.median[p.median.length - 1];
   const lo = p.low[p.low.length - 1], hi = p.high[p.high.length - 1];
   const money = (r) => `${Math.round(p.priceNow * (1 + r)).toLocaleString('ko-KR')}원`;
   const wide = (hi - lo) > Math.abs(end) * 4;
+  const stake = amount();
 
   $('ahead-legend').innerHTML = `
     <div class="ahead-row"><b>${p.label}</b> · 닮았던 과거 ${p.samples}개 · ${p.minutes}분 앞</div>
-    <div class="ahead-row big">가운뎃값 <b>${signed(end)}</b> <span class="dim">${money(end)}</span></div>
-    <div class="ahead-row">절반은 이 사이 <b>${signed(lo)} ~ ${signed(hi)}</b></div>
+    <div class="ahead-row big">가운뎃값 <b>${signed(end)}</b></div>
+    <div class="ahead-row dim">${money(end)}</div>
+    <div class="ahead-row">절반은 <b>${signed(lo)} ~ ${signed(hi)}</b></div>
     <div class="ahead-row dim">${money(lo)} ~ ${money(hi)}</div>
-    <div class="ahead-row"><span class="rule-cost">┈</span> 수수료선 ${pct(cost, 2)}
-      <span class="dim">— 이 위로 가야 돈이 됩니다</span></div>
+    ${stake ? `<div class="ahead-money">
+        ${won(stake)}원 넣었다면<br>
+        <b class="${end - cost >= 0 ? 'up' : 'down'}">${cash(stake * (end - cost))}</b>
+        <span class="dim">수수료 빼고</span><br>
+        <span class="dim">절반은 ${cash(stake * (lo - cost))} ~ ${cash(stake * (hi - cost))}</span>
+      </div>` : ''}
+    <div class="ahead-row"><span class="rule-cost">┈</span> 수수료선 ${pct(cost, 2)}</div>
     ${wide ? `<div class="ahead-warn">띠가 가운뎃값보다 훨씬 넓습니다 —
       방향을 말할 수 있는 상태가 아닙니다.</div>` : ''}`;
 }
