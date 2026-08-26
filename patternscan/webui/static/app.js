@@ -43,7 +43,7 @@ async function refreshState() {
   const job = state.job || {};
   $('market').textContent = state.market;
   $('btn-scan').disabled = job.running;
-  $('btn-fetch').disabled = job.running;
+  $('btn-live').disabled = job.running;
   $('job').textContent = job.running ? (job.message || '작업 중…') : (job.message || '');
 
   const bar = $('progress');
@@ -63,7 +63,7 @@ async function refreshState() {
     renderCached(state.cached);
   }
 
-  setStale(job.running && job.kind === 'scan' && state.analysis !== null);
+  setStale(job.running && state.analysis !== null);
 
   stopPolling();
   if (job.running) timer = setTimeout(refreshState, 500);
@@ -83,11 +83,12 @@ function renderCached(cached) {
   const any = cached.some((c) => c.count > 0);
   box.innerHTML = any
     ? `받아둔 시세: ${cached.map((c) => `<b>${c.label}</b> ${c.count.toLocaleString()}개`).join(' · ')}
-       — <b>확률 계산하기</b>를 누르세요.`
-    : `아직 받아둔 시세가 없습니다. <b>시세 받기</b>를 먼저 눌러 주세요 (몇 분 걸립니다).`;
+       — <b>지금 시세로 판단받기</b>를 누르세요.`
+    : `아직 받아둔 시세가 없습니다. <b>지금 시세로 판단받기</b>를 누르면 업비트에서 받아옵니다 (처음 한 번은 몇 분 걸립니다).`;
 }
 
 function render(analysis) {
+  renderVerdict(analysis);
   renderCoverage(analysis);
   renderOdds(analysis);
   if (analysis.odds && analysis.odds.length) {
@@ -96,6 +97,19 @@ function render(analysis) {
   } else {
     $('examples-panel').hidden = true;
   }
+}
+
+function renderVerdict(analysis) {
+  const v = analysis.verdict;
+  if (!v) return;
+  const panel = $('verdict');
+  panel.hidden = false;
+  panel.className = `panel verdict ${v.buy ? 'buy' : 'hold'}`;
+  $('verdict-headline').textContent = v.headline;
+  $('verdict-time').textContent = analysis.updatedAt ? `${analysis.updatedAt} 기준` : '';
+  $('verdict-reasons').innerHTML = v.reasons
+    .map((r) => `<li>${r.replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</li>`)
+    .join('');
 }
 
 function renderCoverage(analysis) {
@@ -285,12 +299,21 @@ $('btn-scan').addEventListener('click', async () => {
   catch (err) { showError(err.message); }
 });
 
-$('btn-fetch').addEventListener('click', async () => {
+$('btn-live').addEventListener('click', () => runLive());
+
+async function runLive() {
   showError('');
-  try {
-    await post('/api/fetch', { market: settings().market, refresh: $('in-refresh').checked });
-    refreshState();
-  } catch (err) { showError(err.message); }
+  try { await post('/api/live', settings()); refreshState(); }
+  catch (err) { showError(err.message); }
+}
+
+// 1분마다 자동 갱신. 새 봉이 생기는 주기가 1분이므로 그보다 자주 물어도 의미가 없다.
+let auto = null;
+$('in-auto').addEventListener('change', (e) => {
+  if (auto !== null) { clearInterval(auto); auto = null; }
+  if (e.target.checked) auto = setInterval(() => {
+    if (!$('btn-live').disabled) runLive();
+  }, 60000);
 });
 
 refreshState();

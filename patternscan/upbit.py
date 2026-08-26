@@ -151,11 +151,23 @@ class UpbitClient:
         count: int,
         end: datetime | None = None,
         progress: Any = None,
+        stop_at: datetime | None = None,
+        on_batch: Any = None,
     ) -> list[Candle]:
         """`count`개가 모일 때까지 과거로 거슬러 올라가며 받는다.
 
-        1분봉은 하루가 1,440개다. 한 달을 받으려면 200개씩 216번 요청해야
-        하므로 시간이 걸린다 — 그래서 받은 건 CSV로 캐시한다(data.py).
+        1분봉은 하루가 1,440개다. 8년치(420만 개)면 200개씩 21,000번
+        요청해야 하고 40분이 넘게 걸린다. 그래서 두 가지를 지원한다.
+
+        `stop_at`
+            이 시각까지 내려가면 멈춘다. 이미 캐시에 있는 구간을 다시 받지
+            않기 위한 것이다. 이게 없으면 8년치를 받아둔 사람이 한 봉을
+            더 받으려 해도 처음부터 8년을 다시 받게 된다.
+
+        `on_batch`
+            페이지를 받을 때마다 부른다. 중간에 끊겨도 받은 만큼은 남기기
+            위한 것이다. 40분짜리 수집이 39분에 끊겨 전부 날아가면
+            사용자는 다시 시도하지 않는다.
         """
         collected: dict[int, Candle] = {}
         cursor = end
@@ -169,12 +181,18 @@ class UpbitClient:
             collected.update({int(c.ts.timestamp()): c for c in batch})
             if len(collected) == before:
                 break  # 같은 페이지가 반복되면 더 과거 데이터가 없는 것
+
+            oldest = min(batch, key=lambda c: c.ts).ts
             if progress is not None:
                 progress(len(collected), count)
-            cursor = min(batch, key=lambda c: c.ts).ts - step
+            if on_batch is not None:
+                on_batch(sorted(collected.values(), key=lambda c: c.ts))
+            if stop_at is not None and oldest <= stop_at:
+                break  # 이미 가진 구간에 닿았다
+            cursor = oldest - step
 
         candles = sorted(collected.values(), key=lambda c: c.ts)
-        return candles[-count:]
+        return candles[-count:] if len(candles) > count else candles
 
 
 def _parse(row: Mapping[str, Any]) -> Candle:

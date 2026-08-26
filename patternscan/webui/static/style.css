@@ -220,3 +220,11 @@ table.odds tbody tr.informative td.big { color: #6fe0bb; }
 .svg-box.wide { flex: 1 1 auto; height: 90px; }
 .svg-box.narrow { flex: 0 0 100px; height: 90px; }
 .dim { color: var(--dim); }
+
+
+/* ---------------------------------------------------------------- 판정 */
+.verdict.buy { border-color: rgba(38, 161, 123, 0.55); }
+.verdict.buy .mark { background: var(--good); }
+.verdict.hold { border-color: rgba(208, 66, 79, 0.45); }
+.verdict.hold .mark { background: var(--bad); }
+.verdict-time { margin-left: auto; color: var(--dim); font-size: 12px; }

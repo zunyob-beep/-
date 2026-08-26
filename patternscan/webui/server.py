@@ -18,6 +18,7 @@ import logging
 import threading
 import webbrowser
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from ..data import fetch, load_cached
-from ..models import HORIZONS, Series, timeframe_label
+from ..models import HORIZONS, KST, Series, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
 from ..odds import Odds, examples_for, find_matches, odds_for
 from ..scan import (
@@ -82,6 +83,8 @@ class Analysis:
     #: 봉 간격별로 찾아둔 매치. 사례를 볼 때마다 다시 찾으면 몇 초씩 걸리고,
     #: 그동안 브라우저가 요청을 취소해 서버에 BrokenPipe가 쌓인다.
     matches: dict[str, Any] = field(default_factory=dict)
+    #: 이 계산이 언제 끝났는지 (KST 문자열). 화면이 "몇 분 전 기준"을 보여준다.
+    updated_at: str = ""
 
 
 @dataclass
@@ -166,6 +169,30 @@ def _do_fetch(state: State, market: str, refresh: bool) -> None:
     state.job.update(message="시세 수집을 마쳤습니다", done=0, total=0)
 
 
+def _do_live(
+    state: State, market: str, similarity: float, fee: float, slippage: float,
+    length: int, count: int,
+) -> None:
+    """업비트에서 새 봉을 받고 곧바로 다시 계산한다.
+
+    캐시가 있으면 새로 생긴 봉만 받으므로 몇 초면 끝난다 (data.fetch 참고).
+    """
+    client = UpbitClient()
+    state.job.update(message="업비트에서 새 봉 받는 중…", done=0, total=len(DEFAULT_COUNT))
+    for done, timeframe in enumerate(DEFAULT_COUNT, start=1):
+        try:
+            fetch(client, market, timeframe, count // _RATIO[timeframe],
+                  directory=state.data_dir)
+        except UpbitError as exc:
+            log.warning("%s 갱신 실패(%s) — 가진 것으로 계산합니다", timeframe, exc)
+        state.job.update(done=done)
+    _do_odds(state, market, similarity, fee, slippage, length)
+
+
+#: 1분봉 개수를 기준으로 각 간격이 몇 분의 1인지
+_RATIO = {"minute1": 1, "minute3": 3, "minute5": 5}
+
+
 def _do_odds(
     state: State, market: str, similarity: float, fee: float, slippage: float, length: int,
 ) -> None:
@@ -208,9 +235,75 @@ def _do_odds(
             market=market, cost=cost, similarity=similarity, length=length,
             series=series, odds=rows, matches=found,
             missing=tuple(tf for tf in DEFAULT_COUNT if tf not in series),
+            updated_at=datetime.now(KST).strftime("%H:%M:%S"),
         )
     )
     state.job.update(message="계산을 마쳤습니다", done=total, total=total)
+
+
+def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
+    """지금 살지 말지.
+
+    확률만 보여주기로 했지만, 사용자는 결국 "그래서 사?"를 묻는다.
+    답하되 근거를 함께 낸다. 사려면 셋을 모두 넘겨야 한다.
+
+      1. 표본이 충분할 것
+      2. 불확실 범위가 '평소'를 넘을 것 (우연과 구분될 것)
+      3. **수수료까지 넘길 확률**이 평소보다 확실히 높을 것
+
+    3번이 핵심이다. 그냥 오를 확률이 높아도 수수료를 못 넘기면 돈을 잃는다.
+    """
+    usable = [r for r in rows if r.samples >= ODDS_MIN_SAMPLES]
+    if not usable:
+        return {
+            "buy": False,
+            "headline": "판단할 수 없습니다",
+            "reasons": ["닮은 과거 구간이 충분히 모이지 않았습니다. 데이터를 더 받거나 기준을 낮춰 보세요."],
+        }
+
+    winners = [
+        r for r in usable
+        if r.tells_us_anything and r.up_edge > 0 and r.beat_rate > r.base_beat
+    ]
+    if not winners:
+        best = max(usable, key=lambda r: r.up_edge)
+        low, high = best.interval
+        reasons = [
+            f"가장 나은 조합은 {timeframe_label(best.timeframe)} {best.minutes}분 뒤로, "
+            f"올라 있을 확률 {best.up_rate:.0%}입니다 (평소 {best.base_up:.0%}, "
+            f"닮은 과거 {best.samples}개 기준)."
+        ]
+        # 실제로 걸린 관문만 말한다. 통과한 조건까지 실패로 적으면 거짓말이 된다.
+        if not best.tells_us_anything:
+            reasons.append(
+                f"불확실 범위가 {low:.0%}~{high:.0%}로 평소({best.base_up:.0%})를 품고 있습니다 — "
+                f"표본 {best.samples}개로는 이 차이가 우연인지 알 수 없습니다."
+            )
+        if best.up_edge <= 0:
+            reasons.append("평소보다 높지도 않습니다.")
+        if best.beat_rate <= best.base_beat:
+            reasons.append(
+                f"수수료까지 넘긴 경우가 {best.beat_rate:.0%}로 평소 {best.base_beat:.0%}보다 낮습니다."
+            )
+        elif best.tells_us_anything:
+            reasons.append("다른 조합들이 기준을 넘지 못했습니다.")
+        reasons.append("근거가 기준을 넘길 때까지는 들어가지 않는 것이 기본값입니다.")
+        return {"buy": False, "headline": "사지 마세요 — 근거가 없습니다", "reasons": reasons}
+
+    top = max(winners, key=lambda r: r.beat_rate - r.base_beat)
+    low, high = top.interval
+    return {
+        "buy": True,
+        "headline": f"살 만합니다 — {timeframe_label(top.timeframe)} {top.minutes}분 뒤 기준",
+        "reasons": [
+            f"닮은 과거 {top.samples}개 중 {top.up}개가 올랐습니다 "
+            f"({top.up_rate:.0%}, 평소 {top.base_up:.0%}).",
+            f"불확실 범위 {low:.0%}~{high:.0%}가 평소를 넘습니다 — 우연으로 보기 어렵습니다.",
+            f"왕복 비용 {cost:.2%}까지 넘긴 경우가 {top.beat_rate:.0%}로, "
+            f"평소 {top.base_beat:.0%}보다 높습니다.",
+            f"같은 기준을 통과한 조합이 {len(winners)}개입니다.",
+        ],
+    }
 
 
 # ---------------------------------------------------------------- 직렬화
@@ -271,6 +364,8 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             {"timeframe": tf, "label": timeframe_label(tf)} for tf in analysis.missing
         ],
         "odds": [_odds_json(r) for r in analysis.odds],
+        "verdict": _verdict(analysis.odds, analysis.cost),
+        "updatedAt": analysis.updated_at,
     }
 
 
@@ -439,6 +534,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._body()
             if route == "/api/fetch":
                 self._start_fetch(payload)
+            elif route == "/api/live":
+                self._start_live(payload)
             elif route == "/api/scan":
                 self._start_scan(payload)
             else:
@@ -492,6 +589,21 @@ class Handler(BaseHTTPRequestHandler):
         refresh = bool(payload.get("refresh"))
         self.state.market = market
         started = self.state.start("fetch", _do_fetch, self.state, market, refresh)
+        self._json({"started": started, "job": self.state.job.snapshot()})
+
+    def _start_live(self, payload: dict[str, Any]) -> None:
+        """새 봉을 받고 곧바로 다시 계산 — 화면의 '지금 시세로 갱신'."""
+        market = str(payload.get("market") or self.state.market)
+        self.state.market = market
+        similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
+        fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
+        slippage = _number(payload.get("slippage"), DEFAULT_SLIPPAGE, 0.0, 0.1)
+        length = int(_number(payload.get("oddsLength"), 180, 5, 180))
+        count = int(_number(payload.get("count"), DEFAULT_COUNT["minute1"], 3_000, 4_500_000))
+
+        started = self.state.start(
+            "live", _do_live, self.state, market, similarity, fee, slippage, length, count
+        )
         self._json({"started": started, "job": self.state.job.snapshot()})
 
     def _start_scan(self, payload: dict[str, Any]) -> None:

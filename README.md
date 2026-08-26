@@ -27,11 +27,31 @@ API 키도 필요 없습니다 (업비트 공개 시세만 씁니다).
 
 ---
 
-## 설치
+## 가장 쉬운 방법
 
 ```bash
-git clone <이 저장소>
+git clone https://github.com/zunyob-beep/-
 cd -
+./start.sh                    # 맥·리눅스
+start.bat                     # 윈도우 (더블클릭해도 됩니다)
+```
+
+파이썬 환경을 만들고, 업비트 시세를 받고, 브라우저를 여는 것까지 한 번에 합니다.
+두 번째부터는 **새로 생긴 봉만** 이어 받으므로 몇 초면 뜹니다.
+
+아이패드·휴대폰에서 보시려면 `./start.sh --lan` (윈도우는 `start.bat --lan`).
+
+더 긴 과거로 보고 싶으면:
+
+```bash
+COUNT=4204800 ./start.sh      # 1분봉 8년치 (처음 한 번 40분쯤)
+```
+
+중간에 끊겨도 받은 만큼 저장되니, 다시 실행하면 이어서 받습니다.
+
+### 직접 설치하기
+
+```bash
 pip install -e .
 ```
 
@@ -442,7 +462,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 174개 시험, 전부 오프라인
+python -m pytest -q          # 188개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

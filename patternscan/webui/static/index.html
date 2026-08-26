@@ -42,10 +42,10 @@
         </label>
       </div>
       <div class="row actions">
-        <button id="btn-scan" class="primary">확률 계산하기</button>
-        <button id="btn-fetch">시세 받기</button>
+        <button id="btn-live" class="primary">지금 시세로 판단받기</button>
+        <button id="btn-scan">받아둔 시세로 다시 계산</button>
         <label class="check">
-          <input id="in-refresh" type="checkbox"> 캐시 무시하고 새로 받기
+          <input id="in-auto" type="checkbox"> 1분마다 자동 갱신
         </label>
         <span id="job" class="job"></span>
       </div>
@@ -54,6 +54,16 @@
       <p id="stale-note" class="stale-note" hidden>
         아래는 <b>이전 결과</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.
       </p>
+    </section>
+
+    <!-- 판정 -->
+    <section id="verdict" class="panel verdict" hidden>
+      <div class="verdict-head">
+        <span id="verdict-mark" class="mark"></span>
+        <h2 id="verdict-headline"></h2>
+        <span id="verdict-time" class="verdict-time"></span>
+      </div>
+      <ul id="verdict-reasons"></ul>
     </section>
 
     <!-- 이 도구가 하는 일 -->

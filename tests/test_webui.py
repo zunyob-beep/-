@@ -207,6 +207,55 @@ def test_every_probability_ships_with_its_baseline(client):
         assert row["ciLow"] <= row["upRate"] <= row["ciHigh"]
 
 
+def test_verdict_refuses_when_nothing_is_distinguishable(client):
+    """잡음에서는 '사세요'가 나오면 안 된다."""
+    state = _run_scan(client)
+    verdict = state["analysis"]["verdict"]
+    assert verdict["buy"] is False
+    assert verdict["reasons"], "왜 안 되는지 말해야 한다"
+
+
+def test_verdict_only_blames_the_gate_that_actually_failed(client):
+    """통과한 조건까지 실패로 적으면 거짓말이 된다."""
+    state = _run_scan(client)
+    analysis = client[1].analysis
+    usable = [r for r in analysis.odds if r.samples >= 20]
+    if not usable:
+        pytest.skip("표본이 모자라 판정할 수 없습니다")
+    best = max(usable, key=lambda r: r.up_edge)
+    text = " ".join(state["analysis"]["verdict"]["reasons"])
+    if best.beat_rate > best.base_beat:
+        assert "보다 낮습니다" not in text, "넘긴 조건을 못 넘겼다고 적었습니다"
+
+
+def test_verdict_says_buy_when_the_evidence_is_real():
+    """진짜 신호에서는 '사세요'가 나와야 한다 — 무조건 거절하는 도구는 쓸모없다."""
+    from patternscan.odds import Odds
+    from patternscan.webui.server import _verdict
+
+    strong = [
+        Odds("minute1", 5, h, samples=100, up=91, beat_cost=90, base_up=0.52,
+             base_beat=0.19, median_return=0.003, best=0.01, worst=0.001,
+             min_similarity=0.99, query_linearity=0.1)
+        for h in (1, 3, 5)
+    ]
+    out = _verdict(strong, 0.001)
+    assert out["buy"] is True
+    assert "살 만합니다" in out["headline"]
+
+
+def test_verdict_without_samples_says_so():
+    from patternscan.odds import Odds
+    from patternscan.webui.server import _verdict
+
+    thin = [Odds("minute1", 5, 1, samples=3, up=3, beat_cost=3, base_up=0.5,
+                 base_beat=0.2, median_return=0.0, best=0.0, worst=0.0,
+                 min_similarity=0.9, query_linearity=0.3)]
+    out = _verdict(thin, 0.001)
+    assert out["buy"] is False
+    assert "판단할 수 없습니다" in out["headline"]
+
+
 def test_noise_is_marked_as_indistinguishable(client):
     """합성 무작위 시세이므로 '평소와 구분됨'이 나오면 안 된다."""
     state = _run_scan(client)
