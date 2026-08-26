@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>모양 찾기 — 오를 확률 보기</title>
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- 홈 화면에 앱처럼 얹기 위한 것들 -->
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta name="theme-color" content="#0f1116">
+  <!-- iOS는 manifest의 display를 안 읽는다. 이 둘이 있어야 주소창 없이 뜬다. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="모양 찾기">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>모양 찾기</h1>
+      <span class="sub">지금 모양과 닮은 과거를 찾아, 그 뒤에 무슨 일이 있었는지 셉니다</span>
+    </div>
+    <div class="market" id="market">KRW-BTC</div>
+  </header>
+
+  <main>
+    <!-- 조작부 -->
+    <section class="panel controls">
+      <div class="row">
+        <label>
+          종목
+          <input id="in-market" type="text" value="KRW-BTC" spellcheck="false">
+        </label>
+        <label>
+          직전 몇 개 봉
+          <input id="in-length" type="number" step="10" min="5" max="180" value="180">
+        </label>
+        <label>
+          닮았다고 볼 기준 <span class="hint">상관계수</span>
+          <input id="in-similarity" type="number" step="0.01" min="0" max="1" value="0.85">
+        </label>
+        <label>
+          편도 수수료 <span class="hint">업비트 0.05%</span>
+          <input id="in-fee" type="number" step="0.0001" min="0" value="0.0005">
+        </label>
+        <label>
+          편도 슬리피지
+          <input id="in-slippage" type="number" step="0.0001" min="0" value="0.0002">
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="btn-live" class="primary">지금 시세로 판단받기</button>
+        <button id="btn-scan">받아둔 시세로 다시 계산</button>
+        <label class="check">
+          <input id="in-auto" type="checkbox"> 1분마다 자동 갱신
+        </label>
+        <span id="job" class="job"></span>
+      </div>
+      <div id="progress" class="progress" hidden><div id="progress-bar"></div></div>
+      <p id="error" class="error" hidden></p>
+      <div id="offline" class="offline" hidden>
+        <b>서버에 연결되지 않았습니다.</b>
+        계산은 컴퓨터에서 도는 파이썬이 합니다 — 그 컴퓨터가 켜져 있는지,
+        <code>./start.sh --lan</code> 이 돌고 있는지, 같은 와이파이인지 확인하세요.
+        <span class="dim">막힌 곳을 모르겠으면 그 컴퓨터에서
+        <code>python -m patternscan doctor</code>.</span>
+      </div>
+      <p id="install-hint" class="install-hint" hidden>
+        <b>앱처럼 쓰기:</b> <span id="install-how"></span>
+        <button id="btn-install" hidden>홈 화면에 추가</button>
+        <button id="btn-install-close" class="ghost">닫기</button>
+      </p>
+      <p id="stale-note" class="stale-note" hidden>
+        아래는 <b>이전 결과</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.
+      </p>
+    </section>
+
+    <!-- 판정 -->
+    <section id="verdict" class="panel verdict" hidden>
+      <div class="verdict-head">
+        <span id="verdict-mark" class="mark"></span>
+        <h2 id="verdict-headline"></h2>
+        <span id="verdict-time" class="verdict-time"></span>
+      </div>
+      <ul id="verdict-reasons"></ul>
+    </section>
+
+    <!-- 이 도구가 하는 일 -->
+    <section class="panel disclaimer">
+      <b>이 도구는 매수를 권하지 않습니다.</b> 과거에 무슨 일이 있었는지만 셉니다.
+      확률 옆의 <b>평소</b>보다 높아야 의미가 있고, <b>불확실 범위</b>가 평소를 품고 있으면
+      그 숫자는 우연과 구분되지 않습니다.
+    </section>
+
+    <!-- 데이터 범위 -->
+    <section id="coverage" class="panel coverage" hidden></section>
+
+    <!-- 확률 표 -->
+    <section id="odds-panel" class="panel" hidden>
+      <h3>오를 확률 <span class="hint">행을 누르면 아래에 실제 사례가 그려집니다</span></h3>
+      <div id="odds-body"></div>
+    </section>
+
+    <!-- 실제 사례 -->
+    <section id="examples-panel" class="panel" hidden>
+      <h3 id="examples-title"></h3>
+      <p class="footnote" id="examples-note"></p>
+      <div class="examples">
+        <div class="example-col">
+          <h4 class="rose">올랐던 사례</h4>
+          <div id="rose-list"></div>
+        </div>
+        <div class="example-col">
+          <h4 class="fell">떨어졌던 사례</h4>
+          <div id="fell-list"></div>
+        </div>
+      </div>
+      <p class="footnote">
+        회색이 <b>그 당시 모양</b>, 파란색이 <b>지금 모양</b>입니다. 겹쳐 보고 정말 닮았는지
+        직접 확인하세요. 오른쪽 작은 그림은 그 직후에 실제로 어떻게 움직였는지입니다.
+        <b>가장 많이 오른 사례가 아니라 가장 닮은 사례</b>를 골랐습니다 —
+        많이 오른 것만 보여주면 실제보다 좋아 보이니까요.
+      </p>
+    </section>
+
+    <section class="panel note">
+      <h3>읽는 법</h3>
+      <ul>
+        <li><b>평소</b>는 같은 기간 아무 때나 들어갔을 때의 확률입니다.
+            56%도 평소가 55%면 아무 의미가 없습니다.</li>
+        <li><b>불확실 범위</b>는 표본이 적을수록 넓어집니다. 이 범위가 평소를 품고 있으면
+            <span class="dim">(평소와 구분 안 됨)</span>이 붙습니다.</li>
+        <li><b>수수료까지 넘길 확률</b>이 진짜 중요한 숫자입니다. 오르기만 해서는
+            사고파는 비용을 못 냅니다.</li>
+        <li>시간은 <b>실제 분</b>으로 적혀 있습니다. 5분봉의 "1봉 뒤"는 5분 뒤입니다.</li>
+        <li>과거 통계는 미래를 보장하지 않습니다.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

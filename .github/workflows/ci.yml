@@ -57,11 +57,14 @@ jobs:
           pip install -e ".[dev]"
 
       - name: ruff check
-        run: python -m ruff check btcbot tests
+        run: python -m ruff check patternscan tests
 
       - name: 임포트 점검
         # 패키지가 실제로 import 되고 CLI가 뜨는지 확인한다.
         # 순환 임포트는 테스트만으로는 놓치기 쉽다.
         run: |
-          python -c "import btcbot; print(btcbot.__version__)"
-          python -m btcbot strategies
+          python -c "import patternscan; print(patternscan.__version__)"
+          python -m patternscan --help
+          python -m patternscan scan --help
+          # 화면 파일이 패키지에 같이 들어갔는지 (빠지면 ui가 빈 화면이 된다)
+          python -c "from patternscan.webui.server import STATIC; assert (STATIC / 'index.html').is_file(), STATIC"

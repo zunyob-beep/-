@@ -1,407 +1,606 @@
-"""웹 UI 서버 검증 — 네트워크 없이.
+"""웹 화면 서버 검증.
 
-이 서버는 API 키로 실제 주문을 낼 수 있다. 그래서 두 가지를 특히 조인다:
-외부에 열리지 않는지, 그리고 잘못된 입력이 한글 오류로 막히는지.
+화면은 CLI와 **같은 숫자**를 보여줘야 한다. 화면에서만 계산을 다시 하면
+언젠가 두 결과가 갈라지고, 사용자는 그중 하나를 믿고 돈을 넣는다.
+그래서 서버는 계산을 직접 하지 않고 odds를 그대로 부른다 —
+이 파일은 그게 유지되는지 확인한다.
+
+그리고 확률은 절대 혼자 나가면 안 된다. 평소 확률과 불확실 범위가
+반드시 함께 실려야, 화면이 "56%"를 홀로 띄우는 일이 없다.
+
+네트워크는 타지 않는다. 시세는 전부 임시 폴더의 CSV로 넣는다.
 """
 
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
 
+import numpy as np
 import pytest
 
-from btcbot.config import Settings
-from btcbot.data import cache_path, save_csv
-from btcbot.exchange.base import ExchangeError
-from btcbot.strategies.rule import PRESETS
-from btcbot.webui.botmanager import BotManager, LogBuffer
-from btcbot.webui.server import ApiError, AppState, create_server, handle_api
-from tests.conftest import series
-
-
-@pytest.fixture
-def settings(tmp_path) -> Settings:
-    s = Settings.load(None)
-    s.data_dir = str(tmp_path / "data")
-    s.runs_dir = str(tmp_path / "runs")
-    s.market = "KRW-BTC"
-    s.interval = "day"
-    return s
-
-
-@pytest.fixture
-def state(settings, tmp_path) -> AppState:
-    """네트워크를 완전히 끊은 서버 상태.
-
-    실제 업비트를 때리면 테스트가 외부 상황에 흔들리고, 재시도 백오프
-    때문에 몇 분씩 멈춘다.
-    """
-    app = AppState(settings)
-    app.store_path = tmp_path / "strategies_saved.json"
-
-    def offline(*args, **kwargs):
-        raise ExchangeError("테스트: 네트워크 차단됨")
-
-    app.client.get_markets = app.quick.get_markets = lambda: []
-    for client in (app.client, app.quick):
-        client.get_candles = offline
-        client.get_ticker = offline
-        client.get_price = offline
-    return app
-
-
-@pytest.fixture
-def with_candles(state, settings):
-    """백테스트가 쓸 캔들을 캐시에 심어둔다."""
-    import math
-
-    prices = [100.0 + 12 * math.sin(i / 22) + i * 0.06 for i in range(400)]
-    candles = series(prices, start=datetime(2023, 1, 1, tzinfo=timezone.utc), step=timedelta(days=1))
-    save_csv(cache_path("KRW-BTC", "day", settings.data_dir), candles)
-    return state
-
-
-def get(state, path, **query):
-    return handle_api(state, "GET", path, {k: [v] for k, v in query.items()}, None)
-
-
-def post(state, path, body=None):
-    return handle_api(state, "POST", path, {}, body or {})
-
-
-# ------------------------------------------------------------------ 메타
-def test_meta_gives_everything_the_ui_needs(state):
-    meta = get(state, "/api/meta")
-    assert meta["markets"]  # 네트워크가 없어도 기본 목록이 나온다
-    assert meta["intervals"]
-    assert meta["presets"] == PRESETS
-    assert meta["builder"]["operands"] and meta["builder"]["operators"]
-    assert "risk" in meta["defaults"]
-    assert isinstance(meta["has_api_keys"], bool)
-
-
-def test_meta_never_leaks_api_keys(state, monkeypatch):
-    monkeypatch.setenv("UPBIT_ACCESS_KEY", "비밀키값")
-    monkeypatch.setenv("UPBIT_SECRET_KEY", "비밀시크릿")
-    payload = json.dumps(get(state, "/api/meta"), ensure_ascii=False)
-    assert "비밀키값" not in payload
-    assert "비밀시크릿" not in payload
-    assert get(state, "/api/meta")["has_api_keys"] is True
-
-
-def test_meta_does_not_use_the_slow_client(state):
-    """첫 화면 로딩이 재시도 백오프에 걸리면 30초 넘게 빈 화면이 뜬다."""
-
-    def forbidden():
-        raise AssertionError("느린 클라이언트를 쓰면 안 됩니다")
-
-    state.client.get_markets = forbidden
-    state.quick.get_markets = lambda: [
-        {"market": "KRW-BTC", "korean_name": "비트코인"},
-        {"market": "BTC-ETH", "korean_name": "이더리움"},
-    ]
-    markets = get(state, "/api/meta")["markets"]
-    assert [m["market"] for m in markets] == ["KRW-BTC"]  # 원화 마켓만 남는다
-
-
-def test_unknown_route_is_404(state):
-    with pytest.raises(ApiError) as exc:
-        get(state, "/api/없는것")
-    assert exc.value.status == 404
-
-
-def test_unsupported_method(state):
-    with pytest.raises(ApiError) as exc:
-        handle_api(state, "DELETE", "/api/meta", {}, None)
-    assert exc.value.status == 405
-
-
-# ------------------------------------------------------------------ 전략 저장
-def test_save_and_delete_strategy(state):
-    spec = {**PRESETS[0], "label": "내 전략"}
-    saved = post(state, "/api/strategies/save", {"spec": spec})["saved"]
-    assert [s["label"] for s in saved] == ["내 전략"]
-
-    left = post(state, "/api/strategies/delete", {"label": "내 전략"})["saved"]
-    assert left == []
-
-
-def test_save_overwrites_same_label(state):
-    for weight in (1.0, 0.5):
-        saved = post(
-            state, "/api/strategies/save", {"spec": {**PRESETS[0], "label": "같은이름", "target_weight": weight}}
-        )["saved"]
-    assert len(saved) == 1
-    assert saved[0]["target_weight"] == 0.5
-
-
-def test_save_requires_label(state):
-    with pytest.raises(ApiError, match="이름"):
-        post(state, "/api/strategies/save", {"spec": {**PRESETS[0], "label": ""}})
-
-
-def test_save_rejects_broken_spec(state):
-    with pytest.raises(Exception, match="최소 하나"):
-        post(state, "/api/strategies/save", {"spec": {"label": "빈것"}})
-
-
-# --------------------------------------------------- 말로 설명하기 (Claude)
-def test_describe_returns_translation(state):
-    from tests.test_nlstrategy import FakeClient, payload
-
-    state.translator = FakeClient(payload())
-    result = post(state, "/api/strategies/describe", {"text": "RSI 30 아래면 사줘"})
-    assert result["understood"] is True
-    assert result["spec"]["label"] == "RSI 반등"
-
-
-def test_describe_does_not_auto_apply(state):
-    """변환 결과가 저장된 전략이 되어선 안 된다 — 사람이 확인한 뒤에만."""
-    from tests.test_nlstrategy import FakeClient, payload
-
-    state.translator = FakeClient(payload())
-    post(state, "/api/strategies/describe", {"text": "RSI 30 아래면 사줘"})
-    assert state.load_strategies() == []
-
-
-def test_describe_surfaces_refusal(state):
-    from tests.test_nlstrategy import FakeClient, payload
-
-    state.translator = FakeClient(
-        payload(understood=False, message="김치프리미엄은 지원하지 않습니다.", entry=[], exit=[])
-    )
-    result = post(state, "/api/strategies/describe", {"text": "김프 뜨면 사줘"})
-    assert result["understood"] is False
-    assert result["spec"] is None
-
-
-def test_describe_empty_text_is_rejected(state):
-    with pytest.raises(ApiError, match="입력하세요"):
-        post(state, "/api/strategies/describe", {"text": "  "})
-
-
-def test_meta_reports_claude_key_presence(state, monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert get(state, "/api/meta")["has_claude_key"] is False
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert get(state, "/api/meta")["has_claude_key"] is True
-
-
-def test_validate_returns_message_instead_of_raising(state):
-    bad = post(state, "/api/strategies/validate", {"spec": {"label": "x"}})
-    assert bad["ok"] is False
-    assert "최소 하나" in bad["message"]
-
-    good = post(state, "/api/strategies/validate", {"spec": PRESETS[0]})
-    assert good["ok"] is True
-
-
-def test_saved_strategies_survive_corrupt_file(state):
-    state.store_path.write_text("깨진 json", encoding="utf-8")
-    assert state.load_strategies() == []
-
-
-def test_saved_file_is_written_atomically(state):
-    post(state, "/api/strategies/save", {"spec": {**PRESETS[0], "label": "원자적"}})
-    assert state.store_path.exists()
-    assert not list(state.store_path.parent.glob("*.tmp"))
-
-
-# ------------------------------------------------------------------ 백테스트
-def test_backtest_with_builder_spec(with_candles):
-    result = post(
-        with_candles,
-        "/api/backtest",
-        {"market": "KRW-BTC", "interval": "day", "spec": PRESETS[1], "cash": 1_000_000},
-    )
-    assert result["performance"]["initial_equity"] == 1_000_000
-    assert result["equity_curve"]
-    assert result["candles"]
-    assert "strategy" in result
-
-
-def test_backtest_with_builtin_strategy(with_candles):
-    result = post(
-        with_candles,
-        "/api/backtest",
-        {"strategy": "ma_cross", "params": {"fast": 5, "slow": 20}, "interval": "day"},
-    )
-    assert result["strategy"].startswith("ma_cross")
-
-
-def test_backtest_json_has_no_infinity(with_candles):
-    """손익비가 무한대여도 JSON으로 나갈 수 있어야 한다."""
-    result = post(with_candles, "/api/backtest", {"spec": PRESETS[1], "interval": "day"})
-    json.dumps(result)  # 예외 없이 직렬화되면 통과
-
-
-def test_backtest_without_data_says_what_to_do(state):
-    with pytest.raises(ApiError) as exc:
-        post(state, "/api/backtest", {"spec": PRESETS[1], "interval": "day"})
-    assert "데이터 받기" in str(exc.value)
-
-
-def test_backtest_rejects_bad_spec(with_candles):
-    with pytest.raises(ApiError, match="알 수 없는 지표"):
-        post(
-            with_candles,
-            "/api/backtest",
-            {"spec": {"entry": {"all": [{"left": {"type": "없는지표"}, "op": ">", "right": 1}]}}},
+from patternscan.data import cache_path, save
+from patternscan.models import Candle
+from patternscan.webui import server as webui
+
+
+# ---------------------------------------------------------------- 준비
+def _write_cache(directory, market="KRW-BTC", seed=5):
+    """세 봉 간격 모두에 합성 시세를 심는다."""
+    rng = np.random.default_rng(seed)
+    for timeframe, step, n in (("minute1", 60, 2500), ("minute3", 180, 1200), ("minute5", 300, 900)):
+        closes = 40_000_000 * np.exp(np.cumsum(rng.normal(0, 0.0008, n)))
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        candles = [
+            Candle(
+                ts=start + timedelta(seconds=step * i),
+                open=float(c), high=float(c) * 1.001, low=float(c) * 0.999,
+                close=float(c), volume=1.0,
+            )
+            for i, c in enumerate(closes)
+        ]
+        save(cache_path(market, timeframe, directory), candles)
+
+
+class Client:
+    """테스트용 최소 HTTP 클라이언트."""
+
+    def __init__(self, base: str) -> None:
+        self.base = base
+
+    def get(self, path: str):
+        with urllib.request.urlopen(self.base + path, timeout=10) as response:
+            return response.status, response.read(), response.headers
+
+    def get_json(self, path: str):
+        return json.loads(self.get(path)[1].decode("utf-8"))
+
+    def post_json(self, path: str, payload: dict):
+        request = urllib.request.Request(
+            self.base + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
-def test_backtest_rejects_unknown_strategy(with_candles):
-    with pytest.raises(ApiError, match="모르는 전략"):
-        post(with_candles, "/api/backtest", {"strategy": "없는전략"})
-
-
-def test_backtest_rejects_bad_interval(state):
-    with pytest.raises(ApiError, match="봉 간격"):
-        post(state, "/api/backtest", {"interval": "minute7", "spec": PRESETS[0]})
-
-
-def test_backtest_rejects_bad_risk(with_candles):
-    with pytest.raises(ApiError, match="리스크"):
-        post(with_candles, "/api/backtest", {"spec": PRESETS[1], "risk": {"stop_loss_pct": 5}})
-
-
-def test_backtest_rejects_non_numeric_cash(with_candles):
-    with pytest.raises(ApiError, match="숫자"):
-        post(with_candles, "/api/backtest", {"spec": PRESETS[1], "cash": "백만원"})
-
-
-def test_backtest_risk_settings_take_effect(with_candles):
-    loose = post(with_candles, "/api/backtest", {"spec": PRESETS[1], "interval": "day"})
-    capped = post(
-        with_candles,
-        "/api/backtest",
-        {"spec": PRESETS[1], "interval": "day", "risk": {"max_position_weight": 0.2}},
-    )
-    assert max(p["weight"] for p in capped["equity_curve"]) < max(
-        p["weight"] for p in loose["equity_curve"]
-    )
-
-
-def test_requests_do_not_leak_settings_between_calls(with_candles):
-    """한 요청의 리스크 설정이 다음 요청에 남으면 안 된다."""
-    post(with_candles, "/api/backtest", {"spec": PRESETS[1], "risk": {"max_position_weight": 0.1}})
-    after = post(with_candles, "/api/backtest", {"spec": PRESETS[1]})
-    assert with_candles.settings.risk.max_position_weight == 1.0
-    assert max(p["weight"] for p in after["equity_curve"]) > 0.5
-
-
-# ------------------------------------------------------------------ 봇 제어
-def test_live_start_without_keys_is_blocked(state, monkeypatch):
-    monkeypatch.delenv("UPBIT_ACCESS_KEY", raising=False)
-    monkeypatch.delenv("UPBIT_SECRET_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="API 키"):
-        post(state, "/api/bot/start", {"live": True, "spec": PRESETS[1]})
-    assert state.bot.running is False
-
-
-def test_status_when_idle(state):
-    status = get(state, "/api/status")
-    assert status["running"] is False
-
-
-def test_only_one_bot_at_a_time(settings):
-    manager = BotManager()
-    manager._thread = threading.Thread(target=lambda: threading.Event().wait(0.2))
-    manager._thread.start()
-    try:
-        with pytest.raises(RuntimeError, match="이미 봇이"):
-            manager.start(settings, live=False)
-    finally:
-        manager._thread.join()
-
-
-def test_stop_is_safe_when_not_running(state):
-    assert post(state, "/api/bot/stop")["running"] is False
-
-
-# ------------------------------------------------------------------ 로그
-def test_log_buffer_keeps_recent_only():
-    buffer = LogBuffer(capacity=3)
-    import logging
-
-    for i in range(6):
-        buffer.emit(logging.LogRecord("t", logging.INFO, "f", 1, "메시지 %d", (i,), None))
-    lines = buffer.snapshot()
-    assert len(lines) == 3
-    assert lines[-1]["message"] == "메시지 5"
-
-
-def test_log_buffer_survives_bad_format():
-    import logging
-
-    buffer = LogBuffer()
-    buffer.emit(logging.LogRecord("t", logging.INFO, "f", 1, "%d개", ("숫자아님",), None))
-    assert buffer.snapshot()  # 예외 없이 뭔가는 남는다
-
-
-def test_logs_endpoint(state):
-    assert "logs" in get(state, "/api/logs", limit="10")
-
-
-# ------------------------------------------------------------------ HTTP 계층
 @pytest.fixture
-def running_server(state):
-    server, _ = create_server(state.settings, port=0)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+def client(tmp_path):
+    _write_cache(tmp_path)
+    state = webui.State("KRW-BTC", str(tmp_path))
+    handler = type("BoundHandler", (webui.Handler,), {"state": state})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    yield server
-    server.shutdown()
-    server.server_close()
+    try:
+        yield Client(f"http://127.0.0.1:{httpd.server_address[1]}"), state
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
-def test_server_binds_only_to_localhost(running_server):
-    """외부에 열리면 API 키로 남이 주문을 낼 수 있다."""
-    assert running_server.server_address[0] == "127.0.0.1"
+def _run_scan(client_and_state, **overrides):
+    client, state = client_and_state
+    payload = {"market": "KRW-BTC", "similarity": 0.85, "topK": 40}
+    payload.update(overrides)
+    assert client.post_json("/api/scan", payload)["started"]
+    for _ in range(600):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+    job = state.job.snapshot()
+    assert not job["running"], "분석이 끝나지 않았습니다"
+    assert not job["error"], job["error"]
+    return client.get_json("/api/state")
 
 
-def test_index_page_is_served(running_server):
-    port = running_server.server_port
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/") as res:
-        body = res.read().decode()
-    assert res.status == 200
-    assert "btcbot" in body
-    assert "전략 만들기" in body
+# ---------------------------------------------------------------- 기본 응답
+def test_index_is_served(client):
+    status, body, headers = client[0].get("/")
+    assert status == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"<title>" in body
 
 
-def test_static_assets_are_served(running_server):
-    port = running_server.server_port
-    for path, needle in (("/style.css", "--up"), ("/app.js", "collectSpec")):
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as res:
-            assert needle in res.read().decode()
+def test_static_files_are_served(client):
+    for path, kind in (("/static/app.js", "javascript"), ("/static/style.css", "css")):
+        status, body, headers = client[0].get(path)
+        assert status == 200
+        assert kind in headers["Content-Type"]
+        assert body
 
 
-def test_path_traversal_is_blocked(running_server):
-    """../로 서버 파일을 빼갈 수 없어야 한다."""
-    port = running_server.server_port
+def test_path_traversal_is_refused(client):
+    """`..`로 static 밖 파일을 읽어가지 못해야 한다.
+
+    urllib은 보내기 전에 `..`를 정리해 버리므로, 그걸로 시험하면 서버가
+    아니라 클라이언트를 시험하는 꼴이 된다. 생 소켓으로 그대로 보낸다.
+    """
+    host, port = client[0].base.rsplit(":", 1)
+    attempts = (
+        "/static/../pyproject.toml",
+        "/static/../../etc/hostname",
+        "/static/....//pyproject.toml",
+        "/static/..%2fpyproject.toml",
+    )
+    for attempt in attempts:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=10) as sock:
+            sock.sendall(
+                f"GET {attempt} HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n".encode()
+            )
+            received = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                received += chunk
+        assert b"404" in received.split(b"\r\n")[0], attempt
+        assert b"[project]" not in received, f"{attempt}: static 밖 파일이 새어 나갔습니다"
+
+
+def test_favicon_is_served(client):
+    """404를 남기면 콘솔이 지저분해져 진짜 오류를 놓친다."""
+    status, body, headers = client[0].get("/favicon.ico")
+    assert status == 200
+    assert headers["Content-Type"] == "image/svg+xml"
+    assert body.startswith(b"<svg")
+
+
+def test_unknown_route_is_404(client):
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/../../config.py")
+        client[0].get("/api/nope")
     assert exc.value.code == 404
 
 
-def test_api_error_returns_json_not_html(running_server):
-    port = running_server.server_port
+def test_state_before_any_scan_lists_the_cache(client):
+    state = client[0].get_json("/api/state")
+    assert state["analysis"] is None
+    assert state["job"]["running"] is False
+    counts = {row["timeframe"]: row["count"] for row in state["cached"]}
+    assert counts["minute1"] == 2500
+
+
+def test_examples_without_an_analysis_is_404(client):
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/nope")
-    payload = json.loads(exc.value.read().decode())
-    assert "error" in payload
+        client[0].get("/api/examples?timeframe=minute1&horizon=1")
+    assert exc.value.code == 404
 
 
-def test_malformed_json_body_is_rejected(running_server):
-    port = running_server.server_port
+# ---------------------------------------------------------------- 분석
+def test_scan_produces_an_analysis(client):
+    state = _run_scan(client)
+    analysis = state["analysis"]
+    assert analysis is not None
+    assert analysis["market"] == "KRW-BTC"
+    assert analysis["cost"] == pytest.approx(0.0014)
+    assert analysis["similarity"] == pytest.approx(0.85)
+    assert analysis["odds"]
+
+
+def test_screen_shows_the_same_numbers_as_the_library(client):
+    """화면 숫자는 odds가 내놓은 값 그대로여야 한다."""
+    state = _run_scan(client)
+    analysis = client[1].analysis
+    shown = {(r["timeframe"], r["horizon"]): r for r in state["analysis"]["odds"]}
+
+    for row in analysis.odds:
+        seen = shown[(row.timeframe, row.horizon)]
+        assert seen["upRate"] == pytest.approx(row.up_rate)
+        assert seen["baseUp"] == pytest.approx(row.base_up)
+        assert seen["samples"] == row.samples
+        assert seen["tellsUsAnything"] == row.tells_us_anything
+
+
+def test_every_probability_ships_with_its_baseline(client):
+    """확률만 보내면 화면이 '56%'를 혼자 띄우게 된다 — 평소가 반드시 따라와야 한다."""
+    state = _run_scan(client)
+    for row in state["analysis"]["odds"]:
+        assert "baseUp" in row and "baseBeat" in row
+        assert "ciLow" in row and "ciHigh" in row
+        assert row["ciLow"] <= row["upRate"] <= row["ciHigh"]
+
+
+def test_verdict_refuses_when_nothing_is_distinguishable(client):
+    """잡음에서는 '사세요'가 나오면 안 된다."""
+    state = _run_scan(client)
+    verdict = state["analysis"]["verdict"]
+    assert verdict["buy"] is False
+    assert verdict["reasons"], "왜 안 되는지 말해야 한다"
+
+
+def test_verdict_only_blames_the_gate_that_actually_failed(client):
+    """통과한 조건까지 실패로 적으면 거짓말이 된다."""
+    state = _run_scan(client)
+    analysis = client[1].analysis
+    usable = [r for r in analysis.odds if r.samples >= 20]
+    if not usable:
+        pytest.skip("표본이 모자라 판정할 수 없습니다")
+    best = max(usable, key=lambda r: r.up_edge)
+    text = " ".join(state["analysis"]["verdict"]["reasons"])
+    if best.beat_rate > best.base_beat:
+        assert "보다 낮습니다" not in text, "넘긴 조건을 못 넘겼다고 적었습니다"
+
+
+def test_verdict_says_buy_when_the_evidence_is_real():
+    """진짜 신호에서는 '사세요'가 나와야 한다 — 무조건 거절하는 도구는 쓸모없다."""
+    from patternscan.odds import Odds
+    from patternscan.webui.server import _verdict
+
+    strong = [
+        Odds("minute1", 5, h, samples=100, up=91, beat_cost=90, base_up=0.52,
+             base_beat=0.19, median_return=0.003, best=0.01, worst=0.001,
+             min_similarity=0.99, query_linearity=0.1)
+        for h in (1, 3, 5)
+    ]
+    out = _verdict(strong, 0.001)
+    assert out["buy"] is True
+    assert "살 만합니다" in out["headline"]
+
+
+def test_verdict_without_samples_says_so():
+    from patternscan.odds import Odds
+    from patternscan.webui.server import _verdict
+
+    thin = [Odds("minute1", 5, 1, samples=3, up=3, beat_cost=3, base_up=0.5,
+                 base_beat=0.2, median_return=0.0, best=0.0, worst=0.0,
+                 min_similarity=0.9, query_linearity=0.3)]
+    out = _verdict(thin, 0.001)
+    assert out["buy"] is False
+    assert "판단할 수 없습니다" in out["headline"]
+
+
+def test_noise_is_marked_as_indistinguishable(client):
+    """합성 무작위 시세이므로 '평소와 구분됨'이 나오면 안 된다."""
+    state = _run_scan(client)
+    informative = [r for r in state["analysis"]["odds"] if r["tellsUsAnything"]]
+    assert not informative, f"잡음인데 의미있다고 표시된 조합: {len(informative)}개"
+
+
+def test_json_never_contains_nan(client):
+    """NaN은 JSON이 아니다. 흘려보내면 화면이 조용히 깨진다."""
+    _run_scan(client)
+    raw = client[0].get("/api/state")[1].decode("utf-8")
+    assert "NaN" not in raw
+    assert "Infinity" not in raw
+
+
+# ---------------------------------------------------------------- 모양 데이터
+def test_missing_timeframes_are_reported_not_hidden(tmp_path):
+    """일부 간격만 있으면 그것만으로 판정하되, 빠진 걸 반드시 알려야 한다.
+
+    조용히 빼면 사용자는 1·3·5분봉을 다 본 줄 안다.
+    """
+    _write_cache(tmp_path)
+    # 3분·5분봉 캐시를 지운다
+    for timeframe in ("minute3", "minute5"):
+        cache_path("KRW-BTC", timeframe, tmp_path).unlink()
+
+    state = webui.State("KRW-BTC", str(tmp_path))
+    handler = type("BoundHandler", (webui.Handler,), {"state": state})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        c = Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+        _run_scan((c, state), topK=30)
+        analysis = c.get_json("/api/state")["analysis"]
+        assert analysis is not None, "1분봉만으로도 판정은 나와야 합니다"
+        assert {m["timeframe"] for m in analysis["missing"]} == {"minute3", "minute5"}
+        assert {s["timeframe"] for s in analysis["series"]} == {"minute1"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_analysis_id_changes_only_when_the_analysis_does(client):
+    """화면은 이 번호로 '다시 그릴지'를 정한다.
+
+    번호가 매번 바뀌면 표가 계속 새로 그려져 사용자가 누르던 행이
+    클릭 도중에 사라진다. 안 바뀌면 새 결과가 화면에 안 올라온다.
+    """
+    c, _ = client
+    assert c.get_json("/api/state")["analysisId"] == 0
+
+    _run_scan(client)
+    first = c.get_json("/api/state")["analysisId"]
+    assert first == 1
+    # 그냥 다시 물어보는 것만으로는 안 바뀐다
+    assert c.get_json("/api/state")["analysisId"] == first
+
+    _run_scan(client)
+    assert c.get_json("/api/state")["analysisId"] == first + 1
+
+
+def test_old_analysis_is_still_served_while_a_new_scan_runs(client):
+    """새로 계산하는 동안에도 옛 결과가 그대로 나온다 — 화면이 흐려야 하는 이유다."""
+    c, state = client
+    _run_scan(client)
+    before = c.get_json("/api/state")
+    assert c.post_json("/api/scan", {"topK": 40})["started"]
+
+    during = c.get_json("/api/state")
+    if during["job"]["running"]:
+        # 옛 판정이 그대로 응답에 실린다. 번호가 같으므로 화면은 '이전 것'임을 안다.
+        assert during["analysisId"] == before["analysisId"]
+        assert during["analysis"]["odds"] == before["analysis"]["odds"]
+
+    for _ in range(600):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+
+def test_examples_come_from_both_outcomes(client):
+    """올랐던 사례와 떨어졌던 사례를 함께 보여줘야 한쪽만 보고 속지 않는다."""
+    _run_scan(client)
+    row = client[0].get_json("/api/state")["analysis"]["odds"][0]
+    data = client[0].get_json(
+        f"/api/examples?timeframe={row['timeframe']}&horizon={row['horizon']}"
+    )
+    assert data["query"], "지금 모양이 없습니다"
+    for example in data["rose"]:
+        assert example["outcome"] > data["cost"]
+        assert len(example["shape"]) == data["length"]
+        assert len(example["after"]) == row["horizon"] + 1
+        assert example["after"][0] == 0.0
+    for example in data["fell"]:
+        assert example["outcome"] < 0.0
+
+
+def test_examples_are_the_most_similar_not_the_most_profitable(client):
+    """가장 많이 오른 사례를 보여주면 실제보다 좋아 보인다."""
+    _run_scan(client)
+    row = client[0].get_json("/api/state")["analysis"]["odds"][0]
+    data = client[0].get_json(
+        f"/api/examples?timeframe={row['timeframe']}&horizon={row['horizon']}"
+    )
+    for group in ("rose", "fell"):
+        sims = [e["similarity"] for e in data[group]]
+        assert sims == sorted(sims, reverse=True), f"{group}이 유사도 순이 아닙니다"
+
+
+def test_examples_for_an_unknown_timeframe_is_404(client):
+    _run_scan(client)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        client[0].get_json("/api/examples?timeframe=minute7&horizon=1")
+    assert exc.value.code == 404
+
+
+# ---------------------------------------------------------------- 입력 방어
+def test_out_of_range_settings_are_clamped_not_crashed(client):
+    """화면에서 이상한 값이 와도 서버가 죽으면 안 된다."""
+    state = _run_scan(client, similarity=99.0, fee=-5.0, topK=100000)
+    assert state["analysis"]["similarity"] == pytest.approx(1.0)
+    assert state["analysis"]["cost"] >= 0.0
+
+
+def test_garbage_body_is_rejected_with_a_message(client):
     request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/backtest",
-        data="{깨진".encode(),
-        headers={"Content-Type": "application/json"},
+        client[0].base + "/api/scan", data=b"{not json",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(request)
-    assert "잘못" in json.loads(exc.value.read().decode())["error"]
+        urllib.request.urlopen(request, timeout=10)
+    assert exc.value.code == 400
+
+
+def test_scan_without_any_cache_reports_it(tmp_path):
+    """시세가 없을 때 조용히 빈 화면을 주면 안 된다."""
+    state = webui.State("KRW-BTC", str(tmp_path))
+    state.start("scan", webui._do_odds, state, "KRW-BTC", 0.85, 0.0005, 0.0002, 180)
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+    job = state.job.snapshot()
+    assert "시세가 없습니다" in job["error"]
+
+
+def test_only_one_job_runs_at_a_time(client):
+    """분석 두 개가 동시에 돌면 결과가 뒤섞인다."""
+    c, state = client
+    assert c.post_json("/api/scan", {"topK": 40})["started"] is True
+    second = c.post_json("/api/scan", {"topK": 40})
+    # 첫 작업이 아직 돌고 있으면 거절, 이미 끝났으면 수락 — 둘 다 정상이다
+    if state.job.snapshot()["running"]:
+        assert second["started"] is False
+    for _ in range(600):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+
+def test_server_binds_to_loopback_by_default():
+    """기본은 이 컴퓨터에서만 열려야 한다 — 밖에 여는 건 사용자가 정한다."""
+    import inspect
+
+    assert inspect.signature(webui.serve).parameters["host"].default == "127.0.0.1"
+
+    state = webui.State("KRW-BTC", "data")
+    handler = type("BoundHandler", (webui.Handler,), {"state": state})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    try:
+        assert httpd.server_address[0] == "127.0.0.1"
+    finally:
+        httpd.server_close()
+
+
+def test_cli_defaults_to_loopback():
+    """--host를 빼먹었을 때 밖으로 열리면 안 된다."""
+    from patternscan.cli import build_parser
+
+    args = build_parser().parse_args(["ui"])
+    assert args.host == "127.0.0.1"
+
+
+def test_lan_address_is_a_plain_address_or_none():
+    """주소를 못 찾아도 서버가 죽으면 안 된다."""
+    found = webui._lan_address()
+    assert found is None or (isinstance(found, str) and found.count(".") == 3)
+
+
+# ------------------------------------------------------------ 앱처럼 설치
+#
+# 홈 화면 아이콘이 되려면 브라우저가 세 가지를 **정확한 자리에서** 찾을 수
+# 있어야 한다. 하나라도 어긋나면 설치가 조용히 안 될 뿐 오류는 안 난다 —
+# 그래서 눈으로는 못 잡고, 여기서 잡아야 한다.
+def test_manifest_is_served_as_a_manifest(client):
+    status, body, headers = client[0].get("/static/manifest.webmanifest")
+    assert status == 200
+    # text/plain으로 나가면 크롬이 매니페스트로 안 읽고 설치가 안 뜬다.
+    assert "manifest" in headers["Content-Type"]
+    manifest = json.loads(body.decode("utf-8"))
+    for key in ("name", "short_name", "start_url", "display", "icons"):
+        assert manifest[key], f"매니페스트에 {key}가 없습니다"
+    assert manifest["display"] == "standalone"
+
+
+def test_every_icon_the_manifest_promises_actually_exists(client):
+    """매니페스트가 없는 파일을 가리키면 설치가 통째로 실패한다."""
+    manifest = client[0].get_json("/static/manifest.webmanifest")
+    for icon in manifest["icons"]:
+        status, body, headers = client[0].get(icon["src"])
+        assert status == 200, icon["src"]
+        assert headers["Content-Type"] == "image/png"
+        assert body[:8] == b"\x89PNG\r\n\x1a\n", f"{icon['src']}가 PNG가 아닙니다"
+        width = int.from_bytes(body[16:20], "big")
+        assert f"{width}x" in icon["sizes"], f"{icon['src']}의 실제 크기가 {width}"
+
+
+def test_a_maskable_icon_is_offered(client):
+    """안드로이드는 마스크용 아이콘이 없으면 흰 테두리를 둘러버린다."""
+    manifest = client[0].get_json("/static/manifest.webmanifest")
+    assert any("maskable" in i.get("purpose", "") for i in manifest["icons"])
+
+
+def test_the_service_worker_sits_at_the_root(client):
+    """/static/sw.js 로 주면 관할이 /static/ 아래로 좁아져 첫 화면을 못 맡는다."""
+    status, body, headers = client[0].get("/sw.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert headers.get("Service-Worker-Allowed") == "/"
+    assert b"addEventListener" in body
+
+
+def test_apple_looks_for_the_touch_icon_at_the_root(client):
+    """iOS는 link 태그를 못 찾으면 /apple-touch-icon.png 를 직접 찔러 본다."""
+    status, body, _ = client[0].get("/apple-touch-icon.png")
+    assert status == 200
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_page_declares_what_ios_needs(client):
+    """iOS는 매니페스트의 display를 안 읽는다. meta 태그가 있어야 전체 화면이 된다."""
+    body = client[0].get("/")[1].decode("utf-8")
+    assert 'rel="manifest"' in body
+    assert 'name="apple-mobile-web-app-capable"' in body
+    assert 'rel="apple-touch-icon"' in body
+
+
+def test_the_service_worker_never_caches_prices(client):
+    """3시간 전 가격을 지금 가격이라고 보여주는 것보다 실패하는 편이 낫다.
+
+    서비스 워커가 /api/* 를 캐시하면 정확히 그 일이 벌어진다. 화면에는
+    아무 표시도 안 나므로 사용자는 옛 숫자를 보고 돈을 넣는다.
+    """
+    source = client[0].get("/sw.js")[1].decode("utf-8")
+    guard = "if (url.pathname.startsWith('/api/')) return;"
+    assert guard in source
+    # 그 방어선이 fetch 처리보다 앞에 있어야 의미가 있다.
+    assert source.index(guard) < source.index("event.respondWith")
+
+
+def test_icons_may_be_cached_but_code_never_is(client):
+    """아이콘은 안 바뀐다. 화면 코드는 바뀌는데, 옛것이 남으면 못 고친다."""
+    assert "no-store" in client[0].get("/static/app.js")[2]["Cache-Control"]
+    assert "no-store" in client[0].get("/")[2]["Cache-Control"]
+    assert "max-age" in client[0].get("/static/icon-192.png")[2]["Cache-Control"]
+
+
+def test_the_page_keeps_checking_that_the_server_is_alive(client):
+    """놀 때 폴링을 멈추면 컴퓨터가 꺼져도 화면은 멀쩡해 보인다.
+
+    실제로 그랬다. 서버를 죽여도 안내가 안 뜨고, 버튼을 눌러야만
+    그제서야 안 된다는 걸 알 수 있었다. 홈 화면 아이콘으로 띄워 두고
+    쓰는 물건이라 이건 특히 나쁘다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "HEARTBEAT" in source
+    # 작업 중일 때만 다음 폴링을 잡는 옛 구조로 돌아가면 안 된다.
+    assert "if (job.running) timer =" not in source
+    assert "job.running ? 500 : HEARTBEAT" in source
+
+
+def test_a_dead_server_is_told_apart_from_a_rejected_request(client):
+    """둘을 같은 빨간 줄로 보여주면 어느 쪽인지 알 수가 없다.
+
+    앞의 것은 컴퓨터를 켜야 하고, 뒤의 것은 화면에서 조건을 바꿔야 한다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "class Unreachable" in source
+    assert "instanceof Unreachable" in source
+
+
+def test_the_ios_hint_points_at_the_right_corner(client):
+    """공유 버튼 자리가 기기마다 다르다.
+
+    아이패드는 위쪽 주소창 옆, 아이폰은 아래쪽 가운데다. 한쪽만 적어두면
+    다른 쪽 사용자는 없는 곳을 쳐다보게 된다 — 그리고 그 버튼을 못 찾으면
+    홈 화면 추가는 영영 못 한다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "화면 아래 가운데" in source     # 아이폰
+    assert "오른쪽 위 주소창 옆" in source   # 아이패드
+    # 둘을 갈라놓지 않으면 위 두 문구가 있어도 소용없다.
+    assert "iphone ?" in source
+
+
+# ------------------------------------------------- 홈 화면에 넣을 주소
+#
+# "어떤 주소를 추가하냐"가 매번 막히는 자리다. 답이 실행 방법마다 다른데
+# 화면에는 늘 127.0.0.1만 찍혀 있었다.
+def test_localhost_is_never_offered_as_the_home_screen_address(monkeypatch):
+    """127.0.0.1을 아이패드에 넣으면 아이패드 자신을 가리킨다 — 절대 안 열린다."""
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    address, kind = webui.phone_address(8765, "127.0.0.1")
+    assert address is None
+    assert kind == "local-only"
+    lines = "\n".join(webui._home_screen_lines(8765, "127.0.0.1"))
+    assert "127.0.0.1" in lines and "이 기기 자신" in lines
+
+
+def test_a_codespace_is_recognised_and_gets_its_https_address(monkeypatch):
+    """Codespaces는 포트를 https로 넘긴다. IP를 찍어 주면 아무 데도 안 닿는다."""
+    monkeypatch.setenv("CODESPACE_NAME", "fuzzy-space-1234")
+    monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+    address, kind = webui.phone_address(8765, "0.0.0.0")
+    assert kind == "codespace"
+    assert address == "https://fuzzy-space-1234-8765.app.github.dev/"
+
+
+def test_the_codespace_address_wins_even_on_localhost(monkeypatch):
+    """코드스페이스 안에서는 127.0.0.1에 붙어 있어도 밖에서 열 주소가 있다."""
+    monkeypatch.setenv("CODESPACE_NAME", "fuzzy-space-1234")
+    monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+    assert webui.phone_address(8765, "127.0.0.1")[1] == "codespace"
+
+
+def test_a_lan_address_comes_with_the_warning_that_it_can_change(monkeypatch):
+    """IP가 바뀌면 홈 화면 아이콘이 죽는다. 죽고 나서 알면 늦다."""
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    monkeypatch.setattr(webui, "_lan_address", lambda: "192.168.0.7")
+    address, kind = webui.phone_address(8765, "0.0.0.0")
+    assert (address, kind) == ("http://192.168.0.7:8765/", "lan")
+    assert "바뀝니다" in "\n".join(webui._home_screen_lines(8765, "0.0.0.0"))
+
+
+def test_an_undiscoverable_network_says_so_instead_of_guessing(monkeypatch):
+    monkeypatch.delenv("CODESPACE_NAME", raising=False)
+    monkeypatch.setattr(webui, "_lan_address", lambda: None)
+    assert webui.phone_address(8765, "0.0.0.0") == (None, "lan-unknown")

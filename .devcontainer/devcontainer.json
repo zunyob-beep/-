@@ -1,0 +1,34 @@
+{
+  "name": "모양 찾기",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+
+  // 처음 만들 때 한 번. 1~2분 걸린다.
+  "postCreateCommand": "pip install --quiet -e '.[dev]'",
+
+  // 켜질 때마다 화면을 자동으로 띄운다. 터미널을 한 줄도 안 치고
+  // 쓸 수 있어야 아이패드에서 쓸모가 있다. 시세가 없으면 화면이
+  // "지금 시세로 판단받기를 누르세요"라고 안내하므로, 받는 것도
+  // 브라우저에서 버튼 하나로 된다.
+  "postStartCommand": "nohup setsid python -m patternscan ui --host 0.0.0.0 --no-browser > /tmp/patternscan-ui.log 2>&1 < /dev/null & sleep 1",
+
+  "forwardPorts": [8765],
+  "portsAttributes": {
+    "8765": {
+      "label": "모양 찾기 화면",
+      "onAutoForward": "openPreview"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}

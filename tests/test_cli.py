@@ -1,162 +1,84 @@
-"""CLI 인자 파싱 검증.
+"""명령줄 동작 검증. 네트워크는 타지 않는다.
 
-여기서 틀리면 사용자가 의도한 것과 다른 설정으로 봇이 돈다. 특히 리스크
-옵션이 조용히 무시되는 경우가 위험하다 — 손절을 걸었다고 믿고 있는데
-실제로는 안 걸려 있는 상황.
+여기서 지키는 것은 하나다: **일부만 있어도 있는 것으로 답한다.**
+예전에는 1분봉이 멀쩡히 캐시에 있는데도 3분봉을 못 받았다는 이유로
+판정 전체가 죽었다. 수집이 중간에 끊기거나 업비트가 잠깐 죽으면 바로
+그 상황이 되는데, 사용자 입장에서는 아무 이유 없이 도구가 고장난 것처럼 보인다.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
 import pytest
 
-from btcbot.cli import (
-    _coerce,
-    build_parser,
-    parse_grid,
-    parse_params,
-    settings_from_args,
-)
+from patternscan.cli import main
+from patternscan.data import cache_path, save
+from patternscan.models import Candle
+from patternscan.upbit import UpbitError
 
 
-def parse(argv: list[str]):
-    return build_parser().parse_args(argv)
+@pytest.fixture
+def cache(tmp_path):
+    """1분봉만 캐시에 넣는다 (3분·5분봉은 없다)."""
+    rng = np.random.default_rng(4)
+    closes = 40_000_000 * np.exp(np.cumsum(rng.normal(0, 0.0008, 2500)))
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    candles = [
+        Candle(
+            ts=start + timedelta(minutes=i),
+            open=float(c), high=float(c) * 1.001, low=float(c) * 0.999,
+            close=float(c), volume=1.0,
+        )
+        for i, c in enumerate(closes)
+    ]
+    save(cache_path("KRW-BTC", "minute1", tmp_path), candles)
+    return tmp_path
 
 
-# ------------------------------------------------------------------ 값 변환
-def test_coerce_types():
-    assert _coerce("5") == 5
-    assert isinstance(_coerce("5"), int)
-    assert _coerce("0.5") == 0.5
-    assert _coerce("true") is True
-    assert _coerce("False") is False
-    assert _coerce("ema") == "ema"
+@pytest.fixture
+def offline(monkeypatch):
+    """업비트에 못 닿는 상황을 흉내낸다."""
+    def boom(*args, **kwargs):
+        raise UpbitError("연결할 수 없습니다")
+
+    monkeypatch.setattr("patternscan.cli.fetch", boom)
 
 
-def test_parse_params():
-    assert parse_params(["k=0.5", "dynamic_k=true", "kind=sma"]) == {
-        "k": 0.5,
-        "dynamic_k": True,
-        "kind": "sma",
-    }
+def test_scan_runs_with_only_some_timeframes_cached(cache, offline, capsys):
+    """1분봉만 있어도 판정은 나와야 한다."""
+    assert main(["scan", "--data-dir", str(cache)]) == 0
+    out = capsys.readouterr().out
+    assert "1분봉" in out
+    assert "들어가" in out  # 판정 문장이 찍혔다
 
 
-def test_parse_params_rejects_bad_format():
+def test_missing_timeframes_are_announced(cache, offline, capsys):
+    """빠진 간격을 조용히 넘기면 3종을 다 본 줄 안다."""
+    main(["scan", "--data-dir", str(cache)])
+    out = capsys.readouterr().out
+    assert "3분봉" in out and "5분봉" in out
+    assert "빠집니다" in out
+
+
+def test_scan_without_any_cache_says_what_to_do(tmp_path, offline, capsys):
+    """아무것도 없으면 다음에 뭘 해야 하는지 알려줘야 한다."""
+    assert main(["scan", "--data-dir", str(tmp_path)]) == 1
+    assert "fetch" in capsys.readouterr().out
+
+
+def test_similarity_flag_reaches_the_scan(cache, offline, capsys):
+    main(["scan", "--data-dir", str(cache), "--similarity", "0.95"])
+    assert "0.95" in capsys.readouterr().out
+
+
+def test_max_distance_replaces_the_similarity_line(cache, offline, capsys):
+    """거리로 자를 때 유사도 기준을 같이 찍으면 거짓말이 된다."""
+    main(["scan", "--data-dir", str(cache), "--max-distance", "0.3"])
+    assert "'같은 모양' 기준" not in capsys.readouterr().out
+
+
+def test_unknown_command_is_rejected():
     with pytest.raises(SystemExit):
-        parse_params(["k"])
-
-
-def test_parse_grid():
-    assert parse_grid(["k=0.3,0.5", "ma_period=0,20"]) == {
-        "k": [0.3, 0.5],
-        "ma_period": [0, 20],
-    }
-
-
-def test_parse_grid_ignores_trailing_comma():
-    assert parse_grid(["k=0.3,0.5,"]) == {"k": [0.3, 0.5]}
-
-
-# ------------------------------------------------------------------ 설정 조립
-def test_strategy_params_reach_settings():
-    args = parse(["backtest", "--strategy", "vb", "-p", "k=0.4", "-p", "ma_period=20"])
-    settings = settings_from_args(args)
-    assert settings.strategy == "vb"
-    assert settings.strategy_params == {"k": 0.4, "ma_period": 20}
-
-
-def test_risk_flags_reach_settings():
-    args = parse(
-        [
-            "live",
-            "--max-weight", "0.3",
-            "--stop-loss", "0.05",
-            "--trailing-stop", "0.07",
-            "--daily-loss-limit", "0.03",
-            "--max-drawdown", "0.2",
-            "--cooldown", "5",
-        ]
-    )
-    risk = settings_from_args(args).risk
-    assert risk.max_position_weight == 0.3
-    assert risk.stop_loss_pct == 0.05
-    assert risk.trailing_stop_pct == 0.07
-    assert risk.daily_loss_limit_pct == 0.03
-    assert risk.max_drawdown_pct == 0.2
-    assert risk.cooldown_bars == 5
-
-
-def test_unspecified_risk_flags_keep_defaults():
-    settings = settings_from_args(parse(["backtest", "--stop-loss", "0.05"]))
-    assert settings.risk.stop_loss_pct == 0.05
-    assert settings.risk.max_position_weight == 1.0  # 건드리지 않은 값은 기본값
-    assert settings.risk.max_drawdown_pct == 0.0
-
-
-def test_invalid_risk_value_is_rejected():
-    """1.5(=150%) 같은 값이 조용히 통과하면 안 된다."""
-    with pytest.raises(ValueError):
-        settings_from_args(parse(["backtest", "--stop-loss", "1.5"]))
-
-
-def test_config_file_and_cli_merge(tmp_path):
-    import json
-
-    path = tmp_path / "c.json"
-    path.write_text(
-        json.dumps({"market": "KRW-ETH", "interval": "day", "risk": {"stop_loss_pct": 0.1}}),
-        encoding="utf-8",
-    )
-    args = parse(["--config", str(path), "backtest", "--market", "KRW-BTC"])
-    settings = settings_from_args(args)
-    assert settings.market == "KRW-BTC"  # CLI가 이긴다
-    assert settings.interval == "day"  # 파일 값이 남는다
-    assert settings.risk.stop_loss_pct == 0.1
-
-
-def test_cli_risk_flag_overrides_config_file(tmp_path):
-    import json
-
-    path = tmp_path / "c.json"
-    path.write_text(json.dumps({"risk": {"stop_loss_pct": 0.1}}), encoding="utf-8")
-    args = parse(["--config", str(path), "backtest", "--stop-loss", "0.02"])
-    assert settings_from_args(args).risk.stop_loss_pct == 0.02
-
-
-# ------------------------------------------------------------------ 파서 검증
-def test_command_is_required():
-    with pytest.raises(SystemExit):
-        parse([])
-
-
-def test_unknown_strategy_is_rejected_by_parser():
-    with pytest.raises(SystemExit):
-        parse(["backtest", "--strategy", "없는전략"])
-
-
-def test_unknown_interval_is_rejected_by_parser():
-    with pytest.raises(SystemExit):
-        parse(["backtest", "--interval", "minute7"])
-
-
-def test_live_has_dry_run_and_yes_flags():
-    args = parse(["live", "--dry-run", "--yes"])
-    assert args.dry_run is True
-    assert args.yes is True
-
-
-def test_live_defaults_to_confirmation_required():
-    args = parse(["live"])
-    assert args.yes is False
-    assert args.dry_run is False
-
-
-def test_paper_has_no_yes_flag():
-    """페이퍼는 위험하지 않으므로 확인 절차 자체가 없다."""
-    assert not hasattr(parse(["paper"]), "yes")
-
-
-@pytest.mark.parametrize(
-    "command", ["strategies", "fetch", "backtest", "optimize", "paper", "live", "status"]
-)
-def test_all_commands_parse(command):
-    assert parse([command]).command == command
+        main(["nonsense"])

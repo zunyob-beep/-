@@ -1,0 +1,17 @@
+{
+  "name": "모양 찾기 — 오를 확률 보기",
+  "short_name": "모양 찾기",
+  "description": "지금 봉 모양과 닮은 과거를 찾아, 그 뒤에 무슨 일이 있었는지 셉니다.",
+  "lang": "ko",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1116",
+  "theme_color": "#0f1116",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
