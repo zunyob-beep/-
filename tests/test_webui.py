@@ -17,9 +17,11 @@ import json
 import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -604,3 +606,118 @@ def test_an_undiscoverable_network_says_so_instead_of_guessing(monkeypatch):
     monkeypatch.delenv("CODESPACE_NAME", raising=False)
     monkeypatch.setattr(webui, "_lan_address", lambda: None)
     assert webui.phone_address(8765, "0.0.0.0") == (None, "lan-unknown")
+
+
+# ---------------------------------------------------------- 맨 위 지금 시세
+class FakeTickerClient:
+    """업비트 현재가 API 흉내. 몇 번 불렸는지도 센다."""
+
+    def __init__(self, prices=None, fail=False):
+        self.prices = prices or {"KRW-BTC": 158_320_000.0, "KRW-SOL": 268_000.0}
+        self.fail = fail
+        self.calls = []
+
+    def get_ticker(self, market):
+        from patternscan.upbit import Ticker, UpbitError
+
+        self.calls.append(market)
+        if self.fail:
+            raise UpbitError("업비트에 닿지 않습니다")
+        price = self.prices[market]
+        return Ticker(
+            market=market, price=price, change_rate=0.0124,
+            change_price=price * 0.0124, high=price * 1.03, low=price * 0.97,
+            at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        )
+
+
+def test_the_ticker_reports_price_and_direction(client):
+    api, state = client
+    state.prices.client = FakeTickerClient()
+    data = api.get_json("/api/ticker?market=KRW-BTC")
+    assert data["ok"] is True
+    assert data["price"] == 158_320_000.0
+    assert data["label"] == "비트코인"
+    assert data["direction"] == "up"
+
+
+def test_a_failed_ticker_does_not_turn_the_whole_page_red(client):
+    """맨 위 숫자는 장식이다. 못 받았다고 분석 화면이 오류가 되면 안 된다."""
+    api, state = client
+    state.prices.client = FakeTickerClient(fail=True)
+    status, body, _ = api.get("/api/ticker?market=KRW-BTC")
+    assert status == 200, "시세 실패가 HTTP 오류로 나가면 화면 전체가 빨개진다"
+    assert json.loads(body)["ok"] is False
+
+
+def test_an_unknown_market_falls_back_instead_of_becoming_a_filename(client):
+    """종목 코드는 파일 이름이 된다 (KRW-BTC_minute1.csv).
+
+    밖에서 온 문자열을 그대로 쓰면 폴더를 벗어나는 이름도 만들 수 있다.
+    """
+    api, state = client
+    state.prices.client = FakeTickerClient()
+    for bad in ("../../../etc/passwd", "KRW-DOGE", "", "KRW-BTC; rm -rf /"):
+        data = api.get_json(f"/api/ticker?market={urllib.parse.quote(bad)}")
+        assert data["market"] == "KRW-BTC", f"{bad!r}가 그대로 통과했습니다"
+
+
+def test_a_bad_market_never_reaches_a_job(client):
+    api, _ = client
+    started = api.post_json("/api/scan", {"market": "../../etc/passwd"})
+    assert started["started"]
+    assert not list(Path(".").glob("**/etc*")), "폴더 밖에 파일을 만들었습니다"
+
+
+def test_prices_are_reused_for_a_moment(client):
+    """창을 여러 개 열어두면 그만큼 업비트를 두드린다.
+
+    수집이 도는 중이면 같은 한도를 나눠 쓰게 되어 수집이 느려진다.
+    화면 숫자 하나 때문에 본업이 밀리면 안 된다.
+    """
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    for _ in range(10):
+        api.get_json("/api/ticker?market=KRW-BTC")
+    assert len(fake.calls) == 1, f"10번 물어봤더니 업비트를 {len(fake.calls)}번 불렀습니다"
+
+
+def test_each_market_is_cached_separately(client):
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    assert api.get_json("/api/ticker?market=KRW-BTC")["price"] == 158_320_000.0
+    assert api.get_json("/api/ticker?market=KRW-SOL")["price"] == 268_000.0
+
+
+def test_the_cache_expires(client):
+    """영원히 들고 있으면 '지금 시세'가 아니라 '아까 시세'다."""
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    state.prices.ttl = 0.0
+    api.get_json("/api/ticker?market=KRW-BTC")
+    api.get_json("/api/ticker?market=KRW-BTC")
+    assert len(fake.calls) == 2
+
+
+def test_the_page_is_told_which_coins_exist(client):
+    """화면이 종목 목록을 따로 들고 있으면 언젠가 서버와 갈라진다."""
+    state = _run_scan(client)
+    codes = [m["code"] for m in state["markets"]]
+    assert codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"]
+    assert [m["label"] for m in state["markets"]] == ["비트코인", "이더리움", "엑스알피", "솔라나"]
+
+
+def test_direction_matches_upbit_colours():
+    """업비트는 오르면 빨강, 내리면 파랑이다. 여기서만 뒤집으면 안 된다."""
+    from patternscan.upbit import Ticker
+
+    def at(rate):
+        return Ticker("KRW-BTC", 100.0, rate, 1.0, 1.0, 1.0,
+                      datetime(2026, 1, 1, tzinfo=timezone.utc)).direction
+
+    assert at(0.01) == "up"
+    assert at(-0.01) == "down"
+    assert at(0.0) == "flat"

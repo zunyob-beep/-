@@ -21,6 +21,20 @@ TIMEFRAMES: dict[str, timedelta] = {
 
 TIMEFRAME_LABELS = {"minute1": "1분봉", "minute3": "3분봉", "minute5": "5분봉"}
 
+#: 다루는 종목. 아무거나 칠 수 있게 두면 오타 하나로 "없는 종목입니다"를
+#: 만나게 되고, 그게 오타 때문인지 업비트가 막힌 건지 알 수가 없다.
+#: 거래량이 많은 넷으로 좁힌다 — 얇은 종목은 빈 봉이 많아 모양이 왜곡된다.
+MARKETS: dict[str, str] = {
+    "KRW-BTC": "비트코인",
+    "KRW-ETH": "이더리움",
+    "KRW-XRP": "엑스알피",
+    "KRW-SOL": "솔라나",
+}
+
+
+def market_label(market: str) -> str:
+    return MARKETS.get(market, market)
+
 #: 살펴볼 '모양'의 길이(직전 몇 개 봉인지).
 #: 5, 10 그리고 20부터 180까지 10칸씩.
 WINDOW_LENGTHS: tuple[int, ...] = (5, 10, *range(20, 181, 10))

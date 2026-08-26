@@ -51,11 +51,44 @@ body {
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--accent); align-self: center;
 }
-.market {
-  font-variant-numeric: tabular-nums;
+/* ------------------------------------------------------------ 지금 시세 */
+.ticker {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "name name" "price change";
+  align-items: baseline;
+  gap: 1px 10px;
   background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; padding: 5px 10px; font-size: 13px;
+  border-radius: 8px; padding: 7px 12px;
+  font-variant-numeric: tabular-nums;
 }
+.ticker-name { grid-area: name; font-size: 11px; color: var(--dim); }
+.ticker-code { opacity: 0.6; margin-left: 4px; }
+.ticker-price {
+  grid-area: price;
+  font-size: 19px; font-weight: 650; letter-spacing: -0.4px;
+  /* 자릿수가 바뀔 때 숫자가 튀지 않게 */
+  transition: color 0.25s;
+}
+.ticker-change { grid-area: change; font-size: 12px; }
+/* 업비트와 같은 색: 오르면 빨강, 내리면 파랑. 여기서만 뒤집으면
+   같은 화면 안에서 색의 뜻이 두 개가 된다. */
+.ticker.up .ticker-price, .ticker.up .ticker-change { color: var(--up); }
+.ticker.down .ticker-price, .ticker.down .ticker-change { color: var(--down); }
+
+/* ------------------------------------------------------------ 종목 고르기 */
+.coins { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.coin {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 8px 14px; min-width: 92px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--text); cursor: pointer;
+  text-align: left;
+}
+.coin b { font-size: 13px; font-weight: 600; }
+.coin span { font-size: 11px; color: var(--dim); letter-spacing: 0.3px; }
+.coin.on { border-color: var(--accent); background: rgba(61, 126, 255, 0.12); }
+.coin.on span { color: var(--accent); }
 
 main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
 

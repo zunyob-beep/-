@@ -24,17 +24,19 @@
       <h1>모양 찾기</h1>
       <span class="sub">지금 모양과 닮은 과거를 찾아, 그 뒤에 무슨 일이 있었는지 셉니다</span>
     </div>
-    <div class="market" id="market">KRW-BTC</div>
+    <div class="ticker" id="ticker">
+      <div class="ticker-name"><span id="ticker-label">비트코인</span>
+        <span class="ticker-code" id="ticker-code">KRW-BTC</span></div>
+      <div class="ticker-price" id="ticker-price">—</div>
+      <div class="ticker-change" id="ticker-change"></div>
+    </div>
   </header>
 
   <main>
     <!-- 조작부 -->
     <section class="panel controls">
+      <div class="coins" id="coins" role="group" aria-label="종목 고르기"></div>
       <div class="row">
-        <label>
-          종목
-          <input id="in-market" type="text" value="KRW-BTC" spellcheck="false">
-        </label>
         <label>
           직전 몇 개 봉
           <input id="in-length" type="number" step="10" min="5" max="180" value="180">

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from ..data import count_cached, fetch, load_cached
-from ..models import HORIZONS, KST, Series, timeframe_label
+from ..models import HORIZONS, KST, MARKETS, Series, market_label, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
 from ..odds import Odds, examples_for, find_matches, odds_for
 from ..scan import (
@@ -38,7 +39,7 @@ from ..scan import (
     round_trip_cost,
 )
 from ..shape import normalize_window
-from ..upbit import UpbitClient, UpbitError
+from ..upbit import Ticker, UpbitClient, UpbitError
 
 log = logging.getLogger(__name__)
 
@@ -124,10 +125,37 @@ class Job:
                 setattr(self, key, value)
 
 
+class Prices:
+    """현재가를 잠깐 들고 있는다.
+
+    화면 맨 위 숫자는 몇 초마다 갱신돼야 살아 있어 보인다. 그런데 창을
+    여러 개 열어두면 그만큼 업비트를 두드리게 되고, 수집이 도는 중이면
+    같은 한도를 나눠 쓰게 되어 **수집이 느려진다**. 화면 숫자 하나 때문에
+    본업이 밀리면 안 되므로, 한 번 받아 잠깐 돌려 쓴다.
+    """
+
+    def __init__(self, client: UpbitClient | None = None, ttl: float = 3.0) -> None:
+        self.client = client or UpbitClient(max_retries=1, timeout=5.0)
+        self.ttl = ttl
+        self._lock = threading.Lock()
+        self._seen: dict[str, tuple[float, Ticker]] = {}
+
+    def get(self, market: str) -> Ticker:
+        with self._lock:
+            found = self._seen.get(market)
+            if found and time.monotonic() - found[0] < self.ttl:
+                return found[1]
+        ticker = self.client.get_ticker(market)
+        with self._lock:
+            self._seen[market] = (time.monotonic(), ticker)
+        return ticker
+
+
 class State:
     def __init__(self, market: str, data_dir: str) -> None:
         self.market = market
         self.data_dir = data_dir
+        self.prices = Prices()
         self.job = Job()
         self.analysis: Analysis | None = None
         #: 분석이 새로 끝날 때마다 올라간다. 화면은 이 번호가 바뀔 때만
@@ -490,6 +518,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._state_payload())
             elif route == "/api/examples":
                 self._examples(parse_qs(url.query))
+            elif route == "/api/ticker":
+                self._ticker(parse_qs(url.query))
             else:
                 self._error("없는 주소입니다", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -536,6 +566,8 @@ class Handler(BaseHTTPRequestHandler):
         payload: dict[str, Any] = {
             "market": state.market,
             "job": state.job.snapshot(),
+            "marketLabel": market_label(state.market),
+            "markets": [{"code": code, "label": name} for code, name in MARKETS.items()],
             "defaults": {
                 "similarity": DEFAULT_SIMILARITY,
                 "fee": DEFAULT_FEE,
@@ -560,7 +592,7 @@ class Handler(BaseHTTPRequestHandler):
         return payload
 
     def _start_fetch(self, payload: dict[str, Any]) -> None:
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         refresh = bool(payload.get("refresh"))
         self.state.market = market
         started = self.state.start("fetch", _do_fetch, self.state, market, refresh)
@@ -568,7 +600,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start_live(self, payload: dict[str, Any]) -> None:
         """새 봉을 받고 곧바로 다시 계산 — 화면의 '지금 시세로 갱신'."""
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         self.state.market = market
         similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
         fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
@@ -582,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"started": started, "job": self.state.job.snapshot()})
 
     def _start_scan(self, payload: dict[str, Any]) -> None:
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         self.state.market = market
         similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
         fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
@@ -594,6 +626,31 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._json({"started": started, "job": self.state.job.snapshot()})
 
+    def _ticker(self, query: dict[str, list[str]]) -> None:
+        """지금 얼마인지. 화면 맨 위 숫자.
+
+        **실패해도 200으로 답한다.** 이건 장식이지 분석이 아니다. 여기서
+        오류를 올리면 시세 표시가 안 되는 것 때문에 화면 전체가 빨개진다.
+        """
+        market = _market(query.get("market", [None])[0], self.state.market)
+        try:
+            ticker = self.state.prices.get(market)
+        except (UpbitError, OSError) as exc:
+            self._json({"market": market, "ok": False, "why": str(exc)[:120]})
+            return
+        self._json({
+            "market": ticker.market,
+            "label": market_label(ticker.market),
+            "ok": True,
+            "price": ticker.price,
+            "changeRate": ticker.change_rate,
+            "changePrice": ticker.change_price,
+            "direction": ticker.direction,
+            "high": ticker.high,
+            "low": ticker.low,
+            "at": ticker.at.astimezone(KST).strftime("%H:%M:%S"),
+        })
+
     def _examples(self, query: dict[str, list[str]]) -> None:
         analysis = self.state.analysis
         if analysis is None:
@@ -602,6 +659,18 @@ class Handler(BaseHTTPRequestHandler):
         horizon = int((query.get("horizon") or ["1"])[0])
         self._json(_examples_json(analysis, timeframe, horizon))
 
+
+
+def _market(value: Any, default: str) -> str:
+    """화면에서 온 종목 코드를 아는 것만 통과시킨다.
+
+    아무거나 받으면 오타 하나가 "없는 종목입니다"로 돌아오는데, 그게
+    오타 때문인지 업비트가 막힌 건지 사용자는 알 수가 없다. 게다가 이
+    값은 파일 이름이 되므로(KRW-BTC_minute1.csv), 밖에서 온 문자열을
+    그대로 쓰면 경로를 벗어나는 이름도 만들 수 있다.
+    """
+    text = str(value or "").strip().upper()
+    return text if text in MARKETS else default
 
 
 def _number(value: Any, default: float, low: float, high: float) -> float:

@@ -12,6 +12,8 @@ const signed = (x, d = 2) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
 let selected = null;      // {timeframe, horizon}
 let shownAnalysis = -1;
 let timer = null;
+let market = 'KRW-BTC';
+let coinsDrawn = '';      // 이미 그린 종목 목록 (매번 다시 그리면 누르는 중에 사라진다)
 
 // ---------------------------------------------------------------- 통신
 // 서버가 답을 안 준 것과, 서버가 "안 된다"고 답한 것은 완전히 다른 사건이다.
@@ -71,7 +73,10 @@ async function refreshState() {
   setOffline(false);
 
   const job = state.job || {};
-  $('market').textContent = state.market;
+  if (state.markets) renderCoins(state.markets, state.market);
+  market = state.market;
+  $('ticker-code').textContent = state.market;
+  $('ticker-label').textContent = state.marketLabel || state.market;
   $('btn-scan').disabled = job.running;
   $('btn-live').disabled = job.running;
   $('job').textContent = job.running ? (job.message || '작업 중…') : (job.message || '');
@@ -111,6 +116,68 @@ function stopPolling() { if (timer !== null) { clearTimeout(timer); timer = null
 function setStale(stale) {
   for (const id of ['odds-panel', 'examples-panel']) $(id).classList.toggle('stale', stale);
   $('stale-note').hidden = !stale;
+}
+
+// ------------------------------------------------------------ 종목 고르기
+function renderCoins(markets, current) {
+  const box = $('coins');
+  const signature = markets.map((m) => m.code).join(',');
+  if (signature !== coinsDrawn) {
+    coinsDrawn = signature;
+    box.innerHTML = markets
+      .map((m) => `<button type="button" class="coin" data-code="${m.code}">
+                     <b>${m.label}</b><span>${m.code.replace('KRW-', '')}</span>
+                   </button>`)
+      .join('');
+    for (const button of box.querySelectorAll('.coin')) {
+      button.addEventListener('click', () => pickCoin(button.dataset.code));
+    }
+  }
+  for (const button of box.querySelectorAll('.coin')) {
+    button.classList.toggle('on', button.dataset.code === current);
+  }
+}
+
+async function pickCoin(code) {
+  if (code === market || $('btn-live').disabled) return;
+  market = code;
+  // 종목마다 시세도 결과도 따로다. 남아 있는 표를 그대로 두면
+  // 비트코인 확률을 솔라나 것으로 읽게 된다.
+  shownAnalysis = -1;
+  selected = null;
+  for (const id of ['verdict', 'odds-panel', 'examples-panel']) $(id).hidden = true;
+  $('ticker-price').textContent = '—';
+  $('ticker-change').textContent = '';
+  renderCoins([...$('coins').querySelectorAll('.coin')]
+    .map((b) => ({ code: b.dataset.code, label: b.querySelector('b').textContent })), code);
+  refreshTicker();
+  await runLive();
+}
+
+// ------------------------------------------------------------ 지금 시세
+const won = (x) => x >= 1000
+  ? Math.round(x).toLocaleString('ko-KR')
+  : x.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+
+async function refreshTicker() {
+  let data;
+  try { data = await api(`/api/ticker?market=${encodeURIComponent(market)}`); }
+  catch (err) { return; }   // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다
+  if (!data.ok || data.market !== market) {
+    $('ticker-price').textContent = '—';
+    $('ticker-change').textContent = '';
+    $('ticker').className = 'ticker';
+    return;
+  }
+  $('ticker-label').textContent = data.label;
+  $('ticker-code').textContent = data.market;
+  $('ticker-price').textContent = `${won(data.price)}원`;
+  const rate = data.changeRate;
+  const arrow = rate > 0 ? '▲' : rate < 0 ? '▼' : '·';
+  $('ticker-change').textContent =
+    `${arrow} ${won(Math.abs(data.changePrice))}  ${signed(Math.abs(rate) * (rate < 0 ? -1 : 1))}`;
+  // 업비트와 같은 색: 오르면 빨강, 내리면 파랑.
+  $('ticker').className = `ticker ${data.direction}`;
 }
 
 // ---------------------------------------------------------------- 렌더
@@ -322,7 +389,7 @@ function afterPath(after, cost, good) {
 // ---------------------------------------------------------------- 조작
 function settings() {
   return {
-    market: $('in-market').value.trim().toUpperCase() || 'KRW-BTC',
+    market,
     oddsLength: parseInt($('in-length').value, 10),
     similarity: parseFloat($('in-similarity').value),
     fee: parseFloat($('in-fee').value),
@@ -416,5 +483,14 @@ if (iphone || ipad) {
     `${where}의 공유 버튼(□↑)을 누르고, 목록을 내려 "홈 화면에 추가"를 고르세요.`
   );
 }
+
+// 맨 위 시세는 상태 폴링과 따로 돈다. 계산이 몇십 초 걸려도 시세는 계속
+// 살아 있어야 하고, 반대로 시세를 못 받았다고 계산이 멈추면 안 된다.
+refreshTicker();
+setInterval(refreshTicker, 5000);
+// 탭을 다시 보면 곧바로 맞춘다 — 안 그러면 5초 동안 옛 숫자를 보게 된다.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshTicker();
+});
 
 refreshState();

@@ -371,6 +371,7 @@ python -m patternscan ui --host 0.0.0.0
 
 | | |
 |---|---|
+| **종목** | 비트코인, 이더리움, 엑스알피, 솔라나 (KRW 마켓) |
 | **봉 간격** | 1분봉, 3분봉, 5분봉 |
 | **모양 길이** | 5, 10, 20, 30, 40, … 180 (19가지) — [왜 180까지인가](#왜-180까지인가) |
 | **시간 지평** | 직후 1, 3, 5, 10, 20봉 |
@@ -567,7 +568,7 @@ tools/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 223개 시험, 전부 오프라인
+python -m pytest -q          # 241개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 
