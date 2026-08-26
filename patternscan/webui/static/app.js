@@ -14,10 +14,23 @@ let shownAnalysis = -1;
 let timer = null;
 
 // ---------------------------------------------------------------- 통신
+// 서버가 답을 안 준 것과, 서버가 "안 된다"고 답한 것은 완전히 다른 사건이다.
+// 앞의 것은 컴퓨터를 켜야 하고, 뒤의 것은 화면에서 조건을 바꿔야 한다.
+// 둘을 같은 빨간 줄로 보여주면 사용자는 어느 쪽인지 알 수가 없다.
+class Unreachable extends Error {}
+
 async function api(path, options) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (err) {
+    throw new Unreachable('서버에 연결되지 않았습니다');
+  }
   let payload = null;
   try { payload = await response.json(); } catch (err) { /* 아래에서 처리 */ }
+  if (response.status >= 500 || response.status === 503) {
+    throw new Unreachable(`서버가 응답하지 못했습니다 (${response.status})`);
+  }
   if (!response.ok) throw new Error(payload && payload.error ? payload.error : `오류 ${response.status}`);
   if (!payload) throw new Error('서버 응답을 읽지 못했습니다');
   return payload;
@@ -34,11 +47,28 @@ function showError(message) {
   box.textContent = message || '';
 }
 
+function setOffline(down) {
+  $('offline').hidden = !down;
+  if (down) showError('');
+}
+
+function report(err) {
+  if (err instanceof Unreachable) { setOffline(true); return; }
+  setOffline(false);
+  showError(err.message);
+}
+
 // ---------------------------------------------------------------- 상태
 async function refreshState() {
   let state;
   try { state = await api('/api/state'); }
-  catch (err) { showError(err.message); return; }
+  catch (err) {
+    report(err);
+    // 서버가 꺼진 거라면 계속 두드린다. 다시 켜는 순간 알아서 살아나야 한다.
+    if (err instanceof Unreachable) { stopPolling(); timer = setTimeout(refreshState, 5000); }
+    return;
+  }
+  setOffline(false);
 
   const job = state.job || {};
   $('market').textContent = state.market;
@@ -65,9 +95,16 @@ async function refreshState() {
 
   setStale(job.running && state.analysis !== null);
 
+  // 작업 중이면 자주, 아니면 가끔. 놀 때도 계속 물어보는 이유는 하나다 —
+  // **서버가 꺼진 걸 눈치채기 위해서**다. 예전에는 놀 때 폴링을 아예
+  // 멈춰서, 컴퓨터가 꺼져도 화면은 멀쩡해 보였다. 버튼을 눌러야만
+  // 그제서야 안 된다는 걸 알았다.
   stopPolling();
-  if (job.running) timer = setTimeout(refreshState, 500);
+  timer = setTimeout(refreshState, job.running ? 500 : HEARTBEAT);
 }
+
+//: 놀 때 서버가 살아 있는지 확인하는 주기. 로컬이라 부담이 없다.
+const HEARTBEAT = 15000;
 
 function stopPolling() { if (timer !== null) { clearTimeout(timer); timer = null; } }
 
@@ -206,7 +243,7 @@ async function select(timeframe, horizon, analysis) {
     const data = await api(
       `/api/examples?timeframe=${encodeURIComponent(timeframe)}&horizon=${horizon}`);
     drawExamples(data, analysis);
-  } catch (err) { showError(err.message); }
+  } catch (err) { report(err); }
 }
 
 function drawExamples(data, analysis) {
@@ -296,7 +333,7 @@ function settings() {
 $('btn-scan').addEventListener('click', async () => {
   showError('');
   try { await post('/api/scan', settings()); refreshState(); }
-  catch (err) { showError(err.message); }
+  catch (err) { report(err); }
 });
 
 $('btn-live').addEventListener('click', () => runLive());
@@ -304,7 +341,7 @@ $('btn-live').addEventListener('click', () => runLive());
 async function runLive() {
   showError('');
   try { await post('/api/live', settings()); refreshState(); }
-  catch (err) { showError(err.message); }
+  catch (err) { report(err); }
 }
 
 // 1분마다 자동 갱신. 새 봉이 생기는 주기가 1분이므로 그보다 자주 물어도 의미가 없다.
@@ -315,5 +352,59 @@ $('in-auto').addEventListener('change', (e) => {
     if (!$('btn-live').disabled) runLive();
   }, 60000);
 });
+
+// ------------------------------------------------------ 앱처럼 설치하기
+//
+// 서비스 워커는 **보안 컨텍스트에서만** 등록된다. localhost와 https는 되고,
+// 같은 와이파이의 http://192.168.x.x 는 안 된다. 안 되는 자리에서 굳이
+// 시도하면 콘솔만 빨개지고 얻는 게 없으므로 아예 건너뛴다.
+//
+// 다행히 홈 화면 추가 자체는 서비스 워커가 없어도 된다. iOS는 index.html의
+// meta 태그만 보고 주소창 없는 전체 화면으로 띄운다. 즉 LAN 주소에서도
+// '앱처럼'은 되고, 다만 서버가 꺼졌을 때 대신 띄워 줄 화면이 없을 뿐이다.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+}
+
+const standalone = window.matchMedia('(display-mode: standalone)').matches
+  || window.navigator.standalone === true;
+
+let installPrompt = null;
+
+function showInstallHint(how) {
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('installHintDismissed') === '1'; }
+  catch (err) { /* 읽을 수 없으면 그냥 보여준다 */ }
+  if (standalone || dismissed) return;
+  $('install-how').textContent = how;
+  $('install-hint').hidden = false;
+}
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  $('btn-install').hidden = false;
+  showInstallHint('이 버튼을 누르면 홈 화면에 아이콘이 생깁니다.');
+});
+
+$('btn-install').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  $('install-hint').hidden = true;
+});
+
+$('btn-install-close').addEventListener('click', () => {
+  $('install-hint').hidden = true;
+  try { localStorage.setItem('installHintDismissed', '1'); } catch (err) { /* 비공개 모드 */ }
+});
+
+// iOS 사파리에는 설치 버튼이 없다(beforeinstallprompt를 안 쏜다).
+// 공유 버튼을 눌러야 한다는 걸 아는 사람만 아는데, 모르면 영영 못 찾는다.
+if (/iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
+  showInstallHint('아래 공유 버튼(□↑) → "홈 화면에 추가"를 누르면 앱처럼 열립니다.');
+}
 
 refreshState();

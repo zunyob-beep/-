@@ -67,5 +67,6 @@ fi
 
 say ""
 say "${BOLD}화면을 엽니다.${OFF} 끝내려면 이 창에서 Ctrl+C 를 누르세요."
+say "${DIM}브라우저에서 '홈 화면에 추가'를 하면 앱 아이콘처럼 쓸 수 있습니다.${OFF}"
 say ""
 exec python -m patternscan ui --market "$MARKET" "${HOST_ARG[@]}"

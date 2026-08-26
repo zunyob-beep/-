@@ -54,7 +54,14 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
 }
+
+#: 캐시를 걸면 안 되는 것. 계산 결과와 화면 코드는 늘 새로 받아야 한다.
+#: 아이콘은 안 바뀌므로 한 번 받아두면 홈 화면에서 여는 게 빨라진다.
+CACHEABLE = {".png", ".ico"}
 
 #: 탭 아이콘. 없으면 브라우저가 /favicon.ico를 찾다 404를 받고
 #: 콘솔에 오류를 남긴다 — 진짜 오류를 찾을 때 방해가 된다.
@@ -409,57 +416,6 @@ def _examples_json(
     }
 
 
-def _shape_json(
-    analysis: Analysis, timeframe: str, length: int, horizon: int
-) -> dict[str, Any]:
-    """모양 겹쳐보기 + 직후 경로 데이터.
-
-    승률 숫자만 보여주면 '정말 같은 모양인가'를 확인할 방법이 없다.
-    직접 겹쳐 보게 해서 눈으로 판단할 수 있게 한다.
-    """
-    series = analysis.series.get(timeframe)
-    result = analysis.result_for(timeframe, length)
-    if series is None or result is None:
-        raise KeyError(f"{timeframe} {length}개 결과가 없습니다")
-
-    closes = series.close
-    query_end = len(series) - 1
-    query = closes[query_end - length + 1 : query_end + 1]
-
-    shapes = []
-    paths = []
-    for match in result.matches[:CHART_MATCHES]:
-        window = closes[match.end_index - length + 1 : match.end_index + 1]
-        entry = float(closes[match.end_index])
-        after = closes[match.end_index + 1 : match.end_index + 1 + horizon]
-        outcome = float(after[-1] / entry - 1.0) if after.size else 0.0
-        shapes.append({
-            "similarity": round(match.similarity, 4),
-            "values": [round(v, 4) for v in normalize_window(window, analysis.scale).tolist()],
-        })
-        paths.append({
-            "similarity": round(match.similarity, 4),
-            "outcome": outcome,
-            "won": outcome > analysis.cost,
-            "values": [0.0] + [round(float(v / entry - 1.0), 6) for v in after],
-            "at": series.kst_at(match.end_index).strftime("%Y-%m-%d %H:%M"),
-        })
-
-    return {
-        "timeframe": timeframe,
-        "timeframeLabel": timeframe_label(timeframe),
-        "length": length,
-        "horizon": horizon,
-        "cost": analysis.cost,
-        "query": [round(v, 4) for v in normalize_window(query, analysis.scale).tolist()],
-        "queryAt": series.kst_at(query_end).strftime("%Y-%m-%d %H:%M"),
-        "shapes": shapes,
-        "paths": paths,
-        "shown": len(shapes),
-        "matches": len(result.matches),
-    }
-
-
 # ---------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = "patternscan"
@@ -488,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _static(self, name: str) -> None:
+    def _static(self, name: str, extra: dict[str, str] | None = None) -> None:
         path = (STATIC / name).resolve()
         # 경로 탈출 방지: static 밖은 절대 내주지 않는다.
         if not str(path).startswith(str(STATIC.resolve())) or not path.is_file():
@@ -498,7 +454,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", CONTENT_TYPES.get(path.suffix, "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if path.suffix in CACHEABLE:
+            self.send_header("Cache-Control", "public, max-age=604800")
+        else:
+            self.send_header("Cache-Control", "no-store")
+        if extra:
+            for key, value in extra.items():
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -509,6 +471,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route in ("/", "/index.html"):
                 self._static("index.html")
+            elif route == "/sw.js":
+                # 서비스 워커의 활동 범위는 **자기가 놓인 경로**로 정해진다.
+                # /static/sw.js 로 주면 /static/ 아래만 맡게 되어, 정작
+                # 첫 화면('/')을 대신 띄워 주지 못한다. 그래서 뿌리에 놓는다.
+                self._static("sw.js", {"Service-Worker-Allowed": "/"})
+            elif route == "/manifest.webmanifest":
+                self._static("manifest.webmanifest")
+            elif route == "/apple-touch-icon.png":
+                # iOS는 link 태그가 없으면 이 주소를 직접 찾아본다.
+                self._static("apple-touch-icon.png")
             elif route == "/favicon.ico":
                 self._bytes(FAVICON, "image/svg+xml")
             elif route.startswith("/static/"):

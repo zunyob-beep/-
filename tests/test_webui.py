@@ -443,3 +443,105 @@ def test_lan_address_is_a_plain_address_or_none():
     """주소를 못 찾아도 서버가 죽으면 안 된다."""
     found = webui._lan_address()
     assert found is None or (isinstance(found, str) and found.count(".") == 3)
+
+
+# ------------------------------------------------------------ 앱처럼 설치
+#
+# 홈 화면 아이콘이 되려면 브라우저가 세 가지를 **정확한 자리에서** 찾을 수
+# 있어야 한다. 하나라도 어긋나면 설치가 조용히 안 될 뿐 오류는 안 난다 —
+# 그래서 눈으로는 못 잡고, 여기서 잡아야 한다.
+def test_manifest_is_served_as_a_manifest(client):
+    status, body, headers = client[0].get("/static/manifest.webmanifest")
+    assert status == 200
+    # text/plain으로 나가면 크롬이 매니페스트로 안 읽고 설치가 안 뜬다.
+    assert "manifest" in headers["Content-Type"]
+    manifest = json.loads(body.decode("utf-8"))
+    for key in ("name", "short_name", "start_url", "display", "icons"):
+        assert manifest[key], f"매니페스트에 {key}가 없습니다"
+    assert manifest["display"] == "standalone"
+
+
+def test_every_icon_the_manifest_promises_actually_exists(client):
+    """매니페스트가 없는 파일을 가리키면 설치가 통째로 실패한다."""
+    manifest = client[0].get_json("/static/manifest.webmanifest")
+    for icon in manifest["icons"]:
+        status, body, headers = client[0].get(icon["src"])
+        assert status == 200, icon["src"]
+        assert headers["Content-Type"] == "image/png"
+        assert body[:8] == b"\x89PNG\r\n\x1a\n", f"{icon['src']}가 PNG가 아닙니다"
+        width = int.from_bytes(body[16:20], "big")
+        assert f"{width}x" in icon["sizes"], f"{icon['src']}의 실제 크기가 {width}"
+
+
+def test_a_maskable_icon_is_offered(client):
+    """안드로이드는 마스크용 아이콘이 없으면 흰 테두리를 둘러버린다."""
+    manifest = client[0].get_json("/static/manifest.webmanifest")
+    assert any("maskable" in i.get("purpose", "") for i in manifest["icons"])
+
+
+def test_the_service_worker_sits_at_the_root(client):
+    """/static/sw.js 로 주면 관할이 /static/ 아래로 좁아져 첫 화면을 못 맡는다."""
+    status, body, headers = client[0].get("/sw.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert headers.get("Service-Worker-Allowed") == "/"
+    assert b"addEventListener" in body
+
+
+def test_apple_looks_for_the_touch_icon_at_the_root(client):
+    """iOS는 link 태그를 못 찾으면 /apple-touch-icon.png 를 직접 찔러 본다."""
+    status, body, _ = client[0].get("/apple-touch-icon.png")
+    assert status == 200
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_page_declares_what_ios_needs(client):
+    """iOS는 매니페스트의 display를 안 읽는다. meta 태그가 있어야 전체 화면이 된다."""
+    body = client[0].get("/")[1].decode("utf-8")
+    assert 'rel="manifest"' in body
+    assert 'name="apple-mobile-web-app-capable"' in body
+    assert 'rel="apple-touch-icon"' in body
+
+
+def test_the_service_worker_never_caches_prices(client):
+    """3시간 전 가격을 지금 가격이라고 보여주는 것보다 실패하는 편이 낫다.
+
+    서비스 워커가 /api/* 를 캐시하면 정확히 그 일이 벌어진다. 화면에는
+    아무 표시도 안 나므로 사용자는 옛 숫자를 보고 돈을 넣는다.
+    """
+    source = client[0].get("/sw.js")[1].decode("utf-8")
+    guard = "if (url.pathname.startsWith('/api/')) return;"
+    assert guard in source
+    # 그 방어선이 fetch 처리보다 앞에 있어야 의미가 있다.
+    assert source.index(guard) < source.index("event.respondWith")
+
+
+def test_icons_may_be_cached_but_code_never_is(client):
+    """아이콘은 안 바뀐다. 화면 코드는 바뀌는데, 옛것이 남으면 못 고친다."""
+    assert "no-store" in client[0].get("/static/app.js")[2]["Cache-Control"]
+    assert "no-store" in client[0].get("/")[2]["Cache-Control"]
+    assert "max-age" in client[0].get("/static/icon-192.png")[2]["Cache-Control"]
+
+
+def test_the_page_keeps_checking_that_the_server_is_alive(client):
+    """놀 때 폴링을 멈추면 컴퓨터가 꺼져도 화면은 멀쩡해 보인다.
+
+    실제로 그랬다. 서버를 죽여도 안내가 안 뜨고, 버튼을 눌러야만
+    그제서야 안 된다는 걸 알 수 있었다. 홈 화면 아이콘으로 띄워 두고
+    쓰는 물건이라 이건 특히 나쁘다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "HEARTBEAT" in source
+    # 작업 중일 때만 다음 폴링을 잡는 옛 구조로 돌아가면 안 된다.
+    assert "if (job.running) timer =" not in source
+    assert "job.running ? 500 : HEARTBEAT" in source
+
+
+def test_a_dead_server_is_told_apart_from_a_rejected_request(client):
+    """둘을 같은 빨간 줄로 보여주면 어느 쪽인지 알 수가 없다.
+
+    앞의 것은 컴퓨터를 켜야 하고, 뒤의 것은 화면에서 조건을 바꿔야 한다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "class Unreachable" in source
+    assert "instanceof Unreachable" in source

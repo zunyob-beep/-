@@ -37,6 +37,13 @@ body {
 @media (max-width: 720px) {
   .top { position: static; }
 }
+/* 홈 화면에서 열면 주소창이 없어 화면 맨 위까지 쓴다. 그대로 두면
+   제목이 아이폰 시계·노치 밑으로 들어가 안 보인다.
+   (.top의 padding 단축 속성보다 뒤에 와야 이긴다.) */
+@media (display-mode: standalone) {
+  .top { padding-top: calc(14px + env(safe-area-inset-top)); }
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
 .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .brand h1 { font-size: 17px; margin: 0; letter-spacing: -0.3px; }
 .brand .sub { color: var(--dim); font-size: 12px; }
@@ -95,6 +102,31 @@ button:disabled { opacity: 0.5; cursor: default; }
   margin: 12px 0 0; padding: 10px 12px;
   background: rgba(208, 66, 79, 0.12); border: 1px solid rgba(208, 66, 79, 0.4);
   border-radius: 6px; color: #ff9aa3; font-size: 13px;
+}
+
+/* 서버가 꺼진 것은 '오류'가 아니라 '할 일'이다. 빨간 줄이 아니라
+   무엇을 하면 되는지 적힌 칸으로 보여준다. */
+.offline {
+  margin: 12px 0 0; padding: 12px 14px;
+  background: rgba(61, 126, 255, 0.1); border: 1px solid rgba(61, 126, 255, 0.4);
+  border-radius: 6px; font-size: 13px; line-height: 1.75;
+}
+.offline code {
+  background: var(--panel-2); padding: 1px 6px; border-radius: 4px;
+  font-size: 12px; white-space: nowrap;
+}
+.offline .dim { display: block; margin-top: 4px; font-size: 12px; }
+
+.install-hint {
+  margin: 12px 0 0; padding: 9px 12px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 12.5px; color: var(--dim);
+}
+.install-hint b { color: var(--text); }
+button.ghost {
+  background: none; border: 0; color: var(--dim);
+  font-size: 12px; padding: 4px 6px; margin-left: auto;
 }
 
 .stale-note {

@@ -53,6 +53,7 @@ if "%~1"=="--lan" set "HOSTARG=--host 0.0.0.0"
 
 echo.
 echo   화면을 엽니다. 끝내려면 이 창에서 Ctrl+C 를 누르세요.
+echo   브라우저 주소창의 설치 아이콘을 누르면 앱처럼 쓸 수 있습니다.
 echo.
 python -m patternscan ui --market "%MARKET%" %HOSTARG%
 pause
