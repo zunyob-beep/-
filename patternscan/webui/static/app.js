@@ -402,9 +402,19 @@ $('btn-install-close').addEventListener('click', () => {
 
 // iOS 사파리에는 설치 버튼이 없다(beforeinstallprompt를 안 쏜다).
 // 공유 버튼을 눌러야 한다는 걸 아는 사람만 아는데, 모르면 영영 못 찾는다.
-if (/iPad|iPhone|iPod/.test(navigator.userAgent)
-    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
-  showInstallHint('아래 공유 버튼(□↑) → "홈 화면에 추가"를 누르면 앱처럼 열립니다.');
+//
+// 그런데 그 버튼의 자리가 기기마다 다르다. 아이패드는 **위쪽 주소창 옆**,
+// 아이폰은 **아래쪽 가운데**다. "아래 공유 버튼"이라고만 적어두면
+// 아이패드 사용자는 없는 곳을 쳐다보게 된다.
+const iphone = /iPhone|iPod/.test(navigator.userAgent);
+const ipad = /iPad/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+if (iphone || ipad) {
+  const where = iphone ? '화면 아래 가운데' : '오른쪽 위 주소창 옆';
+  showInstallHint(
+    `${where}의 공유 버튼(□↑)을 누르고, 목록을 내려 "홈 화면에 추가"를 고르세요.`
+  );
 }
 
 refreshState();

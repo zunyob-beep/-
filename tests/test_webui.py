@@ -545,3 +545,17 @@ def test_a_dead_server_is_told_apart_from_a_rejected_request(client):
     source = client[0].get("/static/app.js")[1].decode("utf-8")
     assert "class Unreachable" in source
     assert "instanceof Unreachable" in source
+
+
+def test_the_ios_hint_points_at_the_right_corner(client):
+    """공유 버튼 자리가 기기마다 다르다.
+
+    아이패드는 위쪽 주소창 옆, 아이폰은 아래쪽 가운데다. 한쪽만 적어두면
+    다른 쪽 사용자는 없는 곳을 쳐다보게 된다 — 그리고 그 버튼을 못 찾으면
+    홈 화면 추가는 영영 못 한다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "화면 아래 가운데" in source     # 아이폰
+    assert "오른쪽 위 주소창 옆" in source   # 아이패드
+    # 둘을 갈라놓지 않으면 위 두 문구가 있어도 소용없다.
+    assert "iphone ?" in source
