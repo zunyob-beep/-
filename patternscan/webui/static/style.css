@@ -14,6 +14,12 @@
 
 * { box-sizing: border-box; }
 
+/* hidden 속성은 브라우저 기본 스타일시트의 `[hidden] { display: none }`으로
+   동작하는데, 그건 **클래스 선택자 하나에도 진다**. 그래서 `.install-hint`에
+   display:flex를 준 순간, hidden을 붙여 둔 안내가 내용도 없이 화면에 떴다.
+   숨기라고 말한 것이 안 숨겨지는 건 조용히 벌어져서 눈으로만 잡힌다. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);

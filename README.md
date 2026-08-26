@@ -577,7 +577,7 @@ tools/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 249개 시험, 전부 오프라인
+python -m pytest -q          # 255개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

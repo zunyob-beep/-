@@ -283,6 +283,35 @@ def _do_odds(
     state.job.update(message="계산을 마쳤습니다", done=total, total=total)
 
 
+def _why_nothing_matched(rows: list[Odds]) -> list[str]:
+    """왜 표본이 안 모였는지, 그리고 **무엇을 바꾸면 되는지**.
+
+    예전에는 "데이터를 더 받거나 기준을 낮춰 보세요" 한 줄이 전부였다.
+    이미 기준을 낮춘 사람에게는 아무 말도 안 한 것과 같고, 얼마나 모자란
+    건지도 알 수 없다. 몇 개가 모였는지 숫자로 말해 준다.
+
+    그리고 진짜 효과가 큰 손잡이를 먼저 말한다. **직전 봉 개수**다.
+    180개짜리 모양이 과거에 그대로 반복될 일은 드물다 — 유사도를 아무리
+    낮춰도 잘 안 늘어난다. 20~40개로 줄이면 표본이 확 는다.
+    """
+    best = max((r.samples for r in rows), default=0)
+    length = rows[0].length if rows else 0
+    found = (
+        f"가장 많이 모인 조합도 {best}개뿐입니다 (최소 {ODDS_MIN_SAMPLES}개 필요)."
+        if best
+        else "닮은 과거 구간이 하나도 없습니다."
+    )
+    advice = ["**직전 몇 개 봉**을 20~40으로 줄여 보세요 — 가장 효과가 큽니다."]
+    if length >= 60:
+        advice[0] = (
+            f"**직전 몇 개 봉**이 {length}개입니다. 20~40으로 줄여 보세요 — "
+            "긴 모양이 과거에 그대로 반복될 일은 드물어서, 유사도를 낮추는 것보다 "
+            "이쪽이 훨씬 크게 듣습니다."
+        )
+    advice.append("그래도 모자라면 **얼마나 과거까지**를 늘려 더 긴 과거에서 찾으세요.")
+    return [found, *advice]
+
+
 def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
     """지금 살지 말지.
 
@@ -300,7 +329,7 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
         return {
             "buy": False,
             "headline": "판단할 수 없습니다",
-            "reasons": ["닮은 과거 구간이 충분히 모이지 않았습니다. 데이터를 더 받거나 기준을 낮춰 보세요."],
+            "reasons": _why_nothing_matched(rows),
         }
 
     winners = [

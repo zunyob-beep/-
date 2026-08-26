@@ -30,11 +30,20 @@ async function api(path, options) {
   }
   let payload = null;
   try { payload = await response.json(); } catch (err) { /* 아래에서 처리 */ }
-  if (response.status >= 500 || response.status === 503) {
+
+  // 이 서버는 오류에 **반드시 이유를 붙여** JSON으로 답한다. 그러니 이유
+  // 없는 오류가 왔다면 답한 쪽이 이 서버가 아니다 — 코드스페이스가 잠들어
+  // 깃허브 프록시가 대신 답했거나, 로그인이 풀렸거나 하는 경우다.
+  // 그때 "오류 404"라고만 띄우면 사용자는 뭘 해야 할지 알 수가 없다.
+  const said = payload && payload.error;
+  if (!response.ok && !said) {
+    throw new Unreachable(`서버가 아닌 곳에서 ${response.status}가 왔습니다`);
+  }
+  if (response.status >= 500) {
     throw new Unreachable(`서버가 응답하지 못했습니다 (${response.status})`);
   }
-  if (!response.ok) throw new Error(payload && payload.error ? payload.error : `오류 ${response.status}`);
-  if (!payload) throw new Error('서버 응답을 읽지 못했습니다');
+  if (!response.ok) throw new Error(said);
+  if (!payload) throw new Error(`${path} 응답을 읽지 못했습니다`);
   return payload;
 }
 
@@ -238,6 +247,12 @@ function render(analysis) {
   }
 }
 
+// 서버가 보낸 문장에서 **강조**만 굵게 만든다. 이스케이프를 **먼저** 하므로
+// 서버 문장에 태그가 섞여 있어도 태그로 살아나지 않는다.
+const emphasise = (text) => text
+  .replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+  .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+
 function renderVerdict(analysis) {
   const v = analysis.verdict;
   if (!v) return;
@@ -246,9 +261,7 @@ function renderVerdict(analysis) {
   panel.className = `panel verdict ${v.buy ? 'buy' : 'hold'}`;
   $('verdict-headline').textContent = v.headline;
   $('verdict-time').textContent = analysis.updatedAt ? `${analysis.updatedAt} 기준` : '';
-  $('verdict-reasons').innerHTML = v.reasons
-    .map((r) => `<li>${r.replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</li>`)
-    .join('');
+  $('verdict-reasons').innerHTML = v.reasons.map((r) => `<li>${emphasise(r)}</li>`).join('');
 }
 
 function renderCoverage(analysis) {
@@ -475,6 +488,8 @@ const standalone = window.matchMedia('(display-mode: standalone)').matches
 let installPrompt = null;
 
 function showInstallHint(how) {
+  // 할 말이 없으면 띄우지 않는다. "앱처럼 쓰기:"만 덩그러니 뜬 적이 있다.
+  if (!how) return;
   let dismissed = false;
   try { dismissed = localStorage.getItem('installHintDismissed') === '1'; }
   catch (err) { /* 읽을 수 없으면 그냥 보여준다 */ }

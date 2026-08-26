@@ -28,7 +28,20 @@ import pytest
 
 from patternscan.data import cache_path, save
 from patternscan.models import Candle
+from patternscan.odds import MIN_SAMPLES as ODDS_MIN_SAMPLES_FOR_TEST
 from patternscan.webui import server as webui
+
+
+def _odds_stub(samples, length):
+    """표본만 있으면 되는 가짜 확률 행."""
+    from patternscan.odds import Odds
+
+    return Odds(
+        timeframe="minute1", length=length, horizon=1, samples=samples,
+        up=0, beat_cost=0, base_up=0.5, base_beat=0.2,
+        median_return=0.0, best=0.0, worst=0.0,
+        min_similarity=0.9, query_linearity=0.3,
+    )
 
 
 # ---------------------------------------------------------------- 준비
@@ -790,3 +803,64 @@ def test_fetch_progress_is_finer_than_three_steps(client, monkeypatch):
         threading.Event().wait(0.05)
 
     assert seen and seen[0]["total"] > 3, "진행이 봉 개수 단위여야 한다"
+
+
+# ------------------------------------------------------- 숨기라면 숨겨야 한다
+def test_hidden_really_hides(client):
+    """`hidden` 속성은 브라우저 기본 스타일의 `[hidden]{display:none}`으로
+    동작하는데, 그건 **클래스 선택자 하나에도 진다.**
+
+    실제로 그랬다. `.install-hint`에 display:flex를 준 순간, hidden을 붙여
+    둔 안내가 내용도 없이 화면에 떴다 — "앱처럼 쓰기:"만 덩그러니.
+    """
+    css = client[0].get("/static/style.css")[1].decode("utf-8")
+    assert "[hidden]" in css and "display: none !important" in css
+
+
+def test_an_error_without_a_reason_is_treated_as_unreachable(client):
+    """이 서버는 오류에 반드시 이유를 붙인다.
+
+    그러니 이유 없는 오류가 왔다면 답한 쪽이 이 서버가 아니다 —
+    코드스페이스가 잠들어 깃허브 프록시가 대신 답한 경우다. 그때
+    "오류 404"라고만 띄우면 사용자는 뭘 해야 할지 알 수가 없다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "if (!response.ok && !said)" in source
+    assert "서버가 아닌 곳에서" in source
+
+
+def test_every_server_error_carries_a_reason(client):
+    """위 규칙이 성립하려면 서버가 그 약속을 지켜야 한다."""
+    for path in ("/api/examples?timeframe=nope&horizon=1", "/no-such-route", "/static/no-such.js"):
+        try:
+            client[0].get(path)
+        except urllib.error.HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            assert body.get("error"), f"{path}가 이유 없이 실패했습니다"
+
+
+# ------------------------------------------------- 표본이 안 모였을 때의 안내
+def test_no_matches_says_how_many_were_found(client):
+    """"기준을 낮춰 보세요"만 말하면, 이미 낮춘 사람에게는 아무 말도 안 한 것이다."""
+    from patternscan.webui.server import _why_nothing_matched
+
+    rows = [_odds_stub(samples=4, length=180), _odds_stub(samples=1, length=180)]
+    said = " ".join(_why_nothing_matched(rows))
+    assert "4개" in said, "몇 개가 모였는지 숫자로 말해야 한다"
+    assert str(ODDS_MIN_SAMPLES_FOR_TEST) in said
+
+
+def test_a_long_window_is_named_as_the_thing_to_change(client):
+    """유사도보다 직전 봉 개수가 훨씬 크게 듣는다. 그걸 먼저 말해야 한다."""
+    from patternscan.webui.server import _why_nothing_matched
+
+    said = " ".join(_why_nothing_matched([_odds_stub(samples=2, length=180)]))
+    assert "180개" in said
+    assert "직전 몇 개 봉" in said
+
+
+def test_with_nothing_at_all_it_still_advises(client):
+    from patternscan.webui.server import _why_nothing_matched
+
+    said = _why_nothing_matched([])
+    assert said and any("직전 몇 개 봉" in line for line in said)
