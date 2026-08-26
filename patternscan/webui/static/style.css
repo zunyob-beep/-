@@ -146,6 +146,8 @@ tr.sig td.l::after { content: " ★"; color: #ffc94d; }
 tr.pass td.l { color: #6fe0bb; }
 td.pos { color: var(--up); }
 td.neg { color: var(--down); }
+/* 직선에 가까운 '모양'은 눈에 띄게 — 모양이 아니라 추세를 본 것이다 */
+td.trend, b.trend { color: #ffc94d; }
 .footnote { color: var(--dim); font-size: 12px; margin: 12px 0 0; }
 
 /* 조합을 바꿀 때마다 설명 길이가 달라지면 그 아래가 위아래로 튄다.

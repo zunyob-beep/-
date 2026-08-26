@@ -178,6 +178,9 @@ function renderTable(analysis) {
       <td class="${f.edge >= 0 ? 'pos' : 'neg'}">${signed(f.edge)}</td>
       <td class="${f.meanReturn >= 0 ? 'pos' : 'neg'}">${signed(f.meanReturn, 3)}</td>
       <td>${f.minSimilarity === null ? '—' : f.minSimilarity.toFixed(2)}</td>
+      <td class="${f.mostlyATrend ? 'trend' : ''}" title="${f.mostlyATrend
+        ? '직선에 가깝습니다 — 특이한 모양이 아니라 추세 중인 구간을 센 것에 가깝습니다'
+        : ''}">${f.linearity.toFixed(2)}</td>
       <td>${f.qValue.toFixed(3)}</td>
       <td>${pct(f.firstHalfRate, 0)} / ${pct(f.secondHalfRate, 0)}</td>`;
     tr.addEventListener('click', () => select(f));

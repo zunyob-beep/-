@@ -68,6 +68,8 @@ class Finding:
     ci_low: float
     ci_high: float
     max_distance: float
+    #: 질의 모양의 직선성 (0~1). 높으면 '모양'이 아니라 '추세'를 본 것이다.
+    query_linearity: float = 0.0
     first_half_rate: float = 0.0
     second_half_rate: float = 0.0
     holds_in_both_halves: bool = False
@@ -81,6 +83,15 @@ class Finding:
     @property
     def enough_samples(self) -> bool:
         return self.samples >= MIN_SAMPLES
+
+    @property
+    def mostly_a_trend(self) -> bool:
+        """이 '모양'이 사실상 직선인가.
+
+        직선이면 "같은 모양이 과거에 N번 있었다"가 아니라 "과거에도 이 방향
+        추세가 N번 있었다"는 뜻이다. 훨씬 약한 주장이므로 구분해서 말해야 한다.
+        """
+        return self.query_linearity >= TREND_LINEARITY
 
     @property
     def min_similarity(self) -> float:
@@ -132,6 +143,7 @@ def _finding(result: ScanResult, horizon: int, outcome: Outcome) -> Finding:
         ci_low=low,
         ci_high=high,
         max_distance=result.max_distance,
+        query_linearity=result.query_linearity,
         first_half_rate=outcome.half_rates[0],
         second_half_rate=outcome.half_rates[1],
         holds_in_both_halves=outcome.holds_in_both_halves,
@@ -171,6 +183,15 @@ class Verdict:
     tested: int
     significant: int
 
+
+#: 이 이상이면 '모양'이라기보다 '추세선'으로 본다 (직선 적합 R²).
+#:
+#: 1분봉 43,200개에서 질의 위치 40곳을 훑어 재보면, 표본이 20개 넘게 나온
+#: 경우의 직선성 중앙값이 길이 60에서 0.72, 180에서 0.80, 300에서 0.88이다.
+#: 표본이 적은 경우는 0.22~0.40이다. 즉 긴 창에서 표본이 넉넉히 잡히는
+#: 상황은 대개 모양이 반복돼서가 아니라 모양이 단순해서다.
+#: 0.75는 그 두 무리 사이를 가르는 값이다.
+TREND_LINEARITY = 0.75
 
 #: 진입에 필요한 최소 '통과 조합' 수.
 #:
@@ -291,6 +312,15 @@ def decide(
         f"시간순 앞쪽 절반 {best.first_half_rate:.0%} / 뒤쪽 절반 {best.second_half_rate:.0%}"
         " — 양쪽 모두에서 성립합니다."
     )
+    if best.mostly_a_trend:
+        # 막지는 않는다. 추세를 타는 것도 근거는 근거다. 다만 사용자가
+        # "특이한 모양이 반복됐다"로 오해하지 않도록 정체를 밝힌다.
+        reasons.append(
+            f"⚠ 다만 이 '모양'은 직선에 가깝습니다 (직선성 {best.query_linearity:.2f}). "
+            "특이한 모양이 반복된 게 아니라 '같은 방향으로 추세 중'인 구간들을 "
+            "센 것에 가깝습니다 — 모양의 예측력이라기보다 추세 추종에 가깝습니다."
+        )
+
     lengths = sorted({f.length for f in winners})
     horizons = sorted({f.horizon for f in winners})
     reasons.append(

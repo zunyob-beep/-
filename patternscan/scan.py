@@ -26,7 +26,14 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .models import HORIZONS, Series, timeframe_length
-from .shape import distance_to_similarity, distances_to, flat_mask, is_flat, similarity_to_distance
+from .shape import (
+    distance_to_similarity,
+    distances_to,
+    flat_mask,
+    is_flat,
+    linearity,
+    similarity_to_distance,
+)
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +148,9 @@ class ScanResult:
     max_distance: float
     threshold: float
     query_flat: bool = False
+    #: 질의 모양이 직선에 얼마나 가까운지 (0~1). 높으면 '모양'이 아니라
+    #: '추세'를 보고 있는 것이다 — shape.linearity 참고.
+    query_linearity: float = 0.0
     note: str = ""
 
     @property
@@ -254,6 +264,7 @@ def scan(
         max_distance=max((m.distance for m in matches), default=float("nan")),
         threshold=threshold,
         query_flat=is_flat(query),
+        query_linearity=linearity(query),
     )
 
 

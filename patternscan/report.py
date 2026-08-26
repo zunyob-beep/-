@@ -43,15 +43,16 @@ def format_table(findings: list[Finding], top: int = 15) -> str:
     ]
     for finding in usable[:top]:
         combo = f"{timeframe_label(finding.timeframe)} {finding.length}개 → {finding.horizon}봉"
-        star = " ★" if finding.significant else ""
+        marks = ("~" if finding.mostly_a_trend else "") + ("★" if finding.significant else "")
         lines.append(
             f"  {combo:<30}{finding.samples:>5}{finding.up_rate:>8.1%}"
             f"{finding.base_up_rate:>8.1%}{finding.edge:>+8.1%}"
             f"{finding.mean_return:>+9.3%}{finding.min_similarity:>8.2f}"
-            f"{finding.q_value:>8.3f}{star}"
+            f"{finding.q_value:>8.3f}{' ' + marks if marks else ''}"
         )
     lines.append("")
     lines.append("  ★ = 다중비교 보정 후에도 유의함")
+    lines.append("  ~ = 질의 모양이 직선에 가까움 (특이한 모양이 아니라 '추세 중'을 센 것)")
     lines.append("  유사도 = 표본에 들어온 것 중 가장 덜 닮은 모양의 상관계수")
     lines.append(f"  표본 {MIN_SAMPLES}개 미만 조합은 표에서 제외했습니다.")
     return "\n".join(lines)
@@ -73,6 +74,12 @@ def format_detail(finding: Finding) -> str:
             + ("" if finding.holds_in_both_halves else "  ← 한쪽 구간에서만 나타납니다"),
             f"      가장 덜 닮은 매치의 유사도 {finding.min_similarity:.3f}"
             " (1.00이면 완전히 같은 모양, 0.00이면 무관)",
+            f"      질의 모양의 직선성 {finding.query_linearity:.2f}"
+            + (
+                "  ← 직선에 가깝습니다. '모양'이 아니라 '추세'를 본 것에 가깝습니다"
+                if finding.mostly_a_trend
+                else " (1.00이면 그냥 직선)"
+            ),
         ]
     )
 

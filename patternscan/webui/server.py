@@ -240,6 +240,8 @@ def _finding_json(finding: Finding, cost: float) -> dict[str, Any]:
         "ciLow": finding.ci_low,
         "ciHigh": finding.ci_high,
         "minSimilarity": _finite(finding.min_similarity),
+        "linearity": finding.query_linearity,
+        "mostlyATrend": finding.mostly_a_trend,
         "firstHalfRate": finding.first_half_rate,
         "secondHalfRate": finding.second_half_rate,
         "holdsInBothHalves": finding.holds_in_both_halves,

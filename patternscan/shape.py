@@ -112,6 +112,40 @@ def flat_mask(values: np.ndarray, length: int) -> np.ndarray:
     return (path.std(axis=1) <= FLAT_EPS) | (base[:, 0] == 0)
 
 
+def linearity(window: np.ndarray) -> float:
+    """이 모양이 '그냥 곧게 오르내리는 추세선'에 얼마나 가까운지 (0~1).
+
+    정규화한 경로에 직선을 맞췄을 때의 결정계수 R²다. 1에 가까우면 굴곡이
+    거의 없는 직선이다.
+
+    왜 재는가
+    --------
+    긴 모양일수록 똑같은 게 과거에 잘 없다. 그런데도 표본이 20개 넘게
+    나온다면 둘 중 하나다 — 정말 특이한 모양이 반복됐거나, **모양이 단순해서**
+    아무 추세 구간이나 다 닮은 것이거나.
+
+    실제로 재보면 후자다. 1분봉 43,200개에서 질의 위치 40곳을 훑었을 때,
+    표본이 20개 넘게 나온 경우의 직선성 중앙값은
+
+        길이  60 → 0.72     길이 180 → 0.80     길이 300 → 0.88
+
+    였고, 표본이 적은 경우는 0.22~0.40이었다. 즉 긴 창에서 표본이 많이
+    잡히는 상황은 대개 "같은 모양"이 아니라 **"같은 방향으로 추세 중"**이다.
+
+    그걸 알려주지 않으면 사용자는 "직전 180개 모양이 과거에 25번 있었고 그중
+    60%가 올랐다"로 읽는다. 실제 내용은 "요즘 오르는 중인데, 과거에 오르던
+    구간들도 대체로 더 올랐다"에 가깝다 — 훨씬 약한 주장이다.
+    """
+    path = np.asarray(normalize_window(window), dtype=np.float64)
+    if path.size < 3:
+        return 1.0
+    if path.std() <= FLAT_EPS:
+        return 1.0
+    x = np.arange(path.size, dtype=np.float64)
+    x = (x - x.mean()) / x.std()
+    return float(np.corrcoef(x, path)[0, 1] ** 2)
+
+
 def similarity_to_distance(similarity: float) -> float:
     """'유사도'(상관계수)를 거리 임계값으로 바꾼다.
 

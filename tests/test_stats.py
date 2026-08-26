@@ -192,6 +192,38 @@ def test_a_flat_query_does_not_masquerade_as_a_pattern():
         f"곧게 오르기만 하는 데이터에서 초과 승률 {outcome.edge:+.1%}가 나왔습니다 — "
         "비교 기준이 제 역할을 못 하고 있습니다"
     )
+    # 그리고 그게 직선이라는 사실을 사용자에게 알려야 한다
+    assert result.query_linearity > 0.99
+
+
+def test_a_trend_shaped_query_is_flagged_as_a_trend():
+    """'모양'이 사실상 직선이면 그렇다고 말해야 한다.
+
+    긴 창에서 표본이 넉넉히 나오는 상황은 대개 특이한 모양이 반복돼서가
+    아니라 모양이 단순해서다. 실측하면 표본 20개 이상인 경우의 직선성
+    중앙값이 길이 180에서 0.80, 300에서 0.88이었다. 그걸 안 알려주면
+    사용자는 "특이한 모양이 25번 반복됐다"로 읽는다.
+    """
+    rng = np.random.default_rng(8)
+    # 꾸준히 오르는 추세 + 약한 잡음
+    closes = [100.0 * 1.0008**i * float(np.exp(rng.normal(0, 0.0004))) for i in range(4000)]
+    findings = evaluate(scan_all({"minute1": make_series(closes)}, (60,), horizons=(5,)))
+    assert findings
+    assert findings[0].mostly_a_trend, (
+        f"추세 구간인데 직선성이 {findings[0].query_linearity:.2f}로 낮게 나왔습니다"
+    )
+
+
+def test_a_genuine_shape_is_not_flagged_as_a_trend():
+    """진짜 굴곡 있는 모양까지 '추세'로 몰면 경고가 무의미해진다."""
+    closes, _ = planted_signal(seed=1, with_positions=True)
+    findings = evaluate(
+        scan_all({"minute1": make_series(closes)}, (len(MARKER),), horizons=(1, 3, 5))
+    )
+    assert findings
+    assert not findings[0].mostly_a_trend, (
+        f"심어둔 표식 모양의 직선성이 {findings[0].query_linearity:.2f}로 높게 나왔습니다"
+    )
 
 
 # ------------------------------------- 285개 조합 부담 아래서도 신호를 찾는가

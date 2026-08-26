@@ -12,6 +12,7 @@ from patternscan.shape import (
     distances_to,
     flat_mask,
     is_flat,
+    linearity,
     normalize_window,
     sliding_windows,
 )
@@ -126,3 +127,43 @@ def test_sliding_windows_shape():
 def test_sliding_windows_rejects_bad_length():
     with pytest.raises(ValueError):
         sliding_windows(np.arange(5, dtype=np.float64), 0)
+
+
+# ------------------------------------------------------------------ 직선성
+def test_a_straight_line_is_fully_linear():
+    """곧게 오르기만 하는 구간은 '모양'이랄 게 없다."""
+    rising = np.array([100.0 * 1.002**i for i in range(60)])
+    falling = np.array([100.0 * 0.998**i for i in range(60)])
+    assert linearity(rising) > 0.99
+    assert linearity(falling) > 0.99
+
+
+def test_a_zigzag_is_not_linear():
+    """오르내림이 뚜렷하면 직선성이 낮아야 한다."""
+    zigzag = np.array([100.0 + 5 * (-1) ** i for i in range(60)])
+    assert linearity(zigzag) < 0.2
+
+
+def test_a_hump_is_not_linear():
+    """올랐다 내리는 봉우리는 직선과 전혀 다르다."""
+    x = np.linspace(-1, 1, 60)
+    hump = 100.0 * (1.0 + 0.05 * (1 - x**2))
+    assert linearity(hump) < 0.2
+
+
+def test_linearity_ignores_price_level_and_amplitude():
+    """정규화 후에 재므로 가격대나 변동폭에는 영향받지 않아야 한다."""
+    base = np.array([100.0 + i + (i % 7) for i in range(60)])
+    assert linearity(base) == pytest.approx(linearity(base * 900_000), abs=1e-9)
+
+
+def test_flat_window_counts_as_linear():
+    """전혀 안 움직인 구간은 0으로 나눌 수 없다 — 직선으로 본다."""
+    assert linearity(np.array([100.0] * 30)) == 1.0
+
+
+def test_linearity_is_between_zero_and_one():
+    rng = np.random.default_rng(3)
+    for _ in range(20):
+        values = 100 * np.exp(np.cumsum(rng.normal(0, 0.001, 50)))
+        assert 0.0 <= linearity(values) <= 1.0
