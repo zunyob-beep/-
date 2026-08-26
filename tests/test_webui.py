@@ -1065,3 +1065,68 @@ def test_the_projection_shows_real_paths_not_just_the_average(client):
     assert one["walks"], "실제로 갔던 길이 하나도 없습니다"
     assert all(w[0] == 0.0 for w in one["walks"]), "지금 값에서 시작하지 않습니다"
     assert all(len(w) == len(one["median"]) for w in one["walks"])
+
+
+# ============================================ 판정과 금액이 어긋나면 안 된다
+#
+# 실제로 어긋났다. 확률 관문 셋을 다 통과한 조합이 "살 만합니다"로 나갔는데,
+# 그 조합의 중앙값 수익은 +0.036%였고 왕복 비용은 0.140%였다. 화면 오른쪽
+# '넣었다면' 칸에는 −1,036원이 찍혀 있었다 — **매수를 권하면서 그 옆에
+# 손실을 적어 둔 셈**이다.
+#
+# 확률이 높은 것과 돈이 되는 것은 다른 문제다. 오를 확률이 60%여도 오를 때
+# 조금 오르고 내릴 때 많이 내리면 잃는다.
+def _row(**over):
+    base = dict(
+        timeframe="minute5", length=20, horizon=3, samples=100,
+        up=60, beat_cost=22, base_up=0.49, base_beat=0.18,
+        median_return=0.00036, best=0.02, worst=-0.02,
+        min_similarity=0.9, query_linearity=0.3,
+    )
+    base.update(over)
+    from patternscan.odds import Odds
+
+    return Odds(**base)
+
+
+def test_a_buy_is_never_recommended_at_a_loss():
+    """이 시험 하나가 이 화면의 마지막 방어선이다."""
+    cost = 0.0014
+    # 확률 관문은 전부 통과하지만 중앙값이 비용을 못 넘는 줄
+    said = webui._verdict([_row()], cost)
+    assert said["buy"] is False, "손해 보는 조합에 매수를 권했습니다"
+    joined = " ".join(said["reasons"])
+    assert "돈이 되지는 않습니다" in joined
+    assert "911" in joined or "원" in joined, "얼마를 잃는지 금액으로 말해야 합니다"
+
+
+def test_a_buy_needs_the_money_to_actually_work():
+    cost = 0.0014
+    rich = _row(median_return=0.004)          # 비용의 세 배쯤
+    said = webui._verdict([rich, rich], cost)
+    assert said["buy"] is True
+    assert any("중앙값 수익" in r for r in said["reasons"])
+
+
+def test_whatever_the_verdict_recommends_actually_pays(client):
+    """어떤 데이터가 오든 '살 만합니다'는 돈이 될 때만 나와야 한다."""
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    analysis = state["analysis"]
+    if not analysis["verdict"]["buy"]:
+        return
+    cost = analysis["cost"]
+    winners = [
+        r for r in analysis["odds"]
+        if r["samples"] >= analysis["minSamples"] and r["medianReturn"] > cost
+    ]
+    assert winners, "살 만하다고 했는데 비용을 넘는 조합이 하나도 없습니다"
+
+
+def test_the_reason_names_the_money_gate_only_when_it_is_the_one_that_failed():
+    """통과한 관문까지 실패로 적으면 거짓말이 된다."""
+    cost = 0.0014
+    # 돈은 되지만 우연과 구분이 안 되는 줄
+    unclear = _row(median_return=0.004, samples=25, up=14, base_up=0.5)
+    said = webui._verdict([unclear], cost)
+    assert not any("돈이 되지는 않습니다" in r for r in said["reasons"]), \
+        "돈은 되는데 돈 때문이라고 했습니다"

@@ -427,13 +427,21 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
     """지금 살지 말지.
 
     확률만 보여주기로 했지만, 사용자는 결국 "그래서 사?"를 묻는다.
-    답하되 근거를 함께 낸다. 사려면 셋을 모두 넘겨야 한다.
+    답하되 근거를 함께 낸다. 사려면 **넷을 모두** 넘겨야 한다.
 
       1. 표본이 충분할 것
       2. 불확실 범위가 '평소'를 넘을 것 (우연과 구분될 것)
-      3. **수수료까지 넘길 확률**이 평소보다 확실히 높을 것
+      3. 수수료까지 넘길 확률이 평소보다 높을 것
+      4. **중앙값 수익이 왕복 비용보다 클 것**
 
-    3번이 핵심이다. 그냥 오를 확률이 높아도 수수료를 못 넘기면 돈을 잃는다.
+    4번이 없어서 실제로 사고가 났다. 확률 셋을 다 통과한 조합이
+    "살 만합니다"로 나갔는데, 그 조합의 중앙값 수익은 +0.036%였고 왕복
+    비용은 0.140%였다. 화면 오른쪽 '넣었다면' 칸에는 **−1,036원**이 찍혀
+    있었다. 매수를 권하면서 그 옆에 손실을 적어 둔 셈이다.
+
+    확률이 높은 것과 돈이 되는 것은 다른 문제다. 오를 확률 60%여도 오를
+    때 조금 오르고 내릴 때 많이 내리면 잃는다. 그래서 마지막 관문은
+    확률이 아니라 **금액**이어야 한다.
     """
     usable = [r for r in rows if r.samples >= ODDS_MIN_SAMPLES]
     if not usable:
@@ -446,9 +454,16 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
     winners = [
         r for r in usable
         if r.tells_us_anything and r.up_edge > 0 and r.beat_rate > r.base_beat
+        and r.median_return > cost
     ]
     if not winners:
-        best = max(usable, key=lambda r: r.up_edge)
+        # 확률 관문을 넘고 돈에서만 걸린 조합이 있으면 그걸 보여준다.
+        # 사용자가 표에서 가장 좋아 보인다고 느낄 줄이 바로 그 줄이다.
+        close = [
+            r for r in usable
+            if r.tells_us_anything and r.up_edge > 0 and r.beat_rate > r.base_beat
+        ]
+        best = max(close or usable, key=lambda r: r.median_return - cost)
         low, high = best.interval
         reasons = [
             f"가장 나은 조합은 {timeframe_label(best.timeframe)} {best.minutes}분 뒤로, "
@@ -467,7 +482,15 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             reasons.append(
                 f"수수료까지 넘긴 경우가 {best.beat_rate:.0%}로 평소 {best.base_beat:.0%}보다 낮습니다."
             )
-        elif best.tells_us_anything:
+        if best.median_return <= cost:
+            # 이게 대개 마지막까지 남는 이유다. 금액으로 적어야 와닿는다.
+            loss = (best.median_return - cost) * 1_000_000
+            reasons.append(
+                f"확률이 평소보다 높아도 **돈이 되지는 않습니다** — 중앙값 수익 "
+                f"{best.median_return:+.3%}가 왕복 비용 {cost:.3%}를 못 넘깁니다. "
+                f"100만원이면 {loss:+,.0f}원입니다."
+            )
+        elif best.tells_us_anything and best.beat_rate > best.base_beat:
             reasons.append("다른 조합들이 기준을 넘지 못했습니다.")
         reasons.append("근거가 기준을 넘길 때까지는 들어가지 않는 것이 기본값입니다.")
         return {"buy": False, "headline": "사지 마세요 — 근거가 없습니다", "reasons": reasons}
@@ -483,6 +506,8 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             f"불확실 범위 {low:.0%}~{high:.0%}가 평소를 넘습니다 — 우연으로 보기 어렵습니다.",
             f"왕복 비용 {cost:.2%}까지 넘긴 경우가 {top.beat_rate:.0%}로, "
             f"평소 {top.base_beat:.0%}보다 높습니다.",
+            f"중앙값 수익 {top.median_return:+.3%}가 왕복 비용을 넘습니다 — "
+            f"100만원이면 {(top.median_return - cost) * 1_000_000:+,.0f}원입니다.",
             f"같은 기준을 통과한 조합이 {len(winners)}개입니다.",
         ],
     }
@@ -628,6 +653,10 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             "label": timeframe_label(timeframe),
             "count": len(series),
             "gaps": series.gaps(),
+            # 지금 값. 예전에는 화면이 이걸 '예상 그림'에서 꺼내 썼는데,
+            # 닮은 과거를 못 찾으면 그림이 없어서 지지·저항선을 위아래로
+            # 가를 수가 없었다. 값은 그림과 상관없이 늘 있다.
+            "priceNow": float(series.close[-1]) if len(series) else None,
             "from": span[0].isoformat() if span else None,
             "to": span[1].isoformat() if span else None,
         })

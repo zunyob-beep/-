@@ -34,6 +34,12 @@ MIN_TOUCHES = 2
 #: 지금 값에서 이보다 멀면 안 보여준다. 단타에 5% 밖의 선은 소용없다.
 FAR = 0.05
 
+#: 얼마나 최근까지만 볼지. 8년치를 받아뒀다고 2018년의 지지선이 오늘
+#: 20분짜리 거래에 쓸모 있을 리 없다. 게다가 420만 봉을 훑으면 봉 간격마다
+#: 몇 초씩 잡아먹는다 — 재보니 지지·저항 2.3초, 이론 읽기 5.6초였다.
+#: 1분봉이면 사흘 반, 5분봉이면 보름 남짓이다.
+RECENT = 5000
+
 
 @dataclass(frozen=True)
 class Level:
@@ -49,6 +55,11 @@ class Level:
     def strength(self) -> float:
         """닿은 횟수와 최근성을 함께 본 점수. 비교용이지 확률이 아니다."""
         return self.touches * (1.0 / (1.0 + self.last_touch / 500.0))
+
+
+def recent(series: Series, window: int = RECENT) -> Series:
+    """최근 구간만 잘라 준다. 오래된 자리는 지금 거래에 쓸모가 없다."""
+    return series if len(series) <= window else series.slice(len(series) - window, len(series))
 
 
 def atr(series: Series, window: int = 100) -> float:
@@ -121,7 +132,10 @@ def levels(series: Series, reach: int = SWING, most: int = 3) -> list[Level]:
     위는 저항, 아래는 지지다. 지금 값을 이미 뚫은 선은 반대쪽이 되므로
     (뚫린 저항은 지지가 된다는 흔한 이야기) 방향은 **지금 값 기준으로**
     다시 매긴다.
+
+    최근 RECENT개만 본다 — 왜 그런지는 그 상수의 설명에 적어 두었다.
     """
+    series = recent(series)
     if len(series) < 2 * reach + 2:
         return []
     span = atr(series)
@@ -169,6 +183,7 @@ def retracements(series: Series, reach: int = SWING) -> list[Level]:
     되돌림은 '닿은 횟수'가 없다. 그래서 touches를 0으로 두고, 지지·저항과
     섞이지 않게 화면에서 따로 표시한다.
     """
+    series = recent(series)
     if len(series) < 2 * reach + 2:
         return []
     highs, lows = swings(series, reach)

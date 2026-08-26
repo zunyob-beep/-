@@ -724,13 +724,19 @@ function drawAhead(p, analysis) {
 
 // ============================================================ 지지·저항
 function renderLevels(analysis) {
-  const found = (analysis.levels || {})[aheadPick || 'minute1'] || [];
-  const fibs = (analysis.fibonacci || {})[aheadPick || 'minute1'] || [];
+  // 예상 그림이 없으면 aheadPick이 안 정해진다. 그때도 뭔가는 보여줘야 한다.
+  if (!aheadPick || !(analysis.levels || {})[aheadPick]) {
+    aheadPick = Object.keys(analysis.levels || {})[0] || null;
+  }
+  const found = (analysis.levels || {})[aheadPick] || [];
+  const fibs = (analysis.fibonacci || {})[aheadPick] || [];
   const panel = $('levels-panel');
   if (!found.length && !fibs.length) { panel.hidden = true; return; }
   panel.hidden = false;
 
-  const now = (analysis.projection || {})[aheadPick]?.priceNow;
+  // 지금 값은 예상 그림이 아니라 시세에서 읽는다. 닮은 과거를 못 찾아
+  // 그림이 없을 때도 위아래를 갈라야 한다.
+  const now = (analysis.series || []).find((s) => s.timeframe === aheadPick)?.priceNow;
   const won = (v) => Math.round(v).toLocaleString('ko-KR');
   const strongest = Math.max(...found.map((l) => l.strength), 1);
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .levels import SWING, atr, swings
+from .levels import SWING, atr, recent, swings
 from .models import Series
 
 #: 신호가 가리키는 방향.
@@ -381,7 +381,13 @@ THEORIES = (
 
 
 def read_all(series: Series, reach: int = SWING) -> list[Reading]:
-    """모든 이론을 한 번씩 돌린다."""
+    """모든 이론을 한 번씩 돌린다.
+
+    최근 구간만 넘긴다. 이론들은 어차피 마지막 꼭짓점 몇 개와 짧은 창만
+    보므로 답이 달라지지 않는데, 8년치를 통째로 넘기면 봉 간격마다 5초씩
+    잡아먹는다.
+    """
+    series = recent(series)
     out = []
     for theory in THEORIES:
         try:
