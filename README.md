@@ -565,6 +565,8 @@ patternscan/
   doctor.py     안 될 때 어디가 막혔는지 짚어주기
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용) + 홈 화면 앱 (매니페스트·서비스 워커)
+                인광 초록 단말기 차림. 단, 상승 빨강·하락 파랑은 그대로 —
+                뜻이 있는 색이라 분위기 때문에 덮으면 안 된다 (tests/test_theme.py)
 tools/
   make_icons.py 홈 화면 아이콘을 그린다
 ```
@@ -578,7 +580,7 @@ tools/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 262개 시험, 전부 오프라인
+python -m pytest -q          # 276개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

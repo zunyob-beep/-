@@ -438,10 +438,10 @@ function polyline(values, y, width, pad, color, stroke, alpha) {
 }
 
 function overlay(shape, query) {
-  // 그 당시 모양(회색)과 지금 모양(파랑)을 같은 자에 겹친다
+  // 그 당시 모양(흐린 초록)과 지금 모양(밝은 초록)을 같은 자에 겹친다
   const y = scaleTo(shape.concat(query), 120, 8);
-  return polyline(shape, y, 400, 8, '#8b93a3', 2.2, 0.95)
-       + polyline(query, y, 400, 8, '#3d7eff', 1.6, 0.85);
+  return polyline(shape, y, 400, 8, '#3f7a5c', 2.2, 0.95)
+       + polyline(query, y, 400, 8, '#00ff66', 1.6, 0.9);
 }
 
 function afterPath(after, cost, good) {
@@ -449,8 +449,8 @@ function afterPath(after, cost, good) {
   const rule = (v, color) =>
     `<line x1="8" y1="${y(v).toFixed(1)}" x2="112" y2="${y(v).toFixed(1)}" stroke="${color}"` +
     ` stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
-  return rule(0, '#3a4150') + rule(cost, '#26a17b')
-       + polyline(after, y, 120, 8, good ? '#26a17b' : '#d0424f', 2, 1);
+  return rule(0, '#1b3a2a') + rule(cost, '#00ff9c')
+       + polyline(after, y, 120, 8, good ? '#00ff9c' : '#ff4d5e', 2, 1);
 }
 
 // ---------------------------------------------------------------- 조작
@@ -574,3 +574,67 @@ document.addEventListener('visibilitychange', () => {
 });
 
 refreshState();
+
+// ------------------------------------------------------------ 떨어지는 글자
+//
+// 화면 뒤에 아주 옅게 깔리는 장식이다. 장식이 본업을 방해하면 안 되므로
+// 세 가지를 지킨다.
+//
+//   1. 탭이 안 보이면 멈춘다. 아이패드에서 배터리를 계속 먹으면 곤란하다.
+//   2. 움직임을 불편해하는 사람에게는 아예 안 그린다.
+//   3. 캔버스 하나에 열별로만 그린다 — 폴링이 0.5초마다 도는 화면이라
+//      여기서 프레임을 잡아먹으면 진행 막대가 끊긴다.
+(function rain() {
+  const canvas = $('rain');
+  if (!canvas || !canvas.getContext) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const ctx = canvas.getContext('2d', { alpha: true });
+  const GLYPHS = 'ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ0123456789';
+  const SIZE = 16;
+  let columns = [];
+  let width = 0;
+  let height = 0;
+
+  function resize() {
+    // 화면 배율만큼만 키운다. 예전에 캔버스가 다시 그릴 때마다 계속
+    // 커지던 버그가 있었으므로, 매번 CSS 크기에서 새로 계산한다.
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.font = `${SIZE}px ${'ui-monospace, monospace'}`;
+    const count = Math.ceil(width / SIZE);
+    columns = Array.from({ length: count }, () => Math.random() * -height);
+  }
+
+  function draw() {
+    // 지우지 않고 옅은 검정을 덮는다 — 지나간 글자가 서서히 사라진다.
+    ctx.fillStyle = 'rgba(5, 8, 7, 0.09)';
+    ctx.fillRect(0, 0, width, height);
+    for (let i = 0; i < columns.length; i += 1) {
+      const y = columns[i];
+      const glyph = GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      ctx.fillStyle = y < SIZE * 2 ? '#c8ffdd' : '#00ff66';   // 맨 앞 글자만 밝게
+      ctx.fillText(glyph, i * SIZE, y);
+      columns[i] = y > height + Math.random() * 400 ? 0 : y + SIZE;
+    }
+  }
+
+  let ticking = null;
+  function start() {
+    if (ticking === null) ticking = setInterval(draw, 70);
+  }
+  function stop() {
+    if (ticking !== null) { clearInterval(ticking); ticking = null; }
+  }
+
+  resize();
+  start();
+  window.addEventListener('resize', () => { resize(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop(); else start();
+  });
+})();

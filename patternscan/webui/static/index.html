@@ -8,7 +8,7 @@
 
   <!-- 홈 화면에 앱처럼 얹기 위한 것들 -->
   <link rel="manifest" href="/static/manifest.webmanifest">
-  <meta name="theme-color" content="#0f1116">
+  <meta name="theme-color" content="#050807">
   <!-- iOS는 manifest의 display를 안 읽는다. 이 둘이 있어야 주소창 없이 뜬다. -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -18,6 +18,10 @@
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
 </head>
 <body>
+  <!-- 뒤에 아주 옅게 깔리는 글자비. 없어도 화면은 그대로 돌아간다. -->
+  <canvas id="rain" aria-hidden="true"></canvas>
+  <div id="scanlines" aria-hidden="true"></div>
+
   <header class="top">
     <div class="brand">
       <span class="dot"></span>
@@ -129,7 +133,7 @@
         </div>
       </div>
       <p class="footnote">
-        회색이 <b>그 당시 모양</b>, 파란색이 <b>지금 모양</b>입니다. 겹쳐 보고 정말 닮았는지
+        흐린 초록이 <b>그 당시 모양</b>, 밝은 초록이 <b>지금 모양</b>입니다. 겹쳐 보고 정말 닮았는지
         직접 확인하세요. 오른쪽 작은 그림은 그 직후에 실제로 어떻게 움직였는지입니다.
         <b>가장 많이 오른 사례가 아니라 가장 닮은 사례</b>를 골랐습니다 —
         많이 오른 것만 보여주면 실제보다 좋아 보이니까요.

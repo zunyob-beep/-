@@ -69,9 +69,9 @@ CACHEABLE = {".png", ".ico"}
 #: 콘솔에 오류를 남긴다 — 진짜 오류를 찾을 때 방해가 된다.
 FAVICON = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    b'<rect width="32" height="32" rx="7" fill="#0f1116"/>'
+    b'<rect width="32" height="32" rx="7" fill="#050807"/>'
     b'<polyline points="5,21 11,13 16,17 21,7 27,12" fill="none" '
-    b'stroke="#3d7eff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    b'stroke="#00ff66" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
     b"</svg>"
 )
 
