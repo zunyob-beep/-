@@ -29,9 +29,10 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from ..data import count_cached, load_cached, span_cached, update
+from ..levels import Level, levels, retracements
 from ..models import HORIZONS, KST, MARKETS, Series, market_label, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
-from ..odds import Odds, examples_for, find_matches, odds_for
+from ..odds import Odds, Projection, examples_for, find_matches, odds_for, project
 from ..scan import (
     DEFAULT_FEE,
     DEFAULT_SIMILARITY,
@@ -39,6 +40,7 @@ from ..scan import (
     round_trip_cost,
 )
 from ..shape import normalize_window
+from ..theories import Score, dow, dow_confirmation, read_all, score, tally
 from ..upbit import Ticker, UpbitClient, UpbitError
 
 log = logging.getLogger(__name__)
@@ -92,6 +94,14 @@ class Analysis:
     #: 봉 간격별로 찾아둔 매치. 사례를 볼 때마다 다시 찾으면 몇 초씩 걸리고,
     #: 그동안 브라우저가 요청을 취소해 서버에 BrokenPipe가 쌓인다.
     matches: dict[str, Any] = field(default_factory=dict)
+    #: 봉 간격별 차트 이론 읽기와, 그 이론들이 과거에 얼마나 맞았는지.
+    readings: dict[str, Any] = field(default_factory=dict)
+    scores: dict[str, list[Score]] = field(default_factory=dict)
+    #: 지지·저항선과 피보나치 되돌림 (봉 간격별).
+    levels: dict[str, list[Level]] = field(default_factory=dict)
+    fibonacci: dict[str, list[Level]] = field(default_factory=dict)
+    #: 닮았던 과거들이 그 다음에 간 길.
+    projection: dict[str, Projection] = field(default_factory=dict)
     #: 이 계산이 언제 끝났는지 (KST 문자열). 화면이 "몇 분 전 기준"을 보여준다.
     updated_at: str = ""
 
@@ -294,6 +304,11 @@ def _do_odds(
 
     rows: list[Odds] = []
     found: dict[str, Any] = {}
+    seen: dict[str, Any] = {}
+    marks: dict[str, list[Score]] = {}
+    lines: dict[str, list[Level]] = {}
+    fibs: dict[str, list[Level]] = {}
+    ahead: dict[str, Projection] = {}
     for done, one in enumerate(series.values(), start=1):
         state.checkpoint()
         rows.extend(
@@ -305,12 +320,24 @@ def _do_odds(
         )
         if matched is not None:
             found[one.timeframe] = matched
+            forward = project(one, matched, ahead=max(HORIZONS))
+            if forward is not None:
+                ahead[one.timeframe] = forward
+
+        state.job.update(message=f"{timeframe_label(one.timeframe)} 차트 이론 보는 중…")
+        seen[one.timeframe] = read_all(one)
+        lines[one.timeframe] = levels(one)
+        fibs[one.timeframe] = retracements(one)
+        state.checkpoint()
+        # 이론이 과거에 맞았는지도 **사용자 데이터로 직접** 센다.
+        marks[one.timeframe] = score(one, horizon=10, points=300, cost=cost)
         state.job.update(done=done, message=f"{timeframe_label(one.timeframe)} 완료")
 
     state.publish(
         Analysis(
             market=market, cost=cost, similarity=similarity, length=length,
             series=series, odds=rows, matches=found,
+            readings=seen, scores=marks, levels=lines, fibonacci=fibs, projection=ahead,
             missing=tuple(tf for tf in DEFAULT_COUNT if tf not in series),
             updated_at=datetime.now(KST).strftime("%H:%M:%S"),
         )
@@ -447,6 +474,76 @@ def _finite(value: float) -> float | None:
     return number if np.isfinite(number) else None
 
 
+def _theory_json(analysis: Analysis) -> dict[str, Any]:
+    """이론들이 지금 뭐라고 하는지, 그리고 **과거에 맞았는지**.
+
+    둘을 반드시 함께 내보낸다. 앞의 것만 보내면 이 도구는 점집이 된다.
+    """
+    out: dict[str, Any] = {}
+    for timeframe, readings in analysis.readings.items():
+        ups, downs, flats = tally(readings)
+        marks = {s.theory: s for s in analysis.scores.get(timeframe, [])}
+        out[timeframe] = {
+            "label": timeframe_label(timeframe),
+            "up": ups, "down": downs, "flat": flats,
+            "readings": [
+                {
+                    "theory": r.theory,
+                    "says": r.says,
+                    "detail": r.detail,
+                    "clarity": round(r.clarity, 2),
+                    "past": _score_json(marks.get(r.theory)),
+                }
+                for r in readings
+            ],
+        }
+    # 다우의 상호 확인 — 봉 간격끼리 같은 말을 하는지
+    dows = {tf: dow(one) for tf, one in analysis.series.items()}
+    agreed = dow_confirmation(dows)
+    out["confirmation"] = {"says": agreed.says, "detail": agreed.detail}
+    return out
+
+
+def _score_json(mark: Score | None) -> dict[str, Any] | None:
+    if mark is None or mark.calls == 0:
+        return None
+    return {
+        "calls": mark.calls,
+        "rate": mark.rate,
+        "base": mark.base,
+        "edge": mark.edge,
+        "beatRate": mark.beat_rate,
+        "enough": mark.enough,
+        "worthBelieving": mark.worth_believing,
+    }
+
+
+def _level_json(one: Level) -> dict[str, Any]:
+    return {
+        "price": one.price,
+        "touches": one.touches,
+        "lastTouch": one.last_touch,
+        "kind": one.kind,
+        "strength": round(one.strength, 3),
+    }
+
+
+def _projection_json(forward: Projection) -> dict[str, Any]:
+    return {
+        "timeframe": forward.timeframe,
+        "label": timeframe_label(forward.timeframe),
+        "samples": forward.samples,
+        "minutes": forward.minutes,
+        "priceNow": forward.price_now,
+        "median": forward.median,
+        "low": forward.low,
+        "high": forward.high,
+        "worst": forward.worst,
+        "best": forward.best,
+        "spread": forward.spread,
+    }
+
+
 def _analysis_json(analysis: Analysis) -> dict[str, Any]:
     spans = []
     for timeframe, series in analysis.series.items():
@@ -470,6 +567,18 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             {"timeframe": tf, "label": timeframe_label(tf)} for tf in analysis.missing
         ],
         "odds": [_odds_json(r) for r in analysis.odds],
+        "theories": _theory_json(analysis),
+        "levels": {
+            tf: [_level_json(x) for x in found]
+            for tf, found in analysis.levels.items()
+        },
+        "fibonacci": {
+            tf: [_level_json(x) for x in found]
+            for tf, found in analysis.fibonacci.items()
+        },
+        "projection": {
+            tf: _projection_json(p) for tf, p in analysis.projection.items()
+        },
         "verdict": _verdict(analysis.odds, analysis.cost),
         "updatedAt": analysis.updated_at,
     }

@@ -362,3 +362,81 @@ def format_odds(rows: list[Odds], cost: float, expected: list[str] | None = None
     lines.append("  · 불확실 범위가 '평소'를 품고 있으면 그 확률은 우연과 구분되지 않습니다.")
     lines.append("  · 이 도구는 매수를 권하지 않습니다. 과거에 무슨 일이 있었는지만 셉니다.")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------- 앞으로의 모양
+#
+# "그래서 앞으로 어떻게 되는데"에 답하는 그림이다. 다만 **선 하나를 그으면
+# 거짓말이 된다** — 실제로 일어날 일은 하나지만, 우리가 아는 건 비슷했던
+# 과거들이 제각각 흩어졌다는 사실뿐이다. 그래서 가운뎃값과 함께 **퍼진
+# 정도**를 띠로 그린다. 띠가 넓으면 그건 "모른다"는 뜻이고, 그 사실이
+# 화면에 보여야 한다.
+
+@dataclass(frozen=True)
+class Projection:
+    """닮았던 과거들이 그 다음에 실제로 간 길."""
+
+    timeframe: str
+    length: int
+    samples: int
+    #: 봉마다 하나씩. 지금 값 대비 비율이므로 0에서 시작한다.
+    median: list[float]
+    low: list[float]      # 25%
+    high: list[float]     # 75%
+    worst: list[float]    # 10%
+    best: list[float]     # 90%
+    price_now: float
+
+    @property
+    def minutes(self) -> int:
+        step = int(timeframe_length(self.timeframe).total_seconds() // 60)
+        return (len(self.median) - 1) * step
+
+    @property
+    def spread(self) -> float:
+        """마지막 시점에서 25%와 75%가 얼마나 벌어져 있는지."""
+        return self.high[-1] - self.low[-1] if self.median else 0.0
+
+    def prices(self, which: str) -> list[float]:
+        """비율을 실제 금액으로."""
+        return [self.price_now * (1.0 + v) for v in getattr(self, which)]
+
+
+def project(
+    series: Series,
+    matches: Matches,
+    ahead: int,
+) -> Projection | None:
+    """닮았던 과거 구간들의 **직후 경로**를 모아 가운뎃값과 띠를 낸다.
+
+    새 이론을 들이지 않는다. 이 도구가 원래 하던 일(닮은 과거 찾기)을
+    그대로 앞으로 이어 그릴 뿐이다. 그래서 이 그림이 맞을 확률은 위의
+    확률 표와 정확히 같은 근거를 가진다 — 더도 덜도 아니다.
+    """
+    closes = series.close
+    n = len(series)
+    paths = []
+    for end in matches.ends:
+        end = int(end)
+        if end + ahead >= n:
+            continue
+        entry = float(closes[end])
+        if entry <= 0:
+            continue
+        paths.append(closes[end + 1 : end + 1 + ahead] / entry - 1.0)
+
+    if len(paths) < MIN_SAMPLES:
+        return None
+    grid = np.vstack(paths)
+    def pick(q: float) -> list[float]:
+        # 0에서 시작한다 — 지금 값이 기준점이라 그래야 선이 이어진다.
+        return [0.0] + [round(float(v), 6) for v in np.percentile(grid, q, axis=0)]
+
+    return Projection(
+        timeframe=series.timeframe,
+        length=int(matches.query.size),
+        samples=int(grid.shape[0]),
+        median=pick(50), low=pick(25), high=pick(75),
+        worst=pick(10), best=pick(90),
+        price_now=float(closes[-1]),
+    )

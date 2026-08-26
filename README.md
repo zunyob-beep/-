@@ -1,4 +1,6 @@
-# 모양 찾기 (patternscan)
+# 기시감 (patternscan)
+
+> *이 모양, 전에도 봤다.*
 
 [![CI](https://github.com/zunyob-beep/-/actions/workflows/ci.yml/badge.svg)](https://github.com/zunyob-beep/-/actions/workflows/ci.yml)
 
@@ -561,7 +563,9 @@ patternscan/
   validate.py   과거 여러 시점으로 돌아가 적중률 측정
   importer.py   외부 OHLCV CSV 들여오기 + 3·5분봉으로 묶기
   symbols.py    '구간별로 자르기' 방식 (기호 비교)
-  odds.py       확률만 알려주기 (판단은 안 함)
+  odds.py       확률만 알려주기 (판단은 안 함) + 앞으로의 모양(띠)
+  levels.py     지지선·저항선, 피보나치 되돌림
+  theories.py   차트 이론들 — 그리고 **그 이론이 실제로 맞았는지 직접 채점**
   doctor.py     안 될 때 어디가 막혔는지 짚어주기
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용) + 홈 화면 앱 (매니페스트·서비스 워커)
@@ -580,7 +584,7 @@ tools/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 284개 시험, 전부 오프라인
+python -m pytest -q          # 321개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

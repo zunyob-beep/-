@@ -384,3 +384,77 @@ th, .cached-head, .brand .sub, label {
 
 /* 글자가 화면 맨 앞에 오도록. 주사선은 1, 본문은 그 위. */
 main, .top { position: relative; z-index: 2; }
+
+
+/* ======================================================== 앞으로의 모양 */
+.ahead-wrap { display: grid; grid-template-columns: 1fr 250px; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .ahead-wrap { grid-template-columns: 1fr; } }
+.svg-box.tall { height: 260px; }
+.ahead-legend { font-size: 12.5px; line-height: 1.9; font-variant-numeric: tabular-nums; }
+.ahead-row.big { font-size: 15px; }
+.ahead-row.big b { color: var(--text); }
+.rule-cost { color: var(--warn); letter-spacing: -2px; }
+.ahead-warn {
+  margin-top: 8px; padding: 7px 9px; font-size: 12px;
+  background: rgba(216, 255, 107, 0.08);
+  border: 1px solid rgba(216, 255, 107, 0.3);
+  border-radius: 6px; color: var(--warn); line-height: 1.6;
+}
+
+/* ======================================================== 지지·저항 */
+.level {
+  display: grid;
+  grid-template-columns: 3px 42px 120px 62px 1fr;
+  align-items: center; gap: 10px;
+  padding: 5px 0; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.level-bar { height: 18px; border-radius: 2px; background: currentColor; }
+.level.res { color: var(--up); }
+.level.sup { color: var(--down); }
+.level.fib { color: var(--warn); }
+.level-kind { font-size: 11px; }
+.level-price { color: var(--text); font-weight: 600; }
+.level-away { font-size: 12px; }
+.level-touch { font-size: 11.5px; }
+/* 지금 값은 눈에 띄게 — 위아래를 가르는 선이다 */
+.level.now {
+  color: var(--accent);
+  border-top: 1px dashed rgba(0, 255, 102, 0.5);
+  border-bottom: 1px dashed rgba(0, 255, 102, 0.5);
+  margin: 5px 0; padding: 8px 0;
+}
+.level.now .level-price { color: var(--accent); text-shadow: var(--glow); }
+
+/* ======================================================== 차트 이론 */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.tab {
+  padding: 6px 14px; font-size: 12.5px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--dim); cursor: pointer;
+}
+.tab.on { border-color: var(--accent); color: var(--accent); background: rgba(0, 255, 102, 0.1); }
+
+.theory-confirm {
+  margin: 0 0 12px; padding: 9px 12px; font-size: 12.5px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+}
+.theory-confirm.up { border-color: rgba(255, 85, 102, 0.4); }
+.theory-confirm.down { border-color: rgba(74, 163, 255, 0.4); }
+
+.tally { font-size: 12.5px; color: var(--dim); margin-bottom: 10px; }
+.tally b.up { color: var(--up); }
+.tally b.down { color: var(--down); }
+
+table.theories { min-width: 700px; font-size: 12.5px; }
+/* '지금' 칸이 가장 길다. 여기만 줄바꿈을 허용해 표가 옆으로 안 넘치게. */
+table.theories td.now-cell { white-space: normal; max-width: 300px; line-height: 1.5; }
+table.theories td.l, table.theories th.l { text-align: left; }
+table.theories td.up { color: var(--up); }
+table.theories td.down { color: var(--down); }
+table.theories td.flat { color: var(--dim); }
+table.theories tbody tr { cursor: default; }
+table.theories tbody tr:hover { background: none; }
+table.theories tr.quiet td { opacity: 0.55; }
+/* 우연으로 보기 어려운 줄만 눈에 띄게. 거의 안 켜지는 게 정상이다. */
+table.theories tr.real { background: rgba(0, 255, 102, 0.07); }

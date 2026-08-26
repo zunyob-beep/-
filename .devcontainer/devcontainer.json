@@ -1,5 +1,5 @@
 {
-  "name": "모양 찾기",
+  "name": "기시감",
   "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
 
   // 처음 만들 때 한 번. 1~2분 걸린다.
@@ -14,7 +14,7 @@
   "forwardPorts": [8765],
   "portsAttributes": {
     "8765": {
-      "label": "모양 찾기 화면",
+      "label": "기시감 화면",
       "onAutoForward": "openPreview"
     }
   },

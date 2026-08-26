@@ -257,6 +257,9 @@ function renderCached(cached) {
 function render(analysis) {
   renderVerdict(analysis);
   renderCoverage(analysis);
+  renderAhead(analysis);
+  renderLevels(analysis);
+  renderTheories(analysis);
   renderOdds(analysis);
   if (analysis.odds && analysis.odds.length) {
     const first = analysis.odds.find((o) => o.samples >= analysis.minSamples) || analysis.odds[0];
@@ -579,3 +582,169 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
     if (document.hidden) stop(); else start();
   });
 })();
+
+// ============================================================ 앞으로의 모양
+//
+// 선 하나로 그리면 거짓말이 된다. 실제로 일어날 일은 하나지만 우리가 아는
+// 건 "비슷했던 과거들이 제각각 흩어졌다"뿐이다. 그래서 띠로 그린다.
+// 띠가 넓으면 그건 모른다는 뜻이고, 그게 눈에 보여야 한다.
+let aheadPick = null;
+
+function renderAhead(analysis) {
+  const all = analysis.projection || {};
+  const codes = Object.keys(all);
+  const panel = $('ahead-panel');
+  if (!codes.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!aheadPick || !all[aheadPick]) aheadPick = codes[0];
+  drawAhead(all[aheadPick], analysis);
+}
+
+function drawAhead(p, analysis) {
+  const W = 640, H = 260, PAD = 10;
+  const every = [...p.worst, ...p.best];
+  const y = scaleTo(every, H, PAD);
+  const x = (i) => PAD + (i / Math.max(1, p.median.length - 1)) * (W - PAD * 2);
+
+  const band = (lo, hi, fill) => {
+    const up = lo.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    const down = hi.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).reverse();
+    return `<polygon points="${up.concat(down).join(' ')}" fill="${fill}" stroke="none"/>`;
+  };
+  const zero = y(0).toFixed(1);
+  const cost = analysis.cost || 0;
+
+  $('ahead-chart').innerHTML =
+      band(p.worst, p.best, 'rgba(0,255,102,0.07)')
+    + band(p.low, p.high, 'rgba(0,255,102,0.16)')
+    // 본전선(0)과 수수료선 — 이 위로 올라가야 실제로 돈이 된다
+    + `<line x1="${PAD}" y1="${zero}" x2="${W - PAD}" y2="${zero}"
+             stroke="#3f7a5c" stroke-width="1" stroke-dasharray="4 4"
+             vector-effect="non-scaling-stroke"/>`
+    + `<line x1="${PAD}" y1="${y(cost).toFixed(1)}" x2="${W - PAD}" y2="${y(cost).toFixed(1)}"
+             stroke="#d8ff6b" stroke-width="1" stroke-dasharray="2 5"
+             stroke-opacity="0.8" vector-effect="non-scaling-stroke"/>`
+    + polyline(p.median, y, W, PAD, '#00ff66', 2.4, 1);
+
+  const end = p.median[p.median.length - 1];
+  const lo = p.low[p.low.length - 1], hi = p.high[p.high.length - 1];
+  const money = (r) => `${Math.round(p.priceNow * (1 + r)).toLocaleString('ko-KR')}원`;
+  const wide = (hi - lo) > Math.abs(end) * 4;
+
+  $('ahead-legend').innerHTML = `
+    <div class="ahead-row"><b>${p.label}</b> · 닮았던 과거 ${p.samples}개 · ${p.minutes}분 앞</div>
+    <div class="ahead-row big">가운뎃값 <b>${signed(end)}</b> <span class="dim">${money(end)}</span></div>
+    <div class="ahead-row">절반은 이 사이 <b>${signed(lo)} ~ ${signed(hi)}</b></div>
+    <div class="ahead-row dim">${money(lo)} ~ ${money(hi)}</div>
+    <div class="ahead-row"><span class="rule-cost">┈</span> 수수료선 ${pct(cost, 2)}
+      <span class="dim">— 이 위로 가야 돈이 됩니다</span></div>
+    ${wide ? `<div class="ahead-warn">띠가 가운뎃값보다 훨씬 넓습니다 —
+      방향을 말할 수 있는 상태가 아닙니다.</div>` : ''}`;
+}
+
+// ============================================================ 지지·저항
+function renderLevels(analysis) {
+  const found = (analysis.levels || {})[aheadPick || 'minute1'] || [];
+  const fibs = (analysis.fibonacci || {})[aheadPick || 'minute1'] || [];
+  const panel = $('levels-panel');
+  if (!found.length && !fibs.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const now = (analysis.projection || {})[aheadPick]?.priceNow;
+  const won = (v) => Math.round(v).toLocaleString('ko-KR');
+  const strongest = Math.max(...found.map((l) => l.strength), 1);
+
+  const line = (l, kind) => {
+    const away = now ? (l.price - now) / now : 0;
+    const weight = kind === 'fib' ? 0.35 : 0.25 + 0.75 * (l.strength / strongest);
+    return `<div class="level ${l.kind === '저항' ? 'res' : 'sup'} ${kind}">
+      <span class="level-bar" style="opacity:${weight.toFixed(2)}"></span>
+      <span class="level-kind">${kind === 'fib' ? '피보' : l.kind}</span>
+      <span class="level-price">${won(l.price)}원</span>
+      <span class="level-away">${signed(away)}</span>
+      <span class="level-touch dim">${kind === 'fib' ? '되돌림 자리' :
+        `${l.touches}번 닿음 · ${l.lastTouch}봉 전`}</span>
+    </div>`;
+  };
+
+  const mixed = [...found.map((l) => [l, 'real']), ...fibs.map((l) => [l, 'fib'])]
+    .sort((a, b) => b[0].price - a[0].price);
+  const here = now
+    ? `<div class="level now"><span class="level-bar"></span>
+       <span class="level-kind">지금</span>
+       <span class="level-price">${won(now)}원</span><span></span><span></span></div>`
+    : '';
+  const above = mixed.filter(([l]) => !now || l.price > now).map(([l, k]) => line(l, k));
+  const below = mixed.filter(([l]) => now && l.price <= now).map(([l, k]) => line(l, k));
+  $('levels-body').innerHTML = above.join('') + here + below.join('');
+}
+
+// ============================================================ 차트 이론
+let theoryPick = null;
+
+function renderTheories(analysis) {
+  const all = analysis.theories || {};
+  const codes = Object.keys(all).filter((k) => k !== 'confirmation');
+  const panel = $('theory-panel');
+  if (!codes.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!theoryPick || !all[theoryPick]) theoryPick = codes[0];
+
+  $('theory-tabs').innerHTML = codes
+    .map((c) => `<button type="button" class="tab ${c === theoryPick ? 'on' : ''}"
+                  data-tf="${c}">${all[c].label}</button>`).join('');
+  for (const b of $('theory-tabs').querySelectorAll('.tab')) {
+    b.addEventListener('click', () => {
+      theoryPick = b.dataset.tf;
+      aheadPick = b.dataset.tf;
+      renderTheories(analysis);
+      renderAhead(analysis);
+      renderLevels(analysis);
+    });
+  }
+
+  const agreed = all.confirmation || {};
+  $('theory-confirm').innerHTML =
+    `<b>다우의 상호 확인:</b> ${agreed.detail || ''}`;
+  $('theory-confirm').className = `theory-confirm ${arrowClass(agreed.says)}`;
+
+  const group = all[theoryPick];
+  $('theory-body').innerHTML = `
+    <div class="tally">이 봉 간격에서 <b class="up">상승 ${group.up}</b> ·
+      <b class="down">하락 ${group.down}</b> · <span class="dim">중립 ${group.flat}</span></div>
+    <div class="table-wrap"><table class="theories">
+      <thead><tr>
+        <th class="l">이론</th><th class="l">지금</th>
+        <th>예측</th><th>적중</th><th>평소</th><th>초과</th><th class="l">믿을 만한가</th>
+      </tr></thead>
+      <tbody>${group.readings.map(theoryRow).join('')}</tbody>
+    </table></div>`;
+}
+
+const arrowClass = (says) => says === '상승' ? 'up' : says === '하락' ? 'down' : 'flat';
+
+function theoryRow(r) {
+  const mark = r.says === '상승' ? '▲' : r.says === '하락' ? '▼' : '·';
+  const p = r.past;
+  if (!p) {
+    return `<tr class="quiet">
+      <td class="l"><b>${r.theory}</b></td>
+      <td class="l now-cell ${arrowClass(r.says)}">${mark} ${r.detail}</td>
+      <td colspan="5" class="l dim">이 데이터에서 방향을 말한 적이 없습니다</td></tr>`;
+  }
+  // 칸이 좁다. 긴 문장은 잘려서 오히려 안 읽히므로 짧게 쓰고
+  // 자세한 설명은 표 아래 각주에 한 번만 둔다.
+  const verdict = p.worthBelieving
+    ? '<b class="up">우연 아님</b>'
+    : !p.enough
+      ? '<span class="dim">표본 부족</span>'
+      : '<span class="dim">구분 안 됨</span>';
+  return `<tr class="${p.worthBelieving ? 'real' : ''}">
+    <td class="l"><b>${r.theory}</b></td>
+    <td class="l now-cell ${arrowClass(r.says)}">${mark} ${r.detail}</td>
+    <td>${p.calls}</td>
+    <td>${pct(p.rate, 1)}</td>
+    <td class="dim">${pct(p.base, 1)}</td>
+    <td class="${p.edge > 0 ? 'pos' : 'neg'}">${signed(p.edge, 1)}</td>
+    <td class="l">${verdict}</td></tr>`;
+}

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>모양 찾기 — 오를 확률 보기</title>
+  <title>기시감 — 이 모양, 전에도 봤다</title>
   <link rel="stylesheet" href="/static/style.css">
 
   <!-- 홈 화면에 앱처럼 얹기 위한 것들 -->
@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="모양 찾기">
+  <meta name="apple-mobile-web-app-title" content="기시감">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
 </head>
@@ -25,8 +25,8 @@
   <header class="top">
     <div class="brand">
       <span class="dot"></span>
-      <h1>모양 찾기</h1>
-      <span class="sub">지금 모양과 닮은 과거를 찾아, 그 뒤에 무슨 일이 있었는지 셉니다</span>
+      <h1>기시감</h1>
+      <span class="sub">이 모양, 전에도 봤다 — 그때 무슨 일이 있었는지 셉니다</span>
     </div>
     <div class="ticker" id="ticker">
       <div class="ticker-name"><span id="ticker-label">비트코인</span>
@@ -106,6 +106,50 @@
 
     <!-- 데이터 범위 -->
     <section id="coverage" class="panel coverage" hidden></section>
+
+    <!-- 앞으로의 모양 -->
+    <section id="ahead-panel" class="panel" hidden>
+      <h3>앞으로 <span class="hint">닮았던 과거들이 그 다음에 실제로 간 길</span></h3>
+      <div class="ahead-wrap">
+        <div class="svg-box tall"><svg id="ahead-chart" viewBox="0 0 640 260"
+             preserveAspectRatio="none"></svg></div>
+        <div id="ahead-legend" class="ahead-legend"></div>
+      </div>
+      <p class="footnote">
+        <b>선 하나로 그리지 않았습니다.</b> 실제로 일어날 일은 하나지만, 우리가 아는 건
+        비슷했던 과거들이 <b>제각각 흩어졌다</b>는 사실뿐입니다. 가운데 굵은 선이
+        중앙값, 진한 띠가 절반이 들어간 범위(25~75%), 옅은 띠가 10~90%입니다.
+        <b>띠가 넓으면 그건 모른다는 뜻</b>이고, 그게 보이도록 그렸습니다.
+      </p>
+    </section>
+
+    <!-- 지지선·저항선 -->
+    <section id="levels-panel" class="panel" hidden>
+      <h3>지지선과 저항선 <span class="hint">여러 번 되돌아섰던 자리</span></h3>
+      <div id="levels-body"></div>
+      <p class="footnote">
+        가격이 여러 번 되돌아선 자리를 셌을 뿐입니다. <b>왜 그런지는 말하지 않습니다.</b>
+        닿은 횟수가 많고 최근일수록 굵게 표시했습니다.
+        <span class="dim">피보나치 되돌림은 근거가 약하지만 많은 사람이 그 자리에
+        주문을 걸어 실제로 자주 멈추므로, 따로 표시해 함께 보여줍니다.</span>
+      </p>
+    </section>
+
+    <!-- 차트 이론 -->
+    <section id="theory-panel" class="panel" hidden>
+      <h3>차트 이론이 보는 지금
+        <span class="hint">그리고 그 이론이 이 데이터에서 실제로 맞았는지</span></h3>
+      <div id="theory-tabs" class="tabs"></div>
+      <p id="theory-confirm" class="theory-confirm"></p>
+      <div id="theory-body"></div>
+      <p class="footnote">
+        <b>다수결로 읽지 마세요.</b> 이론들이 서로 독립이 아닙니다 — 이동평균·MACD·다우는
+        결국 같은 추세를 세 번 세는 것에 가깝습니다.
+        오른쪽 <b>과거 성적</b>이 이 표의 핵심입니다. "지금 상승을 가리킴"은 검증할 수 없는
+        말이고, <b>"이 신호가 나왔던 과거 238번 중 51.7%가 올랐다(평소 50.8%)"</b>는
+        검증할 수 있는 말입니다. 초과가 0 근처면 그 이론은 여기서 아무 말도 안 한 겁니다.
+      </p>
+    </section>
 
     <!-- 확률 표 -->
     <section id="odds-panel" class="panel" hidden>
