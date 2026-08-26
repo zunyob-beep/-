@@ -33,7 +33,7 @@ API 키도 필요 없습니다 (업비트 공개 시세만 씁니다).
 
 ```bash
 git clone https://github.com/zunyob-beep/-
-cd -
+cd ./-        # 저장소 이름이 '-'입니다. `cd -`는 '이전 폴더로'라는 뜻이라 안 됩니다
 ./start.sh                    # 맥·리눅스
 start.bat                     # 윈도우 (더블클릭해도 됩니다)
 ```
@@ -55,24 +55,40 @@ COUNT=4204800 ./start.sh      # 1분봉 8년치 (처음 한 번 40분쯤)
 ### 아이패드·폰밖에 없다면 (GitHub Codespaces)
 
 터미널이 없는 기기에서도 브라우저만으로 돌릴 수 있습니다.
+**명령어는 한 줄도 칠 필요 없습니다.**
 
-1. 브라우저에서 이 저장소를 엽니다
-2. 초록색 **Code** 버튼 → **Codespaces** 탭 → **Create codespace**
-3. 1~2분 기다립니다 (`.devcontainer/`가 파이썬과 의존성을 알아서 깝니다)
-4. 아래 터미널에 차례로 칩니다
+1. 사파리에서 `github.com/zunyob-beep/-` 에 들어가 로그인합니다
+2. 파일 목록 위 초록색 **`< > Code`** 버튼을 누릅니다
+3. **Codespaces** 탭 → **Create codespace on main**
+4. 검은 화면에 글자가 쭉 올라갑니다. **2~3분 기다립니다**
+
+기다리는 동안 컨테이너가 파이썬을 깔고, 다 되면 **화면이 저절로 뜹니다**
+(`postStartCommand`가 `ui`를 자동으로 띄웁니다).
+
+미리보기가 안 뜨면 아래쪽 **PORTS** 탭 → 8765 줄의 지구본 아이콘을 누르세요.
+
+5. 화면에서 **`지금 시세로 판단받기`** 를 누릅니다 — 시세 받기부터 계산까지
+   버튼 하나로 다 합니다 (처음 한 번은 몇 분 걸립니다)
+
+> **업비트가 막혀 있을 수도 있습니다.** Codespaces는 마이크로소프트
+> 클라우드에서 돌아가고, 거기서 업비트에 닿는지는 계정·지역에 따라
+> 다릅니다. 안 되면 터미널에서 `python -m patternscan doctor` 를 쳐서
+> 확인하세요. 막혀 있으면 PC에서 받은 `data/*.csv`를 끌어다 놓으면 됩니다.
+
+<details>
+<summary>화면이 안 뜨거나 죽었을 때</summary>
+
+터미널(아래쪽 **TERMINAL** 탭)에서:
 
 ```bash
-python -m patternscan doctor          # 업비트에 닿는지 먼저 확인
-python -m patternscan fetch           # 시세 받기 (처음 한 번)
-python -m patternscan ui --host 0.0.0.0
+cat /tmp/patternscan-ui.log                       # 무슨 일이 있었는지
+python -m patternscan doctor                      # 어디가 막혔는지
+python -m patternscan ui --host 0.0.0.0           # 직접 다시 띄우기
 ```
 
-포트 8765가 자동으로 열려 미리보기가 뜹니다. 안 뜨면 아래 **PORTS** 탭에서
-8765의 주소를 누르세요.
-
-> Codespaces는 마이크로소프트 클라우드에서 돌아갑니다. 거기서 업비트에
-> 닿는지는 계정·지역에 따라 다를 수 있으니 `doctor`로 먼저 확인하세요.
-> 막혀 있으면 PC에서 `fetch`로 받은 `data/*.csv`를 올려서 쓰면 됩니다.
+받아둔 시세(`data/`)는 코드스페이스를 껐다 켜도 남습니다. 코드스페이스를
+**삭제**하면 같이 사라집니다.
+</details>
 
 ### 앱처럼 홈 화면에 두기
 
