@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 
-from .data import fetch, load_cached
+from .data import cache_path, fetch, load_cached, save
 from .models import HORIZONS, WINDOW_LENGTHS, Series, timeframe_label
 from .report import (
     format_coverage,
@@ -51,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m patternscan scan                  # 지금 들어갈지 판정\n"
             "  python -m patternscan scan --detail         # 조합별 상세\n"
             "  python -m patternscan validate              # 어느 길이가 잘 맞았는지 측정\n"
+            "  python -m patternscan import a.csv          # 외부 CSV 들여오기\n"
             "  python -m patternscan ui                    # 웹 화면\n"
         ),
     )
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("fetch", "시세를 받아 캐시에 저장"),
         ("scan", "지금 시점의 모양을 과거와 비교해 판정"),
         ("validate", "과거 여러 시점으로 돌아가 길이별 적중률을 측정"),
+        ("import", "남이 만든 OHLCV CSV를 들여오기"),
         ("ui", "웹 화면 열기"),
     ):
         p = sub.add_parser(name, help=help_text)
@@ -110,6 +112,17 @@ def build_parser() -> argparse.ArgumentParser:
                 help="쉼표로 구분한 길이 목록 (기본: 5,10,20,…,180 전부)",
             )
             p.add_argument("--seed", type=int, default=0, help="평가 시점 추출 난수 씨앗")
+        if name == "import":
+            p.add_argument("csv", help="들여올 CSV 경로")
+            p.add_argument(
+                "--timeframe", default="minute1", choices=list(DEFAULT_COUNT),
+                help="이 CSV가 몇 분봉인지 (기본 1분봉)",
+            )
+            p.add_argument(
+                "--resample", action="store_true",
+                help="1분봉이면 3분봉·5분봉도 같이 만들기",
+            )
+            p.add_argument("--limit", type=int, default=None, help="앞에서 이만큼만 읽기")
         if name == "ui":
             p.add_argument("--port", type=int, default=8765)
             p.add_argument("--no-browser", action="store_true")
@@ -262,6 +275,29 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    from .importer import describe, read_csv, resample
+
+    print(f"\n  {args.csv} 읽는 중…")
+    candles = read_csv(args.csv, limit=args.limit)
+    print(describe(candles, args.timeframe))
+
+    saved = [(args.timeframe, candles)]
+    if args.resample and args.timeframe == "minute1":
+        for timeframe, factor in (("minute3", 3), ("minute5", 5)):
+            grouped = resample(candles, factor)
+            saved.append((timeframe, grouped))
+
+    print()
+    for timeframe, group in saved:
+        path = save(cache_path(args.market, timeframe, args.data_dir), group)
+        print(f"  {timeframe_label(timeframe):>5}: {len(group):>10,}개 → {path}")
+
+    print("\n  이제 이렇게 쓰면 됩니다:")
+    print(f"    python -m patternscan validate --market {args.market} --data-dir {args.data_dir}")
+    return 0
+
+
 def cmd_ui(args: argparse.Namespace) -> int:
     from .webui.server import serve
 
@@ -278,6 +314,7 @@ COMMANDS = {
     "fetch": cmd_fetch,
     "scan": cmd_scan,
     "validate": cmd_validate,
+    "import": cmd_import,
     "ui": cmd_ui,
 }
 

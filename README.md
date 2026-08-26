@@ -141,7 +141,27 @@ python -m patternscan validate --lengths 5,10,20,40       # 특정 길이만
 python -m patternscan validate --timeframe minute5        # 5분봉으로
 ```
 
-### 4. 화면으로 보기
+### 4. 다른 데서 구한 데이터 쓰기
+
+업비트는 2017년 10월 개장이라 그 이전이 없습니다. 더 긴 과거로 검증하고
+싶으면 공개된 OHLCV CSV를 들여올 수 있습니다.
+
+```bash
+python -m patternscan import btcusd_1-min.csv --market BTC-USD --resample
+python -m patternscan validate --market BTC-USD
+```
+
+`--resample`을 주면 1분봉에서 3분봉·5분봉도 같이 만듭니다. 시계에 맞춰
+자르고(3분봉은 0·3·6분 시작), **1분봉이 3개 다 있는 구간만** 3분봉으로
+만듭니다 — 2개로 만들면 없던 봉을 지어내는 것이니까요.
+
+> ⚠️ **서로 다른 거래소 데이터를 이어 붙이지 마세요.** 거래소가 다르면
+> 통화도 유동성도 프리미엄도 다릅니다. 이어 붙이면 이음매에서 없던 모양이
+> 생기고, 그 자리가 '과거에 있던 모양'으로 잡힙니다.
+> 비교하고 싶으면 **따로 들여와 따로 돌려서 결과를 맞춰보세요.**
+> 서로 다른 거래소에서 같은 N이 이긴다면 그게 훨씬 강한 근거입니다.
+
+### 5. 화면으로 보기
 
 ```bash
 python -m patternscan ui
@@ -336,6 +356,7 @@ patternscan/
   report.py     터미널 출력
   search.py     빠른 모양 찾기 (결과는 전수 계산과 동일)
   validate.py   과거 여러 시점으로 돌아가 적중률 측정
+  importer.py   외부 OHLCV CSV 들여오기 + 3·5분봉으로 묶기
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용)
 ```
@@ -349,7 +370,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 120개 시험, 전부 오프라인
+python -m pytest -q          # 137개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 
