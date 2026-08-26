@@ -721,3 +721,72 @@ def test_direction_matches_upbit_colours():
     assert at(0.01) == "up"
     assert at(-0.01) == "down"
     assert at(0.0) == "flat"
+
+
+# ------------------------------------------------------- 얼마나 과거까지
+def test_the_page_can_ask_for_more_than_thirty_days(client):
+    """예전에는 이 선택이 없어서 화면 버튼이 늘 30일치만 요청했다.
+
+    명령줄로 8년치를 받아둔 사람이 화면에서 버튼을 누르면 그때부터
+    30일만 갱신됐고, 왜 숫자가 그것밖에 안 되는지 알 방법이 없었다.
+    """
+    state = _run_scan(client)
+    counts = [p["count"] for p in state["periods"]]
+    assert 43_200 in counts, "30일치가 없습니다"
+    assert max(counts) >= 4_000_000, "8년치를 고를 수 없습니다"
+    assert counts == sorted(counts), "짧은 것부터 나와야 고르기 쉽다"
+
+
+def test_the_requested_period_actually_reaches_the_fetch(client, monkeypatch):
+    """화면에서 8년을 골랐는데 서버가 30일만 받으면 아무 소용이 없다."""
+    api, state = client
+    asked = []
+
+    def spy(client_, market, timeframe, count, **kwargs):
+        asked.append((timeframe, count))
+        raise webui.UpbitError("여기서 멈춘다")
+
+    monkeypatch.setattr(webui, "fetch", spy)
+    api.post_json("/api/live", {"market": "KRW-BTC", "count": 4_204_800})
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+    by_timeframe = dict(asked)
+    assert by_timeframe["minute1"] == 4_204_800
+    # 같은 기간이 되도록 나눠야 한다. 3분봉을 420만 개 받으면 24년치다.
+    assert by_timeframe["minute3"] == 4_204_800 // 3
+    assert by_timeframe["minute5"] == 4_204_800 // 5
+
+
+def test_the_cache_report_says_when_not_just_how_many(client):
+    """개수만으로는 '작다'는 느낌만 들 뿐 왜 작은지 알 수 없다."""
+    api, _ = client
+    cached = api.get_json("/api/state")["cached"]
+    minute1 = next(c for c in cached if c["timeframe"] == "minute1")
+    assert minute1["count"] > 0
+    assert minute1["from"] and minute1["to"], "기간이 없으면 개수가 많은지 적은지 모른다"
+    assert minute1["from"] <= minute1["to"]
+
+
+def test_fetch_progress_is_finer_than_three_steps(client, monkeypatch):
+    """8년치는 40분이 걸린다. 3칸 막대로는 멈춘 것과 구분이 안 된다."""
+    api, state = client
+    seen = []
+
+    def spy(client_, market, timeframe, count, **kwargs):
+        progress = kwargs.get("progress")
+        assert progress is not None, f"{timeframe} 수집에 진행 표시가 없습니다"
+        progress(count // 2, count)
+        seen.append(state.job.snapshot())
+        raise webui.UpbitError("여기까지")
+
+    monkeypatch.setattr(webui, "fetch", spy)
+    api.post_json("/api/live", {"market": "KRW-BTC", "count": 43_200})
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+    assert seen and seen[0]["total"] > 3, "진행이 봉 개수 단위여야 한다"

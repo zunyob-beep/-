@@ -210,6 +210,52 @@ def count_cached(market: str, timeframe: str, directory: Path | str = CACHE_DIR)
     return total
 
 
+def span_cached(
+    market: str, timeframe: str, directory: Path | str = CACHE_DIR
+) -> tuple[datetime, datetime] | None:
+    """캐시가 **언제부터 언제까지**인지. 첫 줄과 마지막 줄만 읽는다.
+
+    "1분봉 33,400개"만 보여주면 그게 많은 건지 적은 건지 알 수가 없다.
+    "2026-07-27 ~ 2026-08-26"이라고 하면 한눈에 온다. 그 숫자 하나 때문에
+    파일 전체를 읽을 수는 없으므로 양 끝만 집는다.
+
+    개수로 날짜를 짐작하면 안 된다 — 업비트는 거래가 없는 분의 봉을 아예
+    안 주므로, 33,400개가 꼭 23일치인 것은 아니다.
+    """
+    path = cache_path(market, timeframe, directory)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size == 0:
+        return None
+
+    try:
+        with path.open("rb") as handle:
+            handle.readline()                     # 머리말
+            first = handle.readline()
+            if not first.strip():
+                return None
+            # 마지막 줄: 끝에서 조금만 읽어 뒤에서 찾는다
+            handle.seek(max(0, size - 4096))
+            tail = [line for line in handle.read().splitlines() if line.strip()]
+            last = tail[-1] if tail else first
+    except OSError:
+        return None
+
+    def stamp(row: bytes) -> datetime | None:
+        head = row.split(b",", 1)[0]
+        try:
+            return datetime.fromtimestamp(int(head), tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+
+    start, end = stamp(first), stamp(last)
+    if start is None or end is None:
+        return None
+    return (start, end) if start <= end else (end, start)
+
+
 def load_cached(
     market: str, timeframe: str, directory: Path | str = CACHE_DIR, count: int | None = None
 ) -> Series:

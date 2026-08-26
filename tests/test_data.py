@@ -286,3 +286,47 @@ def test_counting_several_timeframes_does_not_evict_each_other(tmp_path):
 
 def test_counting_a_missing_file_is_zero_not_an_error(tmp_path):
     assert count_cached("KRW-BTC", "minute1", tmp_path) == 0
+
+
+# --------------------------------------------------- 언제부터 언제까지인지
+def test_span_reads_only_the_two_ends(tmp_path):
+    """"33,400개"만 보여주면 많은 건지 적은 건지 알 수가 없다."""
+    from patternscan.data import span_cached
+
+    start = datetime(2026, 7, 3, 9, 0, tzinfo=timezone.utc)
+    save(cache_path("KRW-BTC", "minute1", tmp_path), _fake(33_400, start))
+    span = span_cached("KRW-BTC", "minute1", tmp_path)
+    assert span is not None
+    assert span[0] == start
+    assert span[1] == start + timedelta(minutes=33_399)
+
+
+def test_span_of_a_single_candle(tmp_path):
+    """마지막 줄을 뒤에서 찾는데, 줄이 하나뿐이면 앞뒤가 같은 줄이다."""
+    from patternscan.data import span_cached
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    save(cache_path("KRW-BTC", "minute1", tmp_path), _fake(1, start))
+    assert span_cached("KRW-BTC", "minute1", tmp_path) == (start, start)
+
+
+def test_span_of_nothing_is_none(tmp_path):
+    from patternscan.data import span_cached
+
+    assert span_cached("KRW-BTC", "minute1", tmp_path) is None
+    cache_path("KRW-BTC", "minute3", tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    cache_path("KRW-BTC", "minute3", tmp_path).write_bytes(b"")
+    assert span_cached("KRW-BTC", "minute3", tmp_path) is None
+
+
+def test_span_does_not_read_the_whole_file(tmp_path, monkeypatch):
+    """8년치면 420만 줄이다. 날짜 두 개 때문에 그걸 다 읽으면 안 된다."""
+    from patternscan import data as data_module
+
+    save(cache_path("KRW-BTC", "minute1", tmp_path), _fake(50_000))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("span_cached가 파일 전체를 파싱했습니다")
+
+    monkeypatch.setattr(data_module, "load", forbidden)
+    assert data_module.span_cached("KRW-BTC", "minute1", tmp_path) is not None

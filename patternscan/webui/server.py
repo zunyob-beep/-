@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ..data import count_cached, fetch, load_cached
+from ..data import count_cached, fetch, load_cached, span_cached
 from ..models import HORIZONS, KST, MARKETS, Series, market_label, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
 from ..odds import Odds, examples_for, find_matches, odds_for
@@ -214,14 +214,20 @@ def _do_live(
     캐시가 있으면 새로 생긴 봉만 받으므로 몇 초면 끝난다 (data.fetch 참고).
     """
     client = UpbitClient()
-    state.job.update(message="업비트에서 새 봉 받는 중…", done=0, total=len(DEFAULT_COUNT))
-    for done, timeframe in enumerate(DEFAULT_COUNT, start=1):
+    for timeframe in DEFAULT_COUNT:
+        label = timeframe_label(timeframe)
+        wanted = count // _RATIO[timeframe]
+        state.job.update(message=f"{label} 받는 중…", done=0, total=wanted)
+
+        # 8년치는 40분이 걸린다. 3칸짜리 막대로는 멈춘 것과 구분이 안 된다.
+        def progress(done: int, total: int, name: str = label) -> None:
+            state.job.update(message=f"{name} 받는 중…", done=done, total=total)
+
         try:
-            fetch(client, market, timeframe, count // _RATIO[timeframe],
-                  directory=state.data_dir)
+            fetch(client, market, timeframe, wanted,
+                  directory=state.data_dir, progress=progress)
         except UpbitError as exc:
             log.warning("%s 갱신 실패(%s) — 가진 것으로 계산합니다", timeframe, exc)
-        state.job.update(done=done)
     _do_odds(state, market, similarity, fee, slippage, length)
 
 
@@ -568,6 +574,7 @@ class Handler(BaseHTTPRequestHandler):
             "job": state.job.snapshot(),
             "marketLabel": market_label(state.market),
             "markets": [{"code": code, "label": name} for code, name in MARKETS.items()],
+            "periods": PERIODS,
             "defaults": {
                 "similarity": DEFAULT_SIMILARITY,
                 "fee": DEFAULT_FEE,
@@ -581,14 +588,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             # 개수만 센다. 예전에는 CSV 전체를 파싱해 Candle을 다 만들고
             # 즉시 버렸는데, 이 응답은 수집이 도는 동안 0.5초마다 나간다.
-            payload["cached"] = [
-                {
-                    "timeframe": tf,
-                    "label": timeframe_label(tf),
-                    "count": count_cached(state.market, tf, state.data_dir),
-                }
-                for tf in DEFAULT_COUNT
-            ]
+            payload["cached"] = [_cached_json(state, tf) for tf in DEFAULT_COUNT]
         return payload
 
     def _start_fetch(self, payload: dict[str, Any]) -> None:
@@ -659,6 +659,28 @@ class Handler(BaseHTTPRequestHandler):
         horizon = int((query.get("horizon") or ["1"])[0])
         self._json(_examples_json(analysis, timeframe, horizon))
 
+
+
+#: 화면에서 고를 수 있는 '얼마나 과거까지'. 1분봉 개수 기준.
+#: 업비트는 2017년 10월 개장이라 그 이전은 없다.
+PERIODS = [
+    {"label": "30일", "count": 43_200, "note": "금방 받습니다"},
+    {"label": "90일", "count": 129_600, "note": "몇 분"},
+    {"label": "1년", "count": 525_600, "note": "10분쯤"},
+    {"label": "8년", "count": 4_204_800, "note": "처음 한 번 40분쯤"},
+]
+
+
+def _cached_json(state: State, timeframe: str) -> dict[str, Any]:
+    """받아둔 게 얼마나 되는지. **파일 전체를 읽지 않는다.**"""
+    span = span_cached(state.market, timeframe, state.data_dir)
+    return {
+        "timeframe": timeframe,
+        "label": timeframe_label(timeframe),
+        "count": count_cached(state.market, timeframe, state.data_dir),
+        "from": span[0].astimezone(KST).strftime("%Y-%m-%d") if span else None,
+        "to": span[1].astimezone(KST).strftime("%Y-%m-%d") if span else None,
+    }
 
 
 def _market(value: Any, default: str) -> str:

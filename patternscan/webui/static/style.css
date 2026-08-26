@@ -90,6 +90,17 @@ body {
 .coin.on { border-color: var(--accent); background: rgba(61, 126, 255, 0.12); }
 .coin.on span { color: var(--accent); }
 
+/* ---------------------------------------------------------- 받아둔 시세 */
+.cached-head { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+.cached-row {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 13px; line-height: 1.9;
+  font-variant-numeric: tabular-nums;
+}
+.cached-row b { min-width: 44px; font-weight: 600; }
+.cached-count { min-width: 90px; }
+.cached-foot { font-size: 12px; margin-top: 8px; }
+
 main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
 
 /* ---------------------------------------------------------------- 패널 */

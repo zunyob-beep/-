@@ -74,6 +74,7 @@ async function refreshState() {
 
   const job = state.job || {};
   if (state.markets) renderCoins(state.markets, state.market);
+  if (state.periods) renderPeriods(state.periods);
   market = state.market;
   $('ticker-code').textContent = state.market;
   $('ticker-label').textContent = state.marketLabel || state.market;
@@ -154,6 +155,30 @@ async function pickCoin(code) {
   await runLive();
 }
 
+// -------------------------------------------------------- 얼마나 과거까지
+//
+// 예전에는 이 선택이 아예 없어서 화면 버튼이 **늘 30일치만** 요청했다.
+// 명령줄로 8년치를 받아둔 사람이 화면에서 버튼을 누르면 그때부터 30일만
+// 갱신됐고, 왜 숫자가 그것밖에 안 되는지 알 방법이 없었다.
+let periodsDrawn = '';
+
+function renderPeriods(periods) {
+  const signature = periods.map((p) => p.count).join(',');
+  if (signature === periodsDrawn) return;
+  periodsDrawn = signature;
+  const box = $('in-period');
+  box.innerHTML = periods
+    .map((p) => `<option value="${p.count}" data-note="${p.note}">${p.label}</option>`)
+    .join('');
+  box.addEventListener('change', showPeriodNote);
+  showPeriodNote();
+}
+
+function showPeriodNote() {
+  const picked = $('in-period').selectedOptions[0];
+  $('period-note').textContent = picked ? picked.dataset.note : '';
+}
+
 // ------------------------------------------------------------ 지금 시세
 const won = (x) => x >= 1000
   ? Math.round(x).toLocaleString('ko-KR')
@@ -185,10 +210,20 @@ function renderCached(cached) {
   const box = $('coverage');
   box.hidden = false;
   const any = cached.some((c) => c.count > 0);
-  box.innerHTML = any
-    ? `받아둔 시세: ${cached.map((c) => `<b>${c.label}</b> ${c.count.toLocaleString()}개`).join(' · ')}
-       — <b>지금 시세로 판단받기</b>를 누르세요.`
-    : `아직 받아둔 시세가 없습니다. <b>지금 시세로 판단받기</b>를 누르면 업비트에서 받아옵니다 (처음 한 번은 몇 분 걸립니다).`;
+  if (!any) {
+    box.innerHTML = `아직 받아둔 시세가 없습니다. <b>지금 시세로 판단받기</b>를 누르면
+                     업비트에서 받아옵니다 (처음 한 번은 몇 분 걸립니다).`;
+    return;
+  }
+  // 개수만 보여주면 그게 많은 건지 적은 건지 알 수가 없다. 기간을 같이 적는다.
+  const rows = cached.map((c) => {
+    const when = c.from && c.to ? `<span class="dim">${c.from} ~ ${c.to}</span>` : '';
+    return `<div class="cached-row"><b>${c.label}</b>
+            <span class="cached-count">${c.count.toLocaleString()}개</span> ${when}</div>`;
+  }).join('');
+  box.innerHTML = `<div class="cached-head">받아둔 시세</div>${rows}
+    <div class="dim cached-foot">더 긴 과거를 보려면 위에서 <b>얼마나 과거까지</b>를 늘리고
+      <b>지금 시세로 판단받기</b>를 누르세요.</div>`;
 }
 
 function render(analysis) {
@@ -390,6 +425,7 @@ function afterPath(after, cost, good) {
 function settings() {
   return {
     market,
+    count: parseInt($('in-period').value, 10) || undefined,
     oddsLength: parseInt($('in-length').value, 10),
     similarity: parseFloat($('in-similarity').value),
     fee: parseFloat($('in-fee').value),
