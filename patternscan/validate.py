@@ -35,7 +35,8 @@ import numpy as np
 from .models import HORIZONS, Series, timeframe_label, timeframe_length
 from .scan import DEFAULT_FEE, DEFAULT_SIMILARITY, DEFAULT_SLIPPAGE, round_trip_cost
 from .search import distances_within
-from .shape import is_flat, similarity_to_distance
+from .shape import flat_mask, is_flat, similarity_to_distance
+from .symbols import mismatch_fraction
 
 log = logging.getLogger(__name__)
 
@@ -170,8 +171,12 @@ def _match_positions(
     max_horizon: int,
     threshold: float,
     top_k: int,
+    buckets: int = 0,
 ) -> np.ndarray:
     """`query_end` 이전 데이터에서만 같은 모양을 찾는다 (미래 참조 없음).
+
+    `buckets`가 0보다 크면 연속 비교 대신 **기호로 잘라서** 비교한다
+    (symbols.py 참고). 그때 임계값은 '기호가 몇 %까지 달라도 되는지'다.
 
     반환은 모양이 끝나는 위치들. 서로 겹치지 않는다.
     """
@@ -186,7 +191,13 @@ def _match_positions(
         return np.empty(0, dtype=np.int64)
 
     usable = closes[: last_allowed_end + 1]
-    positions, distances = distances_within(query, usable, length, threshold)
+    if buckets:
+        mismatch = mismatch_fraction(query, usable, length, buckets)
+        mismatch = np.where(flat_mask(usable, length), np.inf, mismatch)
+        positions = np.flatnonzero(mismatch <= threshold)
+        distances = mismatch[positions]
+    else:
+        positions, distances = distances_within(query, usable, length, threshold)
     if positions.size == 0:
         return positions
 
@@ -223,6 +234,7 @@ def validate(
     fee: float = DEFAULT_FEE,
     slippage: float = DEFAULT_SLIPPAGE,
     min_samples: int = MIN_SAMPLES,
+    buckets: int = 0,
     seed: int = 0,
     progress: object = None,
 ) -> list[Score]:
@@ -234,7 +246,8 @@ def validate(
     closes = series.close
     n = len(series)
     cost = round_trip_cost(fee, slippage)
-    threshold = similarity_to_distance(similarity)
+    # 기호 방식이면 임계값은 '몇 %까지 달라도 되는지'다.
+    threshold = (1.0 - similarity) if buckets else similarity_to_distance(similarity)
     max_h = max(horizons)
     max_len = max(lengths)
 
@@ -259,7 +272,7 @@ def validate(
         actual = {h: float(closes[t + h] / closes[t] - 1.0) for h in horizons}
 
         for length in lengths:
-            ends = _match_positions(series, length, t, max_h, threshold, top_k)
+            ends = _match_positions(series, length, t, max_h, threshold, top_k, buckets)
             limit = t - length + 1 - max_h  # 기준을 잴 수 있는 범위 (미래 참조 없음)
 
             for horizon in horizons:

@@ -111,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
                 "--lengths", default=None,
                 help="쉼표로 구분한 길이 목록 (기본: 5,10,20,…,180 전부)",
             )
+            p.add_argument(
+                "--buckets", type=int, default=0,
+                help=(
+                    "0이면 연속 비교(상관계수), 2 이상이면 '구간별로 자르기'. "
+                    "예: 5면 급등/상승/보합/하락/급락으로 잘라 기호가 같은지로 비교. "
+                    "이때 --similarity는 '기호가 몇 %%까지 같아야 하는지'가 됩니다"
+                ),
+            )
             p.add_argument("--seed", type=int, default=0, help="평가 시점 추출 난수 씨앗")
         if name == "import":
             p.add_argument("csv", help="들여올 CSV 경로")
@@ -253,9 +261,15 @@ def cmd_validate(args: argparse.Namespace) -> int:
     cost = round_trip_cost(args.fee, args.slippage)
     span = series.span
     window = f"  {span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d}" if span else ""
+    how = (
+        f"{args.buckets}구간으로 잘라 기호 비교 (유사도 = 기호 일치율)"
+        if args.buckets
+        else "연속 — 상관계수"
+    )
     print(
         f"\n  {args.market} {timeframe_label(args.timeframe)} 봉 {len(series):,}개{window}\n"
         f"  평가 시점 {args.points}개 · 길이 {len(lengths)}종 · 왕복 비용 {cost:.3%}\n"
+        f"  비교 방식: {how}\n"
         f"  각 시점에서 그 이전 데이터만 보고 예측한 뒤, 실제 결과와 맞춰봅니다.\n"
     )
 
@@ -266,7 +280,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         series, lengths,
         horizons=HORIZONS, points=args.points, similarity=args.similarity,
         top_k=args.top_k, fee=args.fee, slippage=args.slippage,
-        seed=args.seed, progress=progress,
+        buckets=args.buckets, seed=args.seed, progress=progress,
     )
     print(" " * 40, end="\r")
 
