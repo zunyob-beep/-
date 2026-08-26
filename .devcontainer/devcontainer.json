@@ -1,0 +1,27 @@
+{
+  "name": "모양 찾기",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+
+  "postCreateCommand": "pip install --quiet -e '.[dev]'",
+
+  "forwardPorts": [8765],
+  "portsAttributes": {
+    "8765": {
+      "label": "모양 찾기 화면",
+      "onAutoForward": "openPreview"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}

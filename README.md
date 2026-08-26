@@ -27,7 +27,9 @@ API 키도 필요 없습니다 (업비트 공개 시세만 씁니다).
 
 ---
 
-## 가장 쉬운 방법
+## 어떻게 실행하나
+
+### PC·맥이 있다면 (가장 쉽습니다)
 
 ```bash
 git clone https://github.com/zunyob-beep/-
@@ -39,7 +41,8 @@ start.bat                     # 윈도우 (더블클릭해도 됩니다)
 파이썬 환경을 만들고, 업비트 시세를 받고, 브라우저를 여는 것까지 한 번에 합니다.
 두 번째부터는 **새로 생긴 봉만** 이어 받으므로 몇 초면 뜹니다.
 
-아이패드·휴대폰에서 보시려면 `./start.sh --lan` (윈도우는 `start.bat --lan`).
+아이패드·휴대폰에서 **같은 와이파이로** 보시려면 `./start.sh --lan`
+(윈도우는 `start.bat --lan`). 접속할 주소를 화면에 찍어 줍니다.
 
 더 긴 과거로 보고 싶으면:
 
@@ -48,6 +51,47 @@ COUNT=4204800 ./start.sh      # 1분봉 8년치 (처음 한 번 40분쯤)
 ```
 
 중간에 끊겨도 받은 만큼 저장되니, 다시 실행하면 이어서 받습니다.
+
+### 아이패드·폰밖에 없다면 (GitHub Codespaces)
+
+터미널이 없는 기기에서도 브라우저만으로 돌릴 수 있습니다.
+
+1. 브라우저에서 이 저장소를 엽니다
+2. 초록색 **Code** 버튼 → **Codespaces** 탭 → **Create codespace**
+3. 1~2분 기다립니다 (`.devcontainer/`가 파이썬과 의존성을 알아서 깝니다)
+4. 아래 터미널에 차례로 칩니다
+
+```bash
+python -m patternscan doctor          # 업비트에 닿는지 먼저 확인
+python -m patternscan fetch           # 시세 받기 (처음 한 번)
+python -m patternscan ui --host 0.0.0.0
+```
+
+포트 8765가 자동으로 열려 미리보기가 뜹니다. 안 뜨면 아래 **PORTS** 탭에서
+8765의 주소를 누르세요.
+
+> Codespaces는 마이크로소프트 클라우드에서 돌아갑니다. 거기서 업비트에
+> 닿는지는 계정·지역에 따라 다를 수 있으니 `doctor`로 먼저 확인하세요.
+> 막혀 있으면 PC에서 `fetch`로 받은 `data/*.csv`를 올려서 쓰면 됩니다.
+
+### 안 될 때
+
+```bash
+python -m patternscan doctor
+```
+
+파이썬 버전, numpy, **업비트 연결**, 받아둔 시세를 하나씩 짚어 주고
+막힌 곳마다 다음에 무엇을 하면 되는지 알려줍니다.
+
+```
+  ✅ 파이썬 3.12.3
+  ✅ numpy 2.4.6
+  ❌ 업비트에 닿지 않습니다
+       재시도 1회 실패 ← ProxyError: Tunnel connection failed: 403 Forbidden
+       → 회사·학교 네트워크나 VPN이 막고 있을 수 있습니다. …
+  ⚠️  1분봉 시세 없음
+       → python -m patternscan fetch 를 실행하세요.
+```
 
 ### 직접 설치하기
 
@@ -449,6 +493,7 @@ patternscan/
   importer.py   외부 OHLCV CSV 들여오기 + 3·5분봉으로 묶기
   symbols.py    '구간별로 자르기' 방식 (기호 비교)
   odds.py       확률만 알려주기 (판단은 안 함)
+  doctor.py     안 될 때 어디가 막혔는지 짚어주기
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용)
 ```
@@ -462,7 +507,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 188개 시험, 전부 오프라인
+python -m pytest -q          # 200개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m patternscan validate              # 어느 길이가 잘 맞았는지 측정\n"
             "  python -m patternscan import a.csv          # 외부 CSV 들여오기\n"
             "  python -m patternscan ui                    # 웹 화면\n"
+            "  python -m patternscan doctor                # 안 될 때 어디가 문제인지 확인\n"
         ),
     )
     parser.add_argument("--log-level", default="INFO")
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("validate", "과거 여러 시점으로 돌아가 길이별 적중률을 측정"),
         ("import", "남이 만든 OHLCV CSV를 들여오기"),
         ("ui", "웹 화면 열기"),
+        ("doctor", "파이썬·업비트·시세가 준비됐는지 하나씩 점검"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--market", default="KRW-BTC", help="마켓 코드 (기본 KRW-BTC)")
@@ -368,6 +370,12 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import run
+
+    return run(args.market, args.data_dir)
+
+
 COMMANDS = {
     "fetch": cmd_fetch,
     "scan": cmd_scan,
@@ -375,6 +383,7 @@ COMMANDS = {
     "validate": cmd_validate,
     "import": cmd_import,
     "ui": cmd_ui,
+    "doctor": cmd_doctor,
 }
 
 
