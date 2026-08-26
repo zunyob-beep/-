@@ -56,7 +56,35 @@ python -m patternscan fetch --count 86400           # 1분봉 60일치
 python -m patternscan fetch --refresh               # 캐시 무시하고 새로
 ```
 
-### 2. 판정하기
+### 2. 확률만 보기 (권장)
+
+```bash
+python -m patternscan odds
+```
+
+**판단을 내리지 않고 사실만 보여줍니다.** 지금 모양과 닮은 과거를 찾아,
+그 뒤에 무슨 일이 있었는지 셉니다.
+
+```
+  ■ 1분봉 — 직전 180개와 닮은 과거 구간 100개 (유사도 0.95 이상)
+                 올라 있을 확률        평소      차이      수수료까지 넘길 확률      평소
+     ──────────────────────────────────────────────────────────────────
+       10분          56%       50%     +6%              29%       22%
+         (100개 중 56개)   불확실 범위 46%~66%  (평소와 구분 안 됨)
+```
+
+**"56%"는 혼자 나오지 않습니다.** 반드시 셋이 함께 나옵니다:
+
+| | 왜 필요한가 |
+|---|---|
+| **평소** | 평소가 55%면 56%는 아무 의미가 없습니다 |
+| **불확실 범위** | 표본이 적으면 확률이 흔들립니다 |
+| **수수료까지 넘길 확률** | 오르기만 해서는 돈이 안 됩니다 |
+
+불확실 범위가 '평소'를 품고 있으면 **(평소와 구분 안 됨)**이 붙습니다 —
+그 숫자는 우연과 구분되지 않는다는 뜻입니다.
+
+### 3. 판정하기
 
 ```bash
 python -m patternscan scan
@@ -107,7 +135,7 @@ python -m patternscan scan --scale amplitude     # 변동폭까지 같아야 같
 python -m patternscan scan --refresh             # 시세 새로 받고 판정
 ```
 
-### 3. 어느 길이가 실제로 잘 맞았는지 재기
+### 4. 어느 길이가 실제로 잘 맞았는지 재기
 
 ```bash
 python -m patternscan validate
@@ -168,7 +196,7 @@ python -m patternscan validate --buckets 5                # 구간별로 잘라 
 전부 실력이 음수라 어느 쪽도 쓸 수 없습니다. 기호 3구간이 그나마 덜 나쁘지만
 왕복 비용 0.140%에는 한참 못 미칩니다.
 
-### 4. 다른 데서 구한 데이터 쓰기
+### 5. 다른 데서 구한 데이터 쓰기
 
 업비트는 2017년 10월 개장이라 그 이전이 없습니다. 더 긴 과거로 검증하고
 싶으면 공개된 OHLCV CSV를 들여올 수 있습니다.
@@ -188,7 +216,7 @@ python -m patternscan validate --market BTC-USD
 > 비교하고 싶으면 **따로 들여와 따로 돌려서 결과를 맞춰보세요.**
 > 서로 다른 거래소에서 같은 N이 이긴다면 그게 훨씬 강한 근거입니다.
 
-### 5. 화면으로 보기
+### 6. 화면으로 보기
 
 ```bash
 python -m patternscan ui
@@ -385,6 +413,7 @@ patternscan/
   validate.py   과거 여러 시점으로 돌아가 적중률 측정
   importer.py   외부 OHLCV CSV 들여오기 + 3·5분봉으로 묶기
   symbols.py    '구간별로 자르기' 방식 (기호 비교)
+  odds.py       확률만 알려주기 (판단은 안 함)
   cli.py        명령줄
   webui/        로컬 화면 (분석 전용)
 ```
@@ -398,7 +427,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 156개 시험, 전부 오프라인
+python -m pytest -q          # 171개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

@@ -13,7 +13,8 @@ import os
 import sys
 
 from .data import cache_path, fetch, load_cached, save
-from .models import HORIZONS, WINDOW_LENGTHS, Series, timeframe_label
+from .models import HORIZONS, KST, WINDOW_LENGTHS, Series, timeframe_label
+from .odds import format_odds, odds_all
 from .report import (
     format_coverage,
     format_detail,
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "예시:\n"
             "  python -m patternscan fetch                 # 시세 받기 (처음 한 번, 몇 분 걸림)\n"
+            "  python -m patternscan odds                  # 오를 확률만 보기 (판단은 안 함)\n"
             "  python -m patternscan scan                  # 지금 들어갈지 판정\n"
             "  python -m patternscan scan --detail         # 조합별 상세\n"
             "  python -m patternscan validate              # 어느 길이가 잘 맞았는지 측정\n"
@@ -61,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("fetch", "시세를 받아 캐시에 저장"),
         ("scan", "지금 시점의 모양을 과거와 비교해 판정"),
+        ("odds", "지금 모양과 닮은 과거를 찾아 오를 확률만 알려줌 (판단은 안 함)"),
         ("validate", "과거 여러 시점으로 돌아가 길이별 적중률을 측정"),
         ("import", "남이 만든 OHLCV CSV를 들여오기"),
         ("ui", "웹 화면 열기"),
@@ -94,6 +97,16 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--fdr", type=float, default=0.10, help="허용 거짓발견율")
             p.add_argument("--detail", action="store_true", help="상위 조합 상세 보기")
             p.add_argument("--refresh", action="store_true", help="시세를 새로 받고 판정")
+        if name == "odds":
+            p.add_argument("--length", type=int, default=180, help="직전 몇 개 봉을 볼지 (기본 180)")
+            p.add_argument(
+                "--similarity", type=float, default=DEFAULT_SIMILARITY,
+                help=f"'닮았다'로 볼 최소 상관계수 (기본 {DEFAULT_SIMILARITY})",
+            )
+            p.add_argument("--top-k", type=int, default=100, help="쓸 과거 구간 개수 (기본 100)")
+            p.add_argument("--fee", type=float, default=DEFAULT_FEE, help="편도 수수료율")
+            p.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE, help="편도 슬리피지")
+            p.add_argument("--refresh", action="store_true", help="시세를 새로 받고 계산")
         if name == "validate":
             p.add_argument(
                 "--timeframe", default="minute1", choices=list(DEFAULT_COUNT),
@@ -247,6 +260,28 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_odds(args: argparse.Namespace) -> int:
+    series_by_tf = _load_series(args, args.refresh)
+    usable = {tf: s for tf, s in series_by_tf.items() if len(s) > 0}
+    if not usable:
+        print("시세가 없습니다. 먼저 `python -m patternscan fetch`를 실행하세요.")
+        return 1
+
+    cost = round_trip_cost(args.fee, args.slippage)
+    newest = max((s.span[1] for s in usable.values() if s.span), default=None)
+    when = f"{newest.astimezone(KST):%Y-%m-%d %H:%M} KST 기준" if newest else ""
+    print(f"\n  {args.market} · {when}")
+    print(f"  직전 {args.length}개 봉의 모양과 닮은 과거를 찾아, 그 뒤에 무슨 일이 있었는지 셉니다.")
+
+    rows = odds_all(
+        usable, args.length,
+        horizons=HORIZONS, similarity=args.similarity, top_k=args.top_k,
+        fee=args.fee, slippage=args.slippage,
+    )
+    print(format_odds(rows, cost, expected=list(usable)))
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     series = load_cached(args.market, args.timeframe, args.data_dir)
     if len(series) == 0:
@@ -327,6 +362,7 @@ def cmd_ui(args: argparse.Namespace) -> int:
 COMMANDS = {
     "fetch": cmd_fetch,
     "scan": cmd_scan,
+    "odds": cmd_odds,
     "validate": cmd_validate,
     "import": cmd_import,
     "ui": cmd_ui,
