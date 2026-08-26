@@ -17,6 +17,7 @@ from patternscan.scan import (
     DEFAULT_NULL_TRIALS,
     _null_up_rates,
     round_trip_cost,
+    scan,
     scan_all,
 )
 from patternscan.stats import (
@@ -28,7 +29,7 @@ from patternscan.stats import (
     qualifies,
     wilson_interval,
 )
-from tests.conftest import make_series, planted_signal
+from tests.conftest import MARKER, make_series, planted_signal
 
 
 # ------------------------------------------------------------------ 순열검정
@@ -142,38 +143,55 @@ def test_verdict_with_no_findings():
 
 
 # ------------------------------------------------------------------ 신호가 있을 때
-def test_a_genuinely_predictive_pattern_is_found():
-    """모양 뒤에 항상 오르도록 심어두면 찾아내야 한다.
+def test_the_matches_really_are_the_planted_marker():
+    """찾아낸 매치가 정말 '심어둔 표식' 자리에서 나와야 한다.
 
-    잡음을 거른다고 진짜 신호까지 놓치면 그것대로 쓸모가 없다.
+    이 시험이 전에 없어서 오래 속고 있었다. 그때 쓰던 데이터는 상승 구간에서
+    끝났고, 이 도구는 '지금 직전 N개'를 질의하므로 **질의 모양이 표식이 아니라
+    곧게 오르는 직선**이었다. 그런 구간은 데이터 안에 수천 개 있고 전부 거리가
+    0이라, 승률 97%짜리 '발견'이 나오지만 그 정체는 "오르는 중이면 다음 봉도
+    오른다"였다. 심어둔 신호를 찾는지는 한 번도 검사하지 않은 셈이다.
+
+    게다가 거리 0짜리 동점 후보가 2,633개나 되어 그중 무엇이 뽑히는지가
+    1e-14 수준의 부동소수점 차이로 갈렸다 — 그래서 같은 시험이 로컬에서는
+    통과하고 CI에서는 실패했다.
+
+    그러니 승률만 보지 말고 **매치가 어디서 나왔는지**를 확인해야 한다.
     """
-    rng = np.random.default_rng(11)
-    marker = [100.0, 99.0, 98.0, 99.5, 101.0]  # 눈에 띄는 모양
-    closes: list[float] = []
-    level = 100.0
-
-    for _ in range(120):
-        # 무의미한 구간
-        for _ in range(30):
-            level *= float(np.exp(rng.normal(0, 0.0005)))
-            closes.append(level)
-        # 표식 모양 (같은 비율로)
-        base = level
-        for value in marker:
-            closes.append(base * value / 100.0)
-        level = closes[-1]
-        # 표식 직후에는 반드시 크게 오른다
-        for _ in range(25):
-            level *= 1.002
-            closes.append(level)
-
+    closes, marker_ends = planted_signal(seed=1, with_positions=True)
     series = make_series(closes)
-    findings = evaluate(scan_all({"minute1": series}, (5,), horizons=(1, 3, 5), top_k=60))
-    best = max(findings, key=lambda f: f.edge)
+    result = scan(series, len(MARKER), horizons=(1, 3, 5), top_k=60)
 
-    assert best.samples >= MIN_SAMPLES
-    assert best.edge > 0.10, f"심어둔 신호를 못 찾았습니다 (초과 {best.edge:.1%})"
-    assert best.significant
+    assert result.matches, "매치를 하나도 못 찾았습니다"
+    planted = set(marker_ends)
+    hits = sum(1 for m in result.matches if m.end_index in planted)
+    assert hits / len(result.matches) > 0.9, (
+        f"매치 {len(result.matches)}건 중 표식 자리에서 나온 것이 {hits}건뿐입니다 — "
+        "심어둔 신호가 아니라 다른 걸 찾고 있습니다"
+    )
+
+
+def test_a_flat_query_does_not_masquerade_as_a_pattern():
+    """질의 모양이 '곧게 오르는 직선'이면 과거에 똑같은 게 수천 개 있다.
+
+    표본이 아무리 많아도 그건 모양의 예측력이 아니다. 옛 시험이 정확히
+    이 상황을 '신호를 찾았다'고 읽고 있었으므로, 이제는 그런 구간이
+    어떻게 처리되는지 명시해 둔다.
+    """
+    # 0.2%씩 곧게 오르기만 하는 데이터
+    closes = [100.0 * 1.002**i for i in range(3000)]
+    series = make_series(closes)
+    result = scan(series, 5, horizons=(1,), top_k=60)
+
+    # 정규화하면 전부 같은 직선이므로 거리는 0에 붙는다
+    assert all(m.distance < 1e-9 for m in result.matches)
+    # 그래도 '움직임 없는 구간'은 아니므로 걸러지지는 않는다 — 대신
+    # 기준 승률도 같이 100%가 되어 초과가 0이 된다. 그게 정직한 답이다.
+    outcome = result.outcomes[1]
+    assert outcome.edge < 0.05, (
+        f"곧게 오르기만 하는 데이터에서 초과 승률 {outcome.edge:+.1%}가 나왔습니다 — "
+        "비교 기준이 제 역할을 못 하고 있습니다"
+    )
 
 
 # ------------------------------------- 285개 조합 부담 아래서도 신호를 찾는가

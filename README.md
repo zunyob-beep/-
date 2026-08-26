@@ -269,7 +269,7 @@ patternscan/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 98개 시험, 전부 오프라인
+python -m pytest -q          # 99개 시험, 전부 오프라인
 python -m ruff check patternscan tests
 ```
 

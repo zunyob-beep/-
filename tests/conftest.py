@@ -61,11 +61,16 @@ MARKER = [100.0, 99.2, 98.3, 99.6, 101.1]
 
 
 def planted_signal(
-    seed: int = 1, occurrences: int = 90, drift: float = 0.0025, plant: bool = True
-) -> list[float]:
+    seed: int = 1,
+    occurrences: int = 90,
+    drift: float = 0.0025,
+    plant: bool = True,
+    with_positions: bool = False,
+) -> list[float] | tuple[list[float], list[int]]:
     """표식 직후 반드시 오르는 종가 열. 마지막이 표식으로 끝난다.
 
-    두 가지를 일부러 지킨다.
+    세 가지를 일부러 지킨다. 앞선 판에서 셋 다 안 지켜서 시험이 엉뚱한 걸
+    검사하고 있었다.
 
     1. **표식 사이 간격을 무작위로** 둔다. 일정한 주기로 두면 순열검정이
        모든 매치를 같은 폭으로 밀 때 위상이 통째로 맞아떨어져, 귀무분포가
@@ -73,12 +78,24 @@ def planted_signal(
        원인"이라는 판정이 오히려 옳다).
     2. **마지막을 표식으로 끝낸다.** 이 도구는 '지금 직전 N개'를 질의하므로,
        데이터가 잡음 구간에서 끝나면 표식은 질의 대상조차 되지 않는다.
+       옛 시험은 상승 구간에서 끝나는 데이터를 썼고, 그래서 질의 모양이
+       표식이 아니라 '곧게 오르는 직선'이었다 — 심어둔 신호를 찾는지는
+       한 번도 검사하지 않은 채 "오르는 중이면 다음 봉도 오른다"만 확인하고
+       있었다.
+    3. **표식 직후 상승을 짧게(6봉)** 둔다. 길게 두면 그 안의 모든 구간이
+       서로 완전히 같은 직선이 되어 거리 0짜리 후보가 수천 개 생기고,
+       그중 무엇이 뽑히는지가 1e-14 수준의 부동소수점 차이로 갈린다.
+       실제로 옛 시험은 그 이유로 로컬과 CI에서 결과가 달랐다.
 
     `plant=False`면 표식 뒤에도 잡음이 이어진다 — 같은 구조에서 신호만
     없앤 대조군이다.
+
+    `with_positions=True`면 표식이 끝나는 위치도 같이 준다. 매치가 정말
+    표식 자리에서 나왔는지 확인하는 데 쓴다.
     """
     rng = np.random.default_rng(seed)
     closes: list[float] = []
+    marker_ends: list[int] = []
     level = 40_000_000.0
 
     def noise(count: int) -> None:
@@ -87,12 +104,17 @@ def planted_signal(
             level *= float(np.exp(rng.normal(0, 0.0009)))
             closes.append(level)
 
-    for _ in range(occurrences):
-        noise(int(rng.integers(40, 160)))
+    def place_marker() -> None:
+        nonlocal level
         base = level
         for value in MARKER:
             closes.append(base * value / 100.0)
+        marker_ends.append(len(closes) - 1)
         level = closes[-1]
+
+    for _ in range(occurrences):
+        noise(int(rng.integers(40, 160)))
+        place_marker()
         if plant:
             for _ in range(6):
                 level *= 1.0 + drift
@@ -101,10 +123,8 @@ def planted_signal(
             noise(6)
         noise(int(rng.integers(10, 40)))
 
-    base = level
-    for value in MARKER:
-        closes.append(base * value / 100.0)
-    return closes
+    place_marker()
+    return (closes, marker_ends) if with_positions else closes
 
 
 @pytest.fixture
