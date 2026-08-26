@@ -528,19 +528,49 @@ def _number(value: Any, default: float, low: float, high: float) -> float:
     return min(high, max(low, number))
 
 
+def _lan_address() -> str | None:
+    """같은 네트워크에서 이 컴퓨터를 가리키는 주소. 못 찾으면 None."""
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # 실제로 보내지는 않는다. 어느 인터페이스로 나갈지만 물어본다.
+        probe.connect(("192.0.2.1", 9))
+        return str(probe.getsockname()[0])
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
 def serve(
     market: str = "KRW-BTC",
     data_dir: str = "data",
     port: int = 8765,
     open_browser: bool = True,
+    host: str = "127.0.0.1",
 ) -> None:
-    """127.0.0.1에만 붙는다 — 같은 네트워크의 다른 기기에서는 열리지 않는다."""
+    """기본은 127.0.0.1 — 이 컴퓨터에서만 열린다.
+
+    `host="0.0.0.0"`을 주면 같은 네트워크(집 와이파이)의 다른 기기에서도
+    열린다. 인터넷에 열리는 것은 아니지만, **같은 와이파이에 있는 누구나**
+    볼 수 있게 되므로 그 사실을 화면에 분명히 적는다.
+    """
     state = State(market, data_dir)
     handler = type("BoundHandler", (Handler,), {"state": state})
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    httpd = ThreadingHTTPServer((host, port), handler)
     url = f"http://127.0.0.1:{port}/"
 
     print(f"  화면: {url}")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        lan = _lan_address()
+        print()
+        print(f"  ⚠ 이 컴퓨터 밖에서도 열립니다 ({host}:{port}).")
+        if lan:
+            print(f"    같은 와이파이의 다른 기기에서:  http://{lan}:{port}/")
+        print("    인터넷에 공개되지는 않지만, 같은 와이파이의 누구나 볼 수 있습니다.")
+        print("    카페·공용 와이파이에서는 쓰지 마세요.")
+        print()
     print("  종료: Ctrl+C")
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

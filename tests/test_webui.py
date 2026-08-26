@@ -367,8 +367,12 @@ def test_only_one_job_runs_at_a_time(client):
         threading.Event().wait(0.05)
 
 
-def test_server_binds_to_loopback_only():
-    """다른 기기에서 열리면 안 된다."""
+def test_server_binds_to_loopback_by_default():
+    """기본은 이 컴퓨터에서만 열려야 한다 — 밖에 여는 건 사용자가 정한다."""
+    import inspect
+
+    assert inspect.signature(webui.serve).parameters["host"].default == "127.0.0.1"
+
     state = webui.State("KRW-BTC", "data")
     handler = type("BoundHandler", (webui.Handler,), {"state": state})
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -376,3 +380,17 @@ def test_server_binds_to_loopback_only():
         assert httpd.server_address[0] == "127.0.0.1"
     finally:
         httpd.server_close()
+
+
+def test_cli_defaults_to_loopback():
+    """--host를 빼먹었을 때 밖으로 열리면 안 된다."""
+    from patternscan.cli import build_parser
+
+    args = build_parser().parse_args(["ui"])
+    assert args.host == "127.0.0.1"
+
+
+def test_lan_address_is_a_plain_address_or_none():
+    """주소를 못 찾아도 서버가 죽으면 안 된다."""
+    found = webui._lan_address()
+    assert found is None or (isinstance(found, str) and found.count(".") == 3)

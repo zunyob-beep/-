@@ -147,6 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "ui":
             p.add_argument("--port", type=int, default=8765)
             p.add_argument("--no-browser", action="store_true")
+            p.add_argument(
+                "--host", default="127.0.0.1",
+                help=(
+                    "기본은 이 컴퓨터에서만 열립니다. 0.0.0.0을 주면 같은 와이파이의 "
+                    "다른 기기(아이패드 등)에서도 열립니다 — 같은 와이파이의 누구나 "
+                    "볼 수 있게 되니 공용 와이파이에서는 쓰지 마세요"
+                ),
+            )
 
     return parser
 
@@ -355,6 +363,7 @@ def cmd_ui(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         port=args.port,
         open_browser=not args.no_browser,
+        host=args.host,
     )
     return 0
 
