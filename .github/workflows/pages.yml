@@ -61,3 +61,25 @@ jobs:
           path: web
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      # 여기까지 못 오면 십중팔구 이유가 하나다 — Pages를 아직 안 켰다.
+      # 그런데 그때 나오는 메시지는 영어에 알아보기 어려워서, 무엇을
+      # 눌러야 하는지 알 수가 없다. 실행 화면 맨 위에 한국어로 적어 준다.
+      - name: 안 됐으면 무엇을 눌러야 하는지
+        if: failure()
+        run: |
+          {
+            echo "## 올리기가 안 됐습니다"
+            echo ""
+            echo "거의 항상 아래 두 가지를 아직 안 해서입니다."
+            echo ""
+            echo "1. **저장소를 공개로** — Settings → 맨 아래 Change repository"
+            echo "   visibility → Public"
+            echo "   (무료 요금제에서 Pages는 공개 저장소에서만 됩니다.)"
+            echo "2. **Pages를 켜기** — Settings → Pages → Source 를"
+            echo "   **GitHub Actions** 로 고르기"
+            echo ""
+            echo "둘 다 하신 뒤 이 화면 오른쪽 위 **Re-run all jobs** 를 누르세요."
+            echo "그러면 주소가 생깁니다: https://zunyob-beep.github.io/-/"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Pages가 꺼져 있거나 저장소가 비공개입니다. 실행 화면 위의 안내를 보세요."
