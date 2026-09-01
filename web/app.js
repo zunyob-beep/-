@@ -342,6 +342,24 @@ function howLong(fromIso, toIso) {
   return `${(days / 365.25).toFixed(1)}년치`;
 }
 
+/**
+ * 받아둔 시세를 지우는 단추.
+ *
+ * **두 화면에 다 있어야 한다.** 예전에는 받기 전 화면에만 있었는데, 계산이
+ * 끝나면 같은 자리를 '무엇으로 계산했나'가 덮어써서 단추가 사라졌다.
+ * 정작 무엇을 갖고 있는지 보고 나서 지우고 싶어지는데, 그때 없어진다.
+ */
+const FORGET_BUTTON = '<button type="button" id="btn-forget" class="linky">받아둔 시세 지우기</button>';
+
+function wireForget() {
+  const button = $('btn-forget');
+  if (!button) return;
+  button.addEventListener('click', () => {
+    if (busy) return;
+    send({ type: 'forget', market });
+  });
+}
+
 function renderCached(cached) {
   const box = $('coverage');
   box.hidden = false;
@@ -378,11 +396,8 @@ function renderCached(cached) {
       <tbody>${rows}</tbody></table></div>
     <p class="note-line">더 긴 과거를 보려면 위에서 <b>얼마나 과거의 데이터와 비교하나요</b>를
       늘리고 <b>지금 시세로 판단받기</b>를 누르세요.
-      <button type="button" id="btn-forget" class="linky">받아둔 시세 지우기</button></p>`;
-  $('btn-forget').addEventListener('click', () => {
-    if (busy) return;
-    send({ type: 'forget', market });
-  });
+      ${FORGET_BUTTON}</p>`;
+  wireForget();
 }
 
 function render(analysis) {
@@ -441,7 +456,9 @@ function renderCoverage(analysis) {
       <tbody>${spans}</tbody></table></div>${missing}
     <p class="note-line">왕복 비용 <b>${pct(analysis.cost, 2)}</b> ·
       직전 <b>${analysis.oddsLength}개</b> 봉 기준 ·
-      닮았다고 볼 기준 상관계수 <b>${analysis.similarity.toFixed(2)}</b></p>`;
+      닮았다고 볼 기준 상관계수 <b>${analysis.similarity.toFixed(2)}</b>
+      ${FORGET_BUTTON}</p>`;
+  wireForget();
 }
 
 function renderOdds(analysis) {

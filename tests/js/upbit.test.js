@@ -307,3 +307,21 @@ test('to는 문서에 있는 표기 하나만 쓴다', async () => {
   assert.equal(sent.length, 1, `한 번에 보냈어야 합니다: ${sent}`);
   assert.match(sent[0], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, `표기가 ${sent[0]}입니다`);
 });
+
+test('판 번호와 캐시 이름이 어긋나지 않는다', async () => {
+  // 캐시 이름에 판 번호가 들어간다. 번호가 바뀌면 이름이 바뀌고, 그래야
+  // 서비스 워커가 예전 파일을 버린다. 둘이 어긋나면 화면에는 새 번호가
+  // 뜨는데 실제로는 옛 파일이 도는 — 제일 헷갈리는 상태가 된다.
+  const { readFile } = await import('node:fs/promises');
+  const { VERSION } = await import('../../web/version.js');
+  const sw = await readFile(new URL('../../web/sw.js', import.meta.url), 'utf8');
+  const cache = sw.match(/const CACHE = '([^']+)'/);
+  assert.ok(cache, '캐시 이름을 못 찾았습니다');
+  assert.ok(
+    cache[1].endsWith(VERSION),
+    `판 번호는 ${VERSION}인데 캐시 이름은 ${cache[1]}입니다`,
+  );
+
+  // 서비스 워커가 담는 목록에 version.js가 있어야 오프라인에서도 뜬다.
+  assert.ok(sw.includes("'./version.js'"), '서비스 워커가 version.js를 안 담습니다');
+});
