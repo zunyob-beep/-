@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>기시감 — 이 모양, 전에도 봤다</title>
+  <link rel="stylesheet" href="./style.css">
+
+  <!-- 홈 화면에 앱처럼 얹기 위한 것들. 경로는 전부 상대로 쓴다 —
+       GitHub Pages는 저장소 이름이 붙은 하위 경로에 얹히므로 /로 시작하면
+       엉뚱한 곳을 가리킨다. -->
+  <link rel="manifest" href="./manifest.webmanifest">
+  <meta name="theme-color" content="#050807">
+  <!-- iOS는 manifest의 display를 안 읽는다. 이 둘이 있어야 주소창 없이 뜬다. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="기시감">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+</head>
+<body>
+  <!-- 뒤에 아주 옅게 깔리는 글자비. 없어도 화면은 그대로 돌아간다. -->
+  <canvas id="rain" aria-hidden="true"></canvas>
+  <div id="scanlines" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>기시감</h1>
+      <span class="sub">이 모양, 전에도 봤다 — 그때 무슨 일이 있었는지 셉니다</span>
+    </div>
+    <div class="ticker" id="ticker">
+      <div class="ticker-name"><span id="ticker-label">비트코인</span>
+        <span class="ticker-code" id="ticker-code">KRW-BTC</span></div>
+      <div class="ticker-price" id="ticker-price">—</div>
+      <div class="ticker-change" id="ticker-change"></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- 조작부 -->
+    <section class="panel controls">
+      <div class="coins" id="coins" role="group" aria-label="종목 고르기"></div>
+      <div class="row">
+        <label>
+          얼마나 과거까지 <span class="hint" id="period-note"></span>
+          <select id="in-period"></select>
+        </label>
+        <label>
+          직전 몇 개 봉
+          <input id="in-length" type="number" step="10" min="5" max="180" value="20">
+        </label>
+        <label>
+          닮았다고 볼 기준 <span class="hint">상관계수</span>
+          <input id="in-similarity" type="number" step="0.01" min="0" max="1" value="0.85">
+        </label>
+        <label>
+          편도 수수료 <span class="hint">업비트 0.05%</span>
+          <input id="in-fee" type="number" step="0.0001" min="0" value="0.0005">
+        </label>
+        <label>
+          편도 슬리피지
+          <input id="in-slippage" type="number" step="0.0001" min="0" value="0.0002">
+        </label>
+        <label>
+          넣을 금액 <span class="hint">원</span>
+          <input id="in-amount" type="number" step="100000" min="0" value="1000000">
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="btn-live" class="primary">지금 시세로 판단받기</button>
+        <button id="btn-scan">받아둔 시세로 다시 계산</button>
+        <button id="btn-stop" class="danger" hidden>멈추기</button>
+        <label class="check">
+          <input id="in-auto" type="checkbox"> 1분마다 자동 갱신
+        </label>
+        <span id="job" class="job"></span>
+      </div>
+      <div id="progress" class="progress" hidden><div id="progress-bar"></div></div>
+      <p id="error" class="error" hidden></p>
+      <div id="blocked" class="offline" hidden></div>
+      <p id="stale-note" class="stale-note" hidden>
+        아래는 <b>이전 결과</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.
+      </p>
+    </section>
+
+    <!-- 판정 -->
+    <section id="verdict" class="panel verdict" hidden>
+      <div class="verdict-head">
+        <span id="verdict-mark" class="mark"></span>
+        <h2 id="verdict-headline"></h2>
+        <span id="verdict-time" class="verdict-time"></span>
+      </div>
+      <ul id="verdict-reasons"></ul>
+    </section>
+
+    <!-- 이 도구가 하는 일 -->
+    <section class="panel disclaimer">
+      <b>이 도구는 매수를 권하지 않습니다.</b> 과거에 무슨 일이 있었는지만 셉니다.
+      확률 옆의 <b>평소</b>보다 높아야 의미가 있고, <b>불확실 범위</b>가 평소를 품고 있으면
+      그 숫자는 우연과 구분되지 않습니다.
+      <span class="dim">계산은 전부 이 기기 안에서 일어납니다. 받아둔 시세도 여기에만
+      저장되고, 어디로도 보내지 않습니다.</span>
+    </section>
+
+    <!-- 데이터 범위 -->
+    <section id="coverage" class="panel coverage" hidden></section>
+
+    <!-- 앞으로의 모양 -->
+    <section id="ahead-panel" class="panel" hidden>
+      <h3>앞으로 <span class="hint">닮았던 과거들이 그 다음에 실제로 간 길</span></h3>
+      <div class="ahead-wrap">
+        <div class="svg-box tall"><svg id="ahead-chart" viewBox="0 0 640 260"
+             preserveAspectRatio="none"></svg></div>
+        <div id="ahead-legend" class="ahead-legend"></div>
+      </div>
+      <p class="footnote">
+        <b>선 하나로 그리지 않았습니다.</b> 실제로 일어날 일은 하나지만, 우리가 아는 건
+        비슷했던 과거들이 <b>제각각 흩어졌다</b>는 사실뿐입니다. 가운데 굵은 선이
+        중앙값, 진한 띠가 절반이 들어간 범위(25~75%), 옅은 띠가 10~90%입니다.
+        <b>띠가 넓으면 그건 모른다는 뜻</b>이고, 그게 보이도록 그렸습니다.
+      </p>
+    </section>
+
+    <!-- 지지선·저항선 -->
+    <section id="levels-panel" class="panel" hidden>
+      <h3>지지선과 저항선 <span class="hint">여러 번 되돌아섰던 자리</span></h3>
+      <div id="levels-body"></div>
+      <p class="footnote">
+        가격이 여러 번 되돌아선 자리를 셌을 뿐입니다. <b>왜 그런지는 말하지 않습니다.</b>
+        닿은 횟수가 많고 최근일수록 굵게 표시했습니다.
+        <span class="dim">피보나치 되돌림은 근거가 약하지만 많은 사람이 그 자리에
+        주문을 걸어 실제로 자주 멈추므로, 따로 표시해 함께 보여줍니다.</span>
+      </p>
+    </section>
+
+    <!-- 차트 이론 -->
+    <section id="theory-panel" class="panel" hidden>
+      <h3>차트 이론이 보는 지금
+        <span class="hint">그리고 그 이론이 이 데이터에서 실제로 맞았는지</span></h3>
+      <div id="theory-tabs" class="tabs"></div>
+      <p id="theory-confirm" class="theory-confirm"></p>
+      <div id="theory-body"></div>
+      <p class="footnote">
+        <b>다수결로 읽지 마세요.</b> 이론들이 서로 독립이 아닙니다 — 이동평균·MACD·다우는
+        결국 같은 추세를 세 번 세는 것에 가깝습니다.
+        오른쪽 <b>과거 성적</b>이 이 표의 핵심입니다. "지금 상승을 가리킴"은 검증할 수 없는
+        말이고, <b>"이 신호가 나왔던 과거 238번 중 51.7%가 올랐다(평소 50.8%)"</b>는
+        검증할 수 있는 말입니다. 초과가 0 근처면 그 이론은 여기서 아무 말도 안 한 겁니다.
+      </p>
+    </section>
+
+    <!-- 확률 표 -->
+    <section id="odds-panel" class="panel" hidden>
+      <h3>오를 확률 <span class="hint">행을 누르면 아래에 실제 사례가 그려집니다</span></h3>
+      <div id="odds-body"></div>
+    </section>
+
+    <!-- 실제 사례 -->
+    <section id="examples-panel" class="panel" hidden>
+      <h3 id="examples-title"></h3>
+      <p class="footnote" id="examples-note"></p>
+      <div class="examples">
+        <div class="example-col">
+          <h4 class="rose">올랐던 사례</h4>
+          <div id="rose-list"></div>
+        </div>
+        <div class="example-col">
+          <h4 class="fell">떨어졌던 사례</h4>
+          <div id="fell-list"></div>
+        </div>
+      </div>
+      <p class="footnote">
+        흐린 초록이 <b>그 당시 모양</b>, 밝은 초록이 <b>지금 모양</b>입니다. 겹쳐 보고 정말 닮았는지
+        직접 확인하세요. 오른쪽 작은 그림은 그 직후에 실제로 어떻게 움직였는지입니다.
+        <b>가장 많이 오른 사례가 아니라 가장 닮은 사례</b>를 골랐습니다 —
+        많이 오른 것만 보여주면 실제보다 좋아 보이니까요.
+      </p>
+    </section>
+
+    <section class="panel note">
+      <h3>읽는 법</h3>
+      <ul>
+        <li><b>평소</b>는 같은 기간 아무 때나 들어갔을 때의 확률입니다.
+            56%도 평소가 55%면 아무 의미가 없습니다.</li>
+        <li><b>불확실 범위</b>는 표본이 적을수록 넓어집니다. 이 범위가 평소를 품고 있으면
+            <span class="dim">(평소와 구분 안 됨)</span>이 붙습니다.</li>
+        <li><b>수수료까지 넘길 확률</b>이 진짜 중요한 숫자입니다. 오르기만 해서는
+            사고파는 비용을 못 냅니다.</li>
+        <li><b>넣었다면</b>은 <b>수수료를 뺀 뒤</b>의 금액입니다. "+0.02%"는 감이 안 오지만
+            "100만원에 −1,251원"은 바로 옵니다 — 이 도구가 계속 말리는 이유가 그 칸에 있습니다.</li>
+        <li>시간은 <b>실제 분</b>으로 적혀 있습니다. 5분봉의 "1봉 뒤"는 5분 뒤입니다.</li>
+        <li>과거 통계는 미래를 보장하지 않습니다.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
