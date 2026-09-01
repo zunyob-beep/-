@@ -47,6 +47,19 @@ export const TO_FORMATS = [
   (seconds) => `${new Date(seconds * 1000).toISOString().slice(0, 19)}+00:00`,
 ];
 
+/**
+ * `to`와 함께 쓸 때 한 번에 몇 개까지 달라고 할지.
+ *
+ * `null`은 '요청한 개수 그대로'다. 나머지는 그보다 적게 달라고 해 보는 것이다.
+ *
+ * 왜 이것까지 더듬는가 — 표기만 세 가지 넣어 봤는데도 세 번 다 같은 자리에서
+ * 막혔다. 그러면 원인이 표기가 아닐 수 있다는 뜻이고, 남는 후보 중 하나가
+ * '`to`와 큰 `count`를 같이 주면 거절한다'는 것이다. 나는 여기서 업비트에
+ * 닿을 수 없어 어느 쪽인지 확인할 방법이 없다. **그래서 맞히지 않고,
+ * 앱이 돌면서 직접 찾게 한다.**
+ */
+export const TO_CAPS = [null, 100, 10];
+
 /** 시세 조회 실패. `kind`로 무엇 때문인지 구분한다. */
 export class UpbitError extends Error {
   constructor(message, kind = 'unknown', extra = {}) {
@@ -129,9 +142,41 @@ export class UpbitClient {
     this.fetch = fetcher ?? ((...args) => globalThis.fetch(...args));
     /** 지금까지 업비트에서 실제로 받아 온 횟수. 진단이 이걸 본다. */
     this.succeeded = 0;
-    /** 쓰고 있는 `to` 표기. 통하는 걸 찾으면 거기서 고정한다. */
-    this.toFormat = 0;
+    /**
+     * `to`를 어떻게 보낼지 — 표기와 개수의 조합을 차례로 더듬는다.
+     * 한 번 통하면 거기서 고정한다(`toProven`).
+     */
+    this.planAt = 0;
     this.toProven = false;
+  }
+
+  /** 더듬어 볼 조합. 표기 3가지 × 개수 3가지 = 9가지. */
+  // eslint-disable-next-line class-methods-use-this
+  get toPlan() {
+    const plan = [];
+    // 개수를 바깥에 둔다 — 먼저 세 표기를 원래 개수로 다 해 보고,
+    // 그래도 안 되면 그때 개수를 줄인다. 개수를 줄이면 그만큼 느려지므로
+    // 마지막 수단이어야 한다.
+    for (const cap of TO_CAPS) {
+      for (let format = 0; format < TO_FORMATS.length; format += 1) plan.push({ format, cap });
+    }
+    return plan;
+  }
+
+  /** 지금 쓰는 `to` 표기. */
+  get toFormat() {
+    return this.toPlan[this.planAt].format;
+  }
+
+  /** 지금 쓰는 개수 상한. `null`이면 요청한 개수 그대로. */
+  get toCap() {
+    return this.toPlan[this.planAt].cap;
+  }
+
+  /** 무엇으로 정착했는지. 화면과 진단이 사람에게 보여줄 말. */
+  get toStrategy() {
+    const { format, cap } = this.toPlan[this.planAt];
+    return `표기 ${format + 1}번${cap === null ? '' : `, 한 번에 ${cap}개씩`}`;
   }
 
   /**
@@ -149,7 +194,14 @@ export class UpbitClient {
       for (const [key, value] of Object.entries(params)) {
         if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
       }
-      if (wantsTo) url.searchParams.set('to', TO_FORMATS[this.toFormat](toSeconds));
+      if (wantsTo) {
+        url.searchParams.set('to', TO_FORMATS[this.toFormat](toSeconds));
+        // 상한은 **여기서** 건다. 미리 걸어 두면 조합을 바꿔 다시 해 볼 때
+        // 개수가 예전 것 그대로 남는다.
+        if (this.toCap !== null && params.count !== undefined) {
+          url.searchParams.set('count', String(Math.min(Number(params.count), this.toCap)));
+        }
+      }
 
       await this.limiter.acquire();
       let response = null;
@@ -163,15 +215,37 @@ export class UpbitClient {
       }
 
       if (!threw && response.status < 400) {
+        let payload;
         try {
-          const payload = await response.json();
-          this.succeeded += 1;
-          // 이 표기로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
-          if (wantsTo) this.toProven = true;
-          return payload;
+          payload = await response.json();
         } catch {
           throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
         }
+        this.succeeded += 1;
+
+        // **아직 통하는 조합을 못 찾았는데 빈 배열이 왔다면 그것도 실패다.**
+        //
+        // 200 OK에 `[]`는 '더 줄 게 없다'는 뜻이기도 하지만, 첫 `to` 요청부터
+        // 그렇다면 그럴 리가 없다 — 비트코인 1분봉은 몇 년치가 있다. 이걸
+        // 성공으로 받으면 collect가 조용히 멈추고, 화면에는 아무 설명 없이
+        // '받다가 멈췄다'만 남는다. 실제로 그렇게 보였을 수 있다.
+        //
+        // 한 번이라도 받아 본 뒤(`toProven`)의 빈 배열은 진짜로 끝에 닿은
+        // 것이므로 그때는 그대로 받아들인다.
+        if (wantsTo && !this.toProven && Array.isArray(payload) && payload.length === 0) {
+          last = new UpbitError(
+            `업비트가 답은 했는데 봉을 하나도 주지 않았습니다 (${this.toStrategy}).`, 'empty',
+          );
+          if (this.planAt < this.toPlan.length - 1) { this.planAt += 1; continue; }
+          if (attempt >= this.retries) throw last;
+          await sleep(Math.min(2 ** attempt, 16) * 1000);
+          attempt += 1;
+          continue;
+        }
+
+        // 이 조합으로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
+        if (wantsTo) this.toProven = true;
+        return payload;
       }
 
       if (threw) {
@@ -195,19 +269,19 @@ export class UpbitClient {
         );
       }
 
-      // to 표기를 아직 못 정했으면 다음 표기를 넣어 본다. 서버가 죽은
-      // 것(5xx)은 표기와 무관하므로 그때는 훑지 않는다.
+      // `to` 보내는 법을 아직 못 정했으면 다음 조합을 넣어 본다. 서버가
+      // 죽은 것(5xx)은 조합과 무관하므로 그때는 훑지 않는다.
       if (wantsTo && !this.toProven && last.kind !== 'server') {
-        if (this.toFormat < TO_FORMATS.length - 1) {
-          this.toFormat += 1;
+        if (this.planAt < this.toPlan.length - 1) {
+          this.planAt += 1;
           continue;
         }
-        // 세 표기가 다 안 통했다. 여기서 '표기 문제'라고 결론 내리면 안 된다 —
-        // 너무 빨라서 셋 다 막힌 것일 수도 있다. 느려진 채로 한 번 더 훑어
-        // 본다. 이걸로 통하면 표기가 아니라 속도가 문제였던 것이다.
+        // 아홉 조합이 다 안 통했다. 여기서 '조합 문제'라고 결론 내리면 안 된다 —
+        // 너무 빨라서 전부 막힌 것일 수도 있다. 느려진 채로 한 번 더 훑어
+        // 본다. 이걸로 통하면 조합이 아니라 속도가 문제였던 것이다.
         if (sweeps < TO_SWEEPS) {
           sweeps += 1;
-          this.toFormat = 0;
+          this.planAt = 0;
           this.limiter.slowDown();
           await sleep(this.sweepPause);
           continue;

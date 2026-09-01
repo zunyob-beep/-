@@ -325,6 +325,10 @@ check(
   /됨|안 됨/.test(await page.locator('#diag').innerText()),
   (await page.locator('#diag table tbody tr').first().innerText()).replace(/\s+/g, ' '),
 );
+// 표만 보여주고 마는 건 부족하다. 여덟 줄을 읽어 무슨 뜻인지 알아내는 건
+// 내 일이지 사용자 일이 아니다. 진단이 **스스로 결론을 말해야** 한다.
+const said = (await page.locator('.diag-said').innerText().catch(() => '')).trim();
+check('진단이 스스로 결론을 말한다', said.length > 10, said.replace(/\s+/g, ' ').slice(0, 90));
 
 // ── 하위 경로에서 제대로 얹혔는가 (진짜 배포와 같은 모양)
 check(

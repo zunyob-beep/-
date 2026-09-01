@@ -19,7 +19,7 @@ import { UpbitClient, UpbitError } from './core/upbit.js';
 import { timeframeLabel } from './core/models.js';
 
 /** 업비트로 가는 길 자체가 막힌 경우. 화면이 안내를 달리 띄운다. */
-const NETWORK = ['offline', 'blocked', 'stalled', 'rate', 'server'];
+const NETWORK = ['offline', 'blocked', 'stalled', 'rate', 'server', 'empty'];
 
 let store = null;
 let analysis = null;   // 마지막으로 끝낸 계산. 사례를 볼 때마다 다시 찾지 않으려고 들고 있는다.
