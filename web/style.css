@@ -421,6 +421,13 @@ table.theories td.down { color: var(--down); }
 table.theories tr.quiet td { opacity: 0.6; }
 table.theories tr.real td.l b { color: var(--accent); }
 
+/* 진단이 스스로 내린 결론. 표보다 이게 먼저 읽혀야 한다. */
+.diag-said {
+  margin: 0 0 14px; padding: 10px 12px; font-size: 13px; line-height: 1.75;
+  color: var(--text-2); background: var(--raised); border-left: 2px solid var(--accent);
+}
+.diag-said b { color: var(--text); }
+
 /* 진단 결과를 그대로 펼 자리. 클립보드가 막혀 있을 때만 나온다. */
 .diag-text {
   margin: 10px 0 0; padding: 10px; font-family: var(--mono); font-size: 11px;

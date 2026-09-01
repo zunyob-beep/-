@@ -79,6 +79,9 @@ function handle(message) {
       // '지금'이 아니다. 그 사실이 결과보다 먼저 보여야 한다.
       setBlocked(message.kind);
       if (!message.stale) finish();
+      // 막혔으면 **묻지 말고 바로 알아본다.** 사용자가 진단 단추를 눌러
+      // 결과를 옮겨 적는 왕복 자체가 비용이다. 한 번만 돈다.
+      if (!diagRan && ['stalled', 'blocked', 'empty'].includes(message.kind)) runDiagnosis();
       break;
     case 'done':
       finish();
@@ -176,13 +179,19 @@ function setBlocked(kind) {
       <b>얼마나 과거까지</b>를 줄이면 덜 생깁니다.</span>`,
     server: `<b>업비트 쪽에서 오류가 왔습니다.</b>
       우리가 고칠 수 있는 문제가 아닙니다. 잠시 뒤에 다시 눌러 주세요.`,
+    empty: `<b>업비트가 답은 했는데 과거 봉을 주지 않았습니다.</b>
+      길은 뚫려 있고 지금 시세도 받아집니다. 과거를 달라는 요청에만
+      빈 답이 옵니다 — 보내는 방법을 아홉 가지로 바꿔 가며 다 시도했습니다.
+      <span class="dim">아래 <b>업비트 연결 진단</b>을 눌러 결과를 보내 주시면
+      원인을 정확히 짚을 수 있습니다. 받아둔 시세로는
+      <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.</span>`,
   }[kind];
   box.innerHTML = said ?? '';
   box.hidden = !said;
 }
 
 function reportWorkerError(message) {
-  if (['offline', 'blocked', 'stalled', 'rate', 'server'].includes(message.kind)) {
+  if (['offline', 'blocked', 'stalled', 'rate', 'server', 'empty'].includes(message.kind)) {
     setBlocked(message.kind);
     showError('');
     return;
@@ -857,10 +866,56 @@ async function probe(label, url, init = {}) {
   }
 }
 
+/**
+ * 결과를 읽고 **무엇이 문제인지 한국어로 말한다.**
+ *
+ * 표를 보여주는 것만으로는 부족하다. 여덟 줄을 보고 무슨 뜻인지 읽어내는 건
+ * 내 일이지 사용자 일이 아니다. 그리고 사용자가 나에게 결과를 옮겨 적는
+ * 왕복 자체가 비용이다 — 여기서 결론까지 내 준다.
+ */
+function conclude(done) {
+  const find = (part) => done.filter((r) => r.label.includes(part));
+  const okOf = (rows) => rows.filter((r) => r.ok);
+  const plain = find('to 없음');
+  const withTo = done.filter((r) => r.label.includes('+ to'));
+  const nocors = done.find((r) => r.label.includes('no-cors'));
+
+  if (!okOf(plain).length) {
+    return ['업비트에 아예 못 닿고 있습니다.', '과거뿐 아니라 지금 시세도 못 받습니다. '
+      + '망(회사·학교 와이파이, 일부 VPN)이 막고 있을 수 있습니다.'];
+  }
+  if (okOf(withTo).length === withTo.length) {
+    return ['지금은 과거 요청도 다 됩니다.', '아까 멈춘 건 일시적이었을 수 있습니다. '
+      + '<b>지금 시세로 판단받기</b>를 다시 눌러 이어서 받아 보세요.'];
+  }
+  const small = withTo.find((r) => r.label.includes('봉 1개'));
+  const big = withTo.filter((r) => r.label.includes('200개'));
+  if (small?.ok && !okOf(big).length) {
+    return ['한 번에 많이 달라고 할 때만 거절당합니다.',
+      '개수를 줄여서 받도록 앱이 스스로 바꿉니다. 다시 눌러 주세요.'];
+  }
+  if (okOf(withTo).length) {
+    const works = okOf(withTo).map((r) => r.label).join(', ');
+    return ['일부 방식만 통합니다.', `이건 됩니다: ${works}. 앱이 통하는 쪽으로 맞춥니다.`];
+  }
+  if (nocors?.ok) {
+    return ['업비트는 답했지만 브라우저가 그 답을 못 읽습니다.',
+      '요청 자체는 업비트까지 갔고 답도 돌아왔는데, 그 답에 브라우저가 요구하는 '
+      + '허용 표시(CORS)가 없습니다. 오류 응답일 때 그런 경우가 많습니다 — '
+      + '즉 <b>업비트가 이 요청을 거절하고 있고, 그 거절 이유를 우리가 볼 수 없는</b> 상태입니다.'];
+  }
+  return ['과거를 달라는 요청만 업비트에 닿지 못합니다.',
+    '지금 시세는 되는데 과거 요청만 안 됩니다. 같은 주소를 no-cors로 불러도 '
+    + '안 되는 것으로 보아, 중간에서 그 요청만 끊고 있을 수 있습니다.'];
+}
+
+let diagRan = false;
+
 async function runDiagnosis() {
   const box = $('diag');
   const button = $('btn-diag');
   button.disabled = true;
+  diagRan = true;
   box.hidden = false;
 
   const path = ENDPOINTS.minute1;
@@ -892,8 +947,10 @@ async function runDiagnosis() {
            다 됐는데도 온통 빨개서 실패한 것처럼 읽힌다. -->
       <td class="${r.ok ? 'pos' : 'neg'}">${r.ok ? '됨' : '안 됨'}</td>
       <td class="dim">${r.note}</td></tr>`).join('');
+    const [headline, detail] = running ? [] : conclude(done);
     box.innerHTML = `<div class="section-title">업비트 연결 진단
         <span class="hint">한 번에 하나씩, ${DIAG_GAP}ms씩 벌려서 물어봅니다</span></div>
+      ${running ? '' : `<p class="diag-said"><b>${headline}</b> ${detail}</p>`}
       <div class="table-wrap"><table class="cached"><tbody>${rows}</tbody></table></div>
       ${running
     ? '<p class="note-line dim">물어보는 중…</p>'

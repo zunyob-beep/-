@@ -239,6 +239,79 @@ test('막히면 스스로 느려진다', async () => {
   );
 });
 
+// ------------------------------------------------- 스스로 찾아내기
+//
+// 세 번 고쳤는데 세 번 다 같은 자리에서 멈췄다(201 → 263 → 297, 늘어난 만큼이
+// 정확히 그 사이 흐른 시간). 나는 이 환경에서 업비트에 닿을 수 없어
+// (CONNECT 403) 무엇이 문제인지 확인할 방법이 없다.
+//
+// **그래서 맞히기를 그만두고, 앱이 돌면서 직접 찾게 했다.** 아래는 남아 있는
+// 가설들을 하나씩 흉내 내고, 각각에서 앱이 스스로 빠져나오는지 본다. 어느
+// 가설이 맞든 작동해야 한다.
+
+const withTo = (fetcher) => new UpbitClient({
+  retries: 0, perSecond: 100000, sweepPause: 5, fetcher,
+});
+const askedCount = (url) => Number(new URL(url, 'http://test.local/').searchParams.get('count'));
+
+test('가설 A — to와 큰 count를 같이 주면 거절당한다', async () => {
+  // 표기는 처음부터 맞았지만 개수가 문제인 경우. 표기만 더듬으면 영영 못 찾는다.
+  const CAP = 100;
+  const client = withTo(async (url) => {
+    if (isPing(url)) return OK([]);
+    if (sentTo(url) !== null && askedCount(url) > CAP) throw new TypeError('Failed to fetch');
+    return OK(candleRows(2));
+  });
+
+  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.equal(got.length, 2, '개수를 줄여서라도 받아냈어야 합니다');
+  assert.equal(client.toCap, CAP, `개수 상한이 ${client.toCap}입니다`);
+  assert.ok(client.toProven, '찾은 조합을 기억해야 합니다');
+});
+
+test('가설 B — 답은 하는데 봉을 하나도 안 준다', async () => {
+  // 200 OK에 빈 배열. 이걸 성공으로 받으면 **아무 설명 없이 조용히 멈춘다** —
+  // 화면에 보이던 모습이 정확히 그랬다.
+  let empties = 0;
+  const client = withTo(async (url) => {
+    if (isPing(url)) return OK([]);
+    if (sentTo(url) === null) return OK(candleRows(2));
+    // 첫 표기로는 빈 배열, 두 번째 표기부터 제대로 준다.
+    if (formatIndexOf(sentTo(url)) === 0) { empties += 1; return OK([]); }
+    return OK(candleRows(2));
+  });
+
+  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.ok(empties > 0, '빈 배열을 실제로 겪었어야 합니다');
+  assert.equal(got.length, 2, '빈 배열에서 멈추지 말고 다음 조합을 봤어야 합니다');
+});
+
+test('가설 B — 어느 조합으로도 봉을 안 주면 조용히 멈추지 않는다', async () => {
+  const client = withTo(async (url) => {
+    if (isPing(url)) return OK([]);
+    return OK(sentTo(url) === null ? candleRows(2) : []);
+  });
+  const failure = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000)
+    .then(() => null, (error) => error);
+  assert.ok(failure instanceof UpbitError, '조용히 빈손으로 끝내면 안 됩니다');
+  assert.equal(failure.kind, 'empty', `종류가 ${failure.kind}입니다`);
+});
+
+test('아홉 조합을 다 훑는다 (표기 3 × 개수 3)', async () => {
+  const seen = new Set();
+  const client = withTo(async (url) => {
+    if (isPing(url)) return OK([]);
+    const to = sentTo(url);
+    if (to !== null) {
+      seen.add(`${formatIndexOf(to)}/${askedCount(url)}`);
+      throw new TypeError('Failed to fetch');
+    }
+    return OK(candleRows());
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
+  assert.equal(seen.size, 9, `${seen.size}가지만 해 봤습니다: ${[...seen].join(' ')}`);
+});
+
 test('느려진 뒤에 통하면 표기가 아니라 속도가 문제였던 것이다', async () => {
   // 세 표기가 전부 안 통했다고 해서 '표기 문제'라고 결론 내리면 안 된다.
   // 너무 빨라서 셋 다 막힌 것일 수도 있다. 그래서 느려진 채로 한 번 더
