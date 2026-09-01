@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,10 +28,11 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ..data import fetch, load_cached
-from ..models import HORIZONS, KST, Series, timeframe_label
+from ..data import count_cached, load_cached, span_cached, update
+from ..levels import Level, levels, retracements
+from ..models import HORIZONS, KST, MARKETS, Series, market_label, timeframe_label
 from ..odds import MIN_SAMPLES as ODDS_MIN_SAMPLES
-from ..odds import Odds, examples_for, find_matches, odds_for
+from ..odds import Odds, Projection, examples_for, find_matches, odds_for, project
 from ..scan import (
     DEFAULT_FEE,
     DEFAULT_SIMILARITY,
@@ -38,7 +40,8 @@ from ..scan import (
     round_trip_cost,
 )
 from ..shape import normalize_window
-from ..upbit import UpbitClient, UpbitError
+from ..theories import Score, dow, dow_confirmation, read_all, score, tally
+from ..upbit import Ticker, UpbitClient, UpbitError
 
 log = logging.getLogger(__name__)
 
@@ -68,9 +71,9 @@ CACHEABLE = {".png", ".ico"}
 #: 콘솔에 오류를 남긴다 — 진짜 오류를 찾을 때 방해가 된다.
 FAVICON = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    b'<rect width="32" height="32" rx="7" fill="#0f1116"/>'
+    b'<rect width="32" height="32" rx="7" fill="#050807"/>'
     b'<polyline points="5,21 11,13 16,17 21,7 27,12" fill="none" '
-    b'stroke="#3d7eff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    b'stroke="#00ff66" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
     b"</svg>"
 )
 
@@ -91,6 +94,14 @@ class Analysis:
     #: 봉 간격별로 찾아둔 매치. 사례를 볼 때마다 다시 찾으면 몇 초씩 걸리고,
     #: 그동안 브라우저가 요청을 취소해 서버에 BrokenPipe가 쌓인다.
     matches: dict[str, Any] = field(default_factory=dict)
+    #: 봉 간격별 차트 이론 읽기와, 그 이론들이 과거에 얼마나 맞았는지.
+    readings: dict[str, Any] = field(default_factory=dict)
+    scores: dict[str, list[Score]] = field(default_factory=dict)
+    #: 지지·저항선과 피보나치 되돌림 (봉 간격별).
+    levels: dict[str, list[Level]] = field(default_factory=dict)
+    fibonacci: dict[str, list[Level]] = field(default_factory=dict)
+    #: 닮았던 과거들이 그 다음에 간 길.
+    projection: dict[str, Projection] = field(default_factory=dict)
     #: 이 계산이 언제 끝났는지 (KST 문자열). 화면이 "몇 분 전 기준"을 보여준다.
     updated_at: str = ""
 
@@ -124,11 +135,47 @@ class Job:
                 setattr(self, key, value)
 
 
+class Prices:
+    """현재가를 잠깐 들고 있는다.
+
+    화면 맨 위 숫자는 몇 초마다 갱신돼야 살아 있어 보인다. 그런데 창을
+    여러 개 열어두면 그만큼 업비트를 두드리게 되고, 수집이 도는 중이면
+    같은 한도를 나눠 쓰게 되어 **수집이 느려진다**. 화면 숫자 하나 때문에
+    본업이 밀리면 안 되므로, 한 번 받아 잠깐 돌려 쓴다.
+    """
+
+    def __init__(self, client: UpbitClient | None = None, ttl: float = 3.0) -> None:
+        self.client = client or UpbitClient(max_retries=1, timeout=5.0)
+        self.ttl = ttl
+        self._lock = threading.Lock()
+        self._seen: dict[str, tuple[float, Ticker]] = {}
+
+    def get(self, market: str) -> Ticker:
+        with self._lock:
+            found = self._seen.get(market)
+            if found and time.monotonic() - found[0] < self.ttl:
+                return found[1]
+        ticker = self.client.get_ticker(market)
+        with self._lock:
+            self._seen[market] = (time.monotonic(), ticker)
+        return ticker
+
+
+class Cancelled(RuntimeError):
+    """사용자가 멈췄다. 고장이 아니므로 오류로 취급하지 않는다."""
+
+
 class State:
     def __init__(self, market: str, data_dir: str) -> None:
         self.market = market
         self.data_dir = data_dir
+        self.prices = Prices()
         self.job = Job()
+        #: 8년치 수집은 40분이 걸린다. 잘못 눌렀을 때 빠져나올 길이 없으면
+        #: 서버를 껐다 켜는 수밖에 없다 — 아이패드에서는 그게 제일 어렵다.
+        self.cancel = threading.Event()
+        #: 미리 받기를 멈추라는 신호. 사용자가 뭘 누르면 곧바로 세운다.
+        self._warm_stop = threading.Event()
         self.analysis: Analysis | None = None
         #: 분석이 새로 끝날 때마다 올라간다. 화면은 이 번호가 바뀔 때만
         #: 표를 다시 그린다 — 매번 다시 그리면 사용자가 누르던 행이
@@ -145,19 +192,85 @@ class State:
         with self._start_lock:
             if self.job.running:
                 return False
+            # 미리 받던 게 있으면 비키게 한다. 본업이 먼저다.
+            self._warm_stop.set()
+            self.cancel.clear()
             self.job.update(kind=kind, running=True, message="시작하는 중…", done=0, total=0, error="")
         thread = threading.Thread(target=self._run, args=(target, args), daemon=True)
         thread.start()
         return True
 
+    def warm(self, market: str, count: int) -> None:
+        """다른 종목들을 미리 받아둔다. **작업 자리를 차지하지 않는다.**
+
+        사용자가 버튼을 누르면 곧바로 비켜야 하므로 job과 따로 돈다.
+        job 자리를 쓰면 미리 받는 동안 버튼이 잠겨 버린다.
+        """
+        self._warm_stop.set()
+        self._warm_stop = threading.Event()
+        mine = self._warm_stop
+        thread = threading.Thread(
+            target=_do_warm, args=(self, market, count, mine), daemon=True
+        )
+        thread.start()
+
+    def stop(self) -> bool:
+        """돌고 있으면 멈추라고 알린다. 받아둔 것은 이미 저장돼 있다."""
+        if not self.job.running:
+            return False
+        self.cancel.set()
+        self.job.update(message="멈추는 중…")
+        return True
+
+    def checkpoint(self) -> None:
+        """멈추라고 했으면 여기서 빠져나간다. 오래 도는 자리에서 부른다."""
+        if self.cancel.is_set():
+            raise Cancelled("멈췄습니다")
+
     def _run(self, target: Any, args: tuple[Any, ...]) -> None:
         try:
             target(*args)
+        except Cancelled:
+            # 사용자가 멈춘 것이므로 빨간 오류로 띄우지 않는다.
+            self.job.update(message="멈췄습니다 — 받아둔 만큼은 저장돼 있습니다", error="")
         except (UpbitError, RuntimeError, ValueError, KeyError, OSError) as exc:
             log.exception("작업 실패")
             self.job.update(error=str(exc), message="실패했습니다")
+        except Exception as exc:  # 예상 못 한 것까지 — 조용히 죽으면 원인을 못 찾는다
+            log.exception("작업이 예상 못 한 이유로 실패")
+            self.job.update(error=f"{type(exc).__name__}: {exc}", message="실패했습니다")
         finally:
+            self.cancel.clear()
             self.job.update(running=False)
+
+
+def _do_warm(state: State, market: str, count: int, stop: threading.Event) -> None:
+    """지금 안 보고 있는 종목들을 조용히 받아둔다.
+
+    이더리움을 처음 누르면 거기서 몇 분을 기다리게 된다. 비트코인을
+    보는 동안 나머지를 미리 받아두면 누르는 즉시 나온다.
+
+    **본업을 밀어내지 않는 게 조건이다.** 그래서
+      · 사용자가 뭘 누르면 곧바로 비켜준다 (checkpoint)
+      · 봉 간격당 한 번씩만 확인한다
+      · 실패해도 조용히 넘어간다 — 이건 미리 해두는 일이지 시킨 일이 아니다
+    """
+    client = UpbitClient()
+    others = [code for code in MARKETS if code != market]
+    for code in others:
+        for timeframe in DEFAULT_COUNT:
+            if stop.is_set():
+                return
+            try:
+                update(client, code, timeframe, count // _RATIO[timeframe],
+                       directory=state.data_dir)
+            except Exception as exc:
+                # **무엇이 나든** 조용히 넘어간다. 이건 미리 해두는 일이지
+                # 시킨 일이 아니다. 여기서 새는 예외는 사용자가 부탁한 적
+                # 없는 작업 때문에 화면에 오류를 띄우게 된다.
+                log.debug("%s %s 미리 받기 실패 — 넘어갑니다 (%s)", code, timeframe, exc)
+        state.job.update(message=f"{market_label(code)} 미리 받아두는 중…")
+    state.job.update(message="")
 
 
 # ---------------------------------------------------------------- 작업 본체
@@ -168,9 +281,12 @@ def _do_fetch(state: State, market: str, refresh: bool) -> None:
         state.job.update(message=f"{label} 시세 받는 중…", done=0, total=count)
 
         def progress(done: int, total: int) -> None:
+            state.checkpoint()
             state.job.update(done=done, total=total)
 
-        fetch(
+        state.checkpoint()
+        # 봉은 여기서 안 쓴다. 파일만 최신이면 된다.
+        update(
             client, market, timeframe, count,
             directory=state.data_dir, refresh=refresh, progress=progress,
         )
@@ -186,15 +302,26 @@ def _do_live(
     캐시가 있으면 새로 생긴 봉만 받으므로 몇 초면 끝난다 (data.fetch 참고).
     """
     client = UpbitClient()
-    state.job.update(message="업비트에서 새 봉 받는 중…", done=0, total=len(DEFAULT_COUNT))
-    for done, timeframe in enumerate(DEFAULT_COUNT, start=1):
+    for timeframe in DEFAULT_COUNT:
+        state.checkpoint()
+        label = timeframe_label(timeframe)
+        wanted = count // _RATIO[timeframe]
+        state.job.update(message=f"{label} 받는 중…", done=0, total=wanted)
+
+        # 8년치는 40분이 걸린다. 3칸짜리 막대로는 멈춘 것과 구분이 안 된다.
+        # 멈추라는 신호도 여기서 본다 — 페이지마다 불리는 유일한 자리다.
+        def progress(done: int, total: int, name: str = label) -> None:
+            state.checkpoint()
+            state.job.update(message=f"{name} 받는 중…", done=done, total=total)
+
         try:
-            fetch(client, market, timeframe, count // _RATIO[timeframe],
-                  directory=state.data_dir)
+            update(client, market, timeframe, wanted,
+                   directory=state.data_dir, progress=progress)
         except UpbitError as exc:
             log.warning("%s 갱신 실패(%s) — 가진 것으로 계산합니다", timeframe, exc)
-        state.job.update(done=done)
     _do_odds(state, market, similarity, fee, slippage, length)
+    # 보고 있는 종목이 끝났으니, 나머지는 조용히 받아둔다.
+    state.warm(market, count)
 
 
 #: 1분봉 개수를 기준으로 각 간격이 몇 분의 1인지
@@ -226,7 +353,13 @@ def _do_odds(
 
     rows: list[Odds] = []
     found: dict[str, Any] = {}
+    seen: dict[str, Any] = {}
+    marks: dict[str, list[Score]] = {}
+    lines: dict[str, list[Level]] = {}
+    fibs: dict[str, list[Level]] = {}
+    ahead: dict[str, Projection] = {}
     for done, one in enumerate(series.values(), start=1):
+        state.checkpoint()
         rows.extend(
             odds_for(one, length, horizons=HORIZONS, similarity=similarity,
                      top_k=100, fee=fee, slippage=slippage)
@@ -236,12 +369,24 @@ def _do_odds(
         )
         if matched is not None:
             found[one.timeframe] = matched
+            forward = project(one, matched, ahead=max(HORIZONS))
+            if forward is not None:
+                ahead[one.timeframe] = forward
+
+        state.job.update(message=f"{timeframe_label(one.timeframe)} 차트 이론 보는 중…")
+        seen[one.timeframe] = read_all(one)
+        lines[one.timeframe] = levels(one)
+        fibs[one.timeframe] = retracements(one)
+        state.checkpoint()
+        # 이론이 과거에 맞았는지도 **사용자 데이터로 직접** 센다.
+        marks[one.timeframe] = score(one, horizon=10, points=300, cost=cost)
         state.job.update(done=done, message=f"{timeframe_label(one.timeframe)} 완료")
 
     state.publish(
         Analysis(
             market=market, cost=cost, similarity=similarity, length=length,
             series=series, odds=rows, matches=found,
+            readings=seen, scores=marks, levels=lines, fibonacci=fibs, projection=ahead,
             missing=tuple(tf for tf in DEFAULT_COUNT if tf not in series),
             updated_at=datetime.now(KST).strftime("%H:%M:%S"),
         )
@@ -249,32 +394,76 @@ def _do_odds(
     state.job.update(message="계산을 마쳤습니다", done=total, total=total)
 
 
+def _why_nothing_matched(rows: list[Odds]) -> list[str]:
+    """왜 표본이 안 모였는지, 그리고 **무엇을 바꾸면 되는지**.
+
+    예전에는 "데이터를 더 받거나 기준을 낮춰 보세요" 한 줄이 전부였다.
+    이미 기준을 낮춘 사람에게는 아무 말도 안 한 것과 같고, 얼마나 모자란
+    건지도 알 수 없다. 몇 개가 모였는지 숫자로 말해 준다.
+
+    그리고 진짜 효과가 큰 손잡이를 먼저 말한다. **직전 봉 개수**다.
+    180개짜리 모양이 과거에 그대로 반복될 일은 드물다 — 유사도를 아무리
+    낮춰도 잘 안 늘어난다. 20~40개로 줄이면 표본이 확 는다.
+    """
+    best = max((r.samples for r in rows), default=0)
+    length = rows[0].length if rows else 0
+    found = (
+        f"가장 많이 모인 조합도 {best}개뿐입니다 (최소 {ODDS_MIN_SAMPLES}개 필요)."
+        if best
+        else "닮은 과거 구간이 하나도 없습니다."
+    )
+    advice = ["**직전 몇 개 봉**을 20~40으로 줄여 보세요 — 가장 효과가 큽니다."]
+    if length >= 60:
+        advice[0] = (
+            f"**직전 몇 개 봉**이 {length}개입니다. 20~40으로 줄여 보세요 — "
+            "긴 모양이 과거에 그대로 반복될 일은 드물어서, 유사도를 낮추는 것보다 "
+            "이쪽이 훨씬 크게 듣습니다."
+        )
+    advice.append("그래도 모자라면 **얼마나 과거까지**를 늘려 더 긴 과거에서 찾으세요.")
+    return [found, *advice]
+
+
 def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
     """지금 살지 말지.
 
     확률만 보여주기로 했지만, 사용자는 결국 "그래서 사?"를 묻는다.
-    답하되 근거를 함께 낸다. 사려면 셋을 모두 넘겨야 한다.
+    답하되 근거를 함께 낸다. 사려면 **넷을 모두** 넘겨야 한다.
 
       1. 표본이 충분할 것
       2. 불확실 범위가 '평소'를 넘을 것 (우연과 구분될 것)
-      3. **수수료까지 넘길 확률**이 평소보다 확실히 높을 것
+      3. 수수료까지 넘길 확률이 평소보다 높을 것
+      4. **중앙값 수익이 왕복 비용보다 클 것**
 
-    3번이 핵심이다. 그냥 오를 확률이 높아도 수수료를 못 넘기면 돈을 잃는다.
+    4번이 없어서 실제로 사고가 났다. 확률 셋을 다 통과한 조합이
+    "살 만합니다"로 나갔는데, 그 조합의 중앙값 수익은 +0.036%였고 왕복
+    비용은 0.140%였다. 화면 오른쪽 '넣었다면' 칸에는 **−1,036원**이 찍혀
+    있었다. 매수를 권하면서 그 옆에 손실을 적어 둔 셈이다.
+
+    확률이 높은 것과 돈이 되는 것은 다른 문제다. 오를 확률 60%여도 오를
+    때 조금 오르고 내릴 때 많이 내리면 잃는다. 그래서 마지막 관문은
+    확률이 아니라 **금액**이어야 한다.
     """
     usable = [r for r in rows if r.samples >= ODDS_MIN_SAMPLES]
     if not usable:
         return {
             "buy": False,
             "headline": "판단할 수 없습니다",
-            "reasons": ["닮은 과거 구간이 충분히 모이지 않았습니다. 데이터를 더 받거나 기준을 낮춰 보세요."],
+            "reasons": _why_nothing_matched(rows),
         }
 
     winners = [
         r for r in usable
         if r.tells_us_anything and r.up_edge > 0 and r.beat_rate > r.base_beat
+        and r.median_return > cost
     ]
     if not winners:
-        best = max(usable, key=lambda r: r.up_edge)
+        # 확률 관문을 넘고 돈에서만 걸린 조합이 있으면 그걸 보여준다.
+        # 사용자가 표에서 가장 좋아 보인다고 느낄 줄이 바로 그 줄이다.
+        close = [
+            r for r in usable
+            if r.tells_us_anything and r.up_edge > 0 and r.beat_rate > r.base_beat
+        ]
+        best = max(close or usable, key=lambda r: r.median_return - cost)
         low, high = best.interval
         reasons = [
             f"가장 나은 조합은 {timeframe_label(best.timeframe)} {best.minutes}분 뒤로, "
@@ -293,7 +482,15 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             reasons.append(
                 f"수수료까지 넘긴 경우가 {best.beat_rate:.0%}로 평소 {best.base_beat:.0%}보다 낮습니다."
             )
-        elif best.tells_us_anything:
+        if best.median_return <= cost:
+            # 이게 대개 마지막까지 남는 이유다. 금액으로 적어야 와닿는다.
+            loss = (best.median_return - cost) * 1_000_000
+            reasons.append(
+                f"확률이 평소보다 높아도 **돈이 되지는 않습니다** — 중앙값 수익 "
+                f"{best.median_return:+.3%}가 왕복 비용 {cost:.3%}를 못 넘깁니다. "
+                f"100만원이면 {loss:+,.0f}원입니다."
+            )
+        elif best.tells_us_anything and best.beat_rate > best.base_beat:
             reasons.append("다른 조합들이 기준을 넘지 못했습니다.")
         reasons.append("근거가 기준을 넘길 때까지는 들어가지 않는 것이 기본값입니다.")
         return {"buy": False, "headline": "사지 마세요 — 근거가 없습니다", "reasons": reasons}
@@ -309,6 +506,8 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             f"불확실 범위 {low:.0%}~{high:.0%}가 평소를 넘습니다 — 우연으로 보기 어렵습니다.",
             f"왕복 비용 {cost:.2%}까지 넘긴 경우가 {top.beat_rate:.0%}로, "
             f"평소 {top.base_beat:.0%}보다 높습니다.",
+            f"중앙값 수익 {top.median_return:+.3%}가 왕복 비용을 넘습니다 — "
+            f"100만원이면 {(top.median_return - cost) * 1_000_000:+,.0f}원입니다.",
             f"같은 기준을 통과한 조합이 {len(winners)}개입니다.",
         ],
     }
@@ -349,6 +548,102 @@ def _finite(value: float) -> float | None:
     return number if np.isfinite(number) else None
 
 
+def _theory_json(analysis: Analysis) -> dict[str, Any]:
+    """이론들이 지금 뭐라고 하는지, 그리고 **과거에 맞았는지**.
+
+    둘을 반드시 함께 내보낸다. 앞의 것만 보내면 이 도구는 점집이 된다.
+    """
+    out: dict[str, Any] = {}
+    for timeframe, readings in analysis.readings.items():
+        ups, downs, flats = tally(readings)
+        marks = {s.theory: s for s in analysis.scores.get(timeframe, [])}
+        out[timeframe] = {
+            "label": timeframe_label(timeframe),
+            "up": ups, "down": downs, "flat": flats,
+            "readings": [
+                {
+                    "theory": r.theory,
+                    "says": r.says,
+                    "detail": r.detail,
+                    "clarity": round(r.clarity, 2),
+                    "past": _score_json(marks.get(r.theory)),
+                }
+                for r in readings
+            ],
+        }
+    # 다우의 상호 확인 — 봉 간격끼리 같은 말을 하는지
+    dows = {tf: dow(one) for tf, one in analysis.series.items()}
+    agreed = dow_confirmation(dows)
+    out["confirmation"] = {"says": agreed.says, "detail": agreed.detail}
+    return out
+
+
+def _score_json(mark: Score | None) -> dict[str, Any] | None:
+    if mark is None or mark.calls == 0:
+        return None
+    return {
+        "calls": mark.calls,
+        "rate": mark.rate,
+        "base": mark.base,
+        "edge": mark.edge,
+        "beatRate": mark.beat_rate,
+        "enough": mark.enough,
+        "worthBelieving": mark.worth_believing,
+    }
+
+
+def _level_json(one: Level) -> dict[str, Any]:
+    return {
+        "price": one.price,
+        "touches": one.touches,
+        "lastTouch": one.last_touch,
+        "kind": one.kind,
+        "strength": round(one.strength, 3),
+    }
+
+
+#: 예상 앞에 붙일 **실제 봉** 개수. 지나온 길이 없으면 그림이 허공에서
+#: 시작해 진짜 차트로 안 보인다.
+RECENT_BARS = 40
+
+
+def _recent_candles(series: Series, count: int = RECENT_BARS) -> list[dict[str, float]]:
+    """마지막 봉 몇 개를 그대로. 종가만 주면 꼬리가 사라져 밋밋해진다."""
+    take = min(count, len(series))
+    if take <= 0:
+        return []
+    base = float(series.close[-1])
+    if base <= 0:
+        return []
+    out = []
+    for i in range(len(series) - take, len(series)):
+        out.append({
+            "o": round(float(series.open[i]) / base - 1.0, 6),
+            "h": round(float(series.high[i]) / base - 1.0, 6),
+            "l": round(float(series.low[i]) / base - 1.0, 6),
+            "c": round(float(series.close[i]) / base - 1.0, 6),
+        })
+    return out
+
+
+def _projection_json(forward: Projection, series: Series | None = None) -> dict[str, Any]:
+    return {
+        "recent": _recent_candles(series) if series is not None else [],
+        "walks": forward.walks,
+        "timeframe": forward.timeframe,
+        "label": timeframe_label(forward.timeframe),
+        "samples": forward.samples,
+        "minutes": forward.minutes,
+        "priceNow": forward.price_now,
+        "median": forward.median,
+        "low": forward.low,
+        "high": forward.high,
+        "worst": forward.worst,
+        "best": forward.best,
+        "spread": forward.spread,
+    }
+
+
 def _analysis_json(analysis: Analysis) -> dict[str, Any]:
     spans = []
     for timeframe, series in analysis.series.items():
@@ -358,6 +653,10 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             "label": timeframe_label(timeframe),
             "count": len(series),
             "gaps": series.gaps(),
+            # 지금 값. 예전에는 화면이 이걸 '예상 그림'에서 꺼내 썼는데,
+            # 닮은 과거를 못 찾으면 그림이 없어서 지지·저항선을 위아래로
+            # 가를 수가 없었다. 값은 그림과 상관없이 늘 있다.
+            "priceNow": float(series.close[-1]) if len(series) else None,
             "from": span[0].isoformat() if span else None,
             "to": span[1].isoformat() if span else None,
         })
@@ -372,6 +671,19 @@ def _analysis_json(analysis: Analysis) -> dict[str, Any]:
             {"timeframe": tf, "label": timeframe_label(tf)} for tf in analysis.missing
         ],
         "odds": [_odds_json(r) for r in analysis.odds],
+        "theories": _theory_json(analysis),
+        "levels": {
+            tf: [_level_json(x) for x in found]
+            for tf, found in analysis.levels.items()
+        },
+        "fibonacci": {
+            tf: [_level_json(x) for x in found]
+            for tf, found in analysis.fibonacci.items()
+        },
+        "projection": {
+            tf: _projection_json(p, analysis.series.get(tf))
+            for tf, p in analysis.projection.items()
+        },
         "verdict": _verdict(analysis.odds, analysis.cost),
         "updatedAt": analysis.updated_at,
     }
@@ -490,6 +802,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._state_payload())
             elif route == "/api/examples":
                 self._examples(parse_qs(url.query))
+            elif route == "/api/ticker":
+                self._ticker(parse_qs(url.query))
             else:
                 self._error("없는 주소입니다", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -511,6 +825,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._start_live(payload)
             elif route == "/api/scan":
                 self._start_scan(payload)
+            elif route == "/api/stop":
+                self._json({"stopped": self.state.stop(), "job": self.state.job.snapshot()})
             else:
                 self._error("없는 주소입니다", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -536,6 +852,9 @@ class Handler(BaseHTTPRequestHandler):
         payload: dict[str, Any] = {
             "market": state.market,
             "job": state.job.snapshot(),
+            "marketLabel": market_label(state.market),
+            "markets": [{"code": code, "label": name} for code, name in MARKETS.items()],
+            "periods": PERIODS,
             "defaults": {
                 "similarity": DEFAULT_SIMILARITY,
                 "fee": DEFAULT_FEE,
@@ -547,18 +866,13 @@ class Handler(BaseHTTPRequestHandler):
         if state.analysis is not None:
             payload["analysis"] = _analysis_json(state.analysis)
         else:
-            payload["cached"] = [
-                {
-                    "timeframe": tf,
-                    "label": timeframe_label(tf),
-                    "count": len(load_cached(state.market, tf, state.data_dir)),
-                }
-                for tf in DEFAULT_COUNT
-            ]
+            # 개수만 센다. 예전에는 CSV 전체를 파싱해 Candle을 다 만들고
+            # 즉시 버렸는데, 이 응답은 수집이 도는 동안 0.5초마다 나간다.
+            payload["cached"] = [_cached_json(state, tf) for tf in DEFAULT_COUNT]
         return payload
 
     def _start_fetch(self, payload: dict[str, Any]) -> None:
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         refresh = bool(payload.get("refresh"))
         self.state.market = market
         started = self.state.start("fetch", _do_fetch, self.state, market, refresh)
@@ -566,7 +880,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start_live(self, payload: dict[str, Any]) -> None:
         """새 봉을 받고 곧바로 다시 계산 — 화면의 '지금 시세로 갱신'."""
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         self.state.market = market
         similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
         fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
@@ -580,7 +894,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"started": started, "job": self.state.job.snapshot()})
 
     def _start_scan(self, payload: dict[str, Any]) -> None:
-        market = str(payload.get("market") or self.state.market)
+        market = _market(payload.get("market"), self.state.market)
         self.state.market = market
         similarity = _number(payload.get("similarity"), DEFAULT_SIMILARITY, 0.0, 1.0)
         fee = _number(payload.get("fee"), DEFAULT_FEE, 0.0, 0.1)
@@ -592,6 +906,31 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._json({"started": started, "job": self.state.job.snapshot()})
 
+    def _ticker(self, query: dict[str, list[str]]) -> None:
+        """지금 얼마인지. 화면 맨 위 숫자.
+
+        **실패해도 200으로 답한다.** 이건 장식이지 분석이 아니다. 여기서
+        오류를 올리면 시세 표시가 안 되는 것 때문에 화면 전체가 빨개진다.
+        """
+        market = _market(query.get("market", [None])[0], self.state.market)
+        try:
+            ticker = self.state.prices.get(market)
+        except (UpbitError, OSError) as exc:
+            self._json({"market": market, "ok": False, "why": str(exc)[:120]})
+            return
+        self._json({
+            "market": ticker.market,
+            "label": market_label(ticker.market),
+            "ok": True,
+            "price": ticker.price,
+            "changeRate": ticker.change_rate,
+            "changePrice": ticker.change_price,
+            "direction": ticker.direction,
+            "high": ticker.high,
+            "low": ticker.low,
+            "at": ticker.at.astimezone(KST).strftime("%H:%M:%S"),
+        })
+
     def _examples(self, query: dict[str, list[str]]) -> None:
         analysis = self.state.analysis
         if analysis is None:
@@ -600,6 +939,40 @@ class Handler(BaseHTTPRequestHandler):
         horizon = int((query.get("horizon") or ["1"])[0])
         self._json(_examples_json(analysis, timeframe, horizon))
 
+
+
+#: 화면에서 고를 수 있는 '얼마나 과거까지'. 1분봉 개수 기준.
+#: 업비트는 2017년 10월 개장이라 그 이전은 없다.
+PERIODS = [
+    {"label": "30일", "count": 43_200, "note": "금방 받습니다"},
+    {"label": "90일", "count": 129_600, "note": "몇 분"},
+    {"label": "1년", "count": 525_600, "note": "10분쯤"},
+    {"label": "8년", "count": 4_204_800, "note": "처음 한 번 40분쯤"},
+]
+
+
+def _cached_json(state: State, timeframe: str) -> dict[str, Any]:
+    """받아둔 게 얼마나 되는지. **파일 전체를 읽지 않는다.**"""
+    span = span_cached(state.market, timeframe, state.data_dir)
+    return {
+        "timeframe": timeframe,
+        "label": timeframe_label(timeframe),
+        "count": count_cached(state.market, timeframe, state.data_dir),
+        "from": span[0].astimezone(KST).strftime("%Y-%m-%d") if span else None,
+        "to": span[1].astimezone(KST).strftime("%Y-%m-%d") if span else None,
+    }
+
+
+def _market(value: Any, default: str) -> str:
+    """화면에서 온 종목 코드를 아는 것만 통과시킨다.
+
+    아무거나 받으면 오타 하나가 "없는 종목입니다"로 돌아오는데, 그게
+    오타 때문인지 업비트가 막힌 건지 사용자는 알 수가 없다. 게다가 이
+    값은 파일 이름이 되므로(KRW-BTC_minute1.csv), 밖에서 온 문자열을
+    그대로 쓰면 경로를 벗어나는 이름도 만들 수 있다.
+    """
+    text = str(value or "").strip().upper()
+    return text if text in MARKETS else default
 
 
 def _number(value: Any, default: float, low: float, high: float) -> float:

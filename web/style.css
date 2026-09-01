@@ -151,6 +151,14 @@ body {
 .cached-count { min-width: 90px; }
 .cached-foot { font-size: 12px; margin-top: 8px; }
 
+/* 글 속에 섞이는 단추. 단추처럼 보이면 '지우기'가 눈에 너무 크게 들어온다. */
+.linky {
+  background: none; border: 0; padding: 0 0 1px; margin-left: 10px;
+  color: var(--dim); font: inherit; font-size: 12px; cursor: pointer;
+  border-bottom: 1px dotted var(--dim);
+}
+.linky:hover { color: var(--up); border-bottom-color: var(--up); }
+
 main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
 
 /* ---------------------------------------------------------------- 패널 */

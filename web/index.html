@@ -4,18 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>기시감 — 이 모양, 전에도 봤다</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="./style.css">
 
-  <!-- 홈 화면에 앱처럼 얹기 위한 것들 -->
-  <link rel="manifest" href="/static/manifest.webmanifest">
+  <!-- 홈 화면에 앱처럼 얹기 위한 것들. 경로는 전부 상대로 쓴다 —
+       GitHub Pages는 저장소 이름이 붙은 하위 경로에 얹히므로 /로 시작하면
+       엉뚱한 곳을 가리킨다. -->
+  <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#050807">
   <!-- iOS는 manifest의 display를 안 읽는다. 이 둘이 있어야 주소창 없이 뜬다. -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="기시감">
-  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
 </head>
 <body>
   <!-- 뒤에 아주 옅게 깔리는 글자비. 없어도 화면은 그대로 돌아간다. -->
@@ -47,7 +49,7 @@
         </label>
         <label>
           직전 몇 개 봉
-          <input id="in-length" type="number" step="10" min="5" max="180" value="180">
+          <input id="in-length" type="number" step="10" min="5" max="180" value="20">
         </label>
         <label>
           닮았다고 볼 기준 <span class="hint">상관계수</span>
@@ -77,15 +79,7 @@
       </div>
       <div id="progress" class="progress" hidden><div id="progress-bar"></div></div>
       <p id="error" class="error" hidden></p>
-      <div id="offline" class="offline" hidden>
-        <b>서버에 연결되지 않았습니다.</b>
-        계산은 파이썬이 합니다. 그게 지금 답을 못 하고 있습니다.
-        <span class="dim">Codespaces라면 30분 안 써서 잠들었을 수 있습니다 —
-        github.com/codespaces 에서 다시 켜세요.
-        집 컴퓨터라면 켜져 있는지, <code>./start.sh --lan</code> 이 돌고 있는지,
-        같은 와이파이인지 확인하세요. 막힌 곳을 모르겠으면 그쪽에서
-        <code>python -m patternscan doctor</code>.</span>
-      </div>
+      <div id="blocked" class="offline" hidden></div>
       <p id="stale-note" class="stale-note" hidden>
         아래는 <b>이전 결과</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.
       </p>
@@ -106,6 +100,8 @@
       <b>이 도구는 매수를 권하지 않습니다.</b> 과거에 무슨 일이 있었는지만 셉니다.
       확률 옆의 <b>평소</b>보다 높아야 의미가 있고, <b>불확실 범위</b>가 평소를 품고 있으면
       그 숫자는 우연과 구분되지 않습니다.
+      <span class="dim">계산은 전부 이 기기 안에서 일어납니다. 받아둔 시세도 여기에만
+      저장되고, 어디로도 보내지 않습니다.</span>
     </section>
 
     <!-- 데이터 범위 -->
@@ -200,6 +196,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

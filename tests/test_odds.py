@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import numpy as np
 import pytest
 
+from patternscan.models import Candle, Series
 from patternscan.odds import MIN_SAMPLES, Odds, format_odds, odds_all, odds_for
 from patternscan.scan import round_trip_cost
 from tests.conftest import make_series, planted_signal
@@ -158,3 +161,79 @@ def test_a_planted_signal_shows_a_high_probability():
     assert best.samples >= MIN_SAMPLES
     assert best.up_rate > 0.9, f"심어둔 신호인데 확률이 {best.up_rate:.0%}입니다"
     assert best.tells_us_anything
+
+
+# ======================================================= 앞으로의 모양
+#
+# "그래서 앞으로 어떻게 되는데"에 답하는 그림. 여기서 지킬 것은 하나다 —
+# **선 하나로 그리지 않는다.** 실제로 일어날 일은 하나지만 우리가 아는 건
+# 비슷했던 과거들이 제각각 흩어졌다는 사실뿐이다.
+def _walk(seed=0, n=20000):
+    rng = np.random.default_rng(seed)
+    closes = 158_000_000 * np.exp(np.cumsum(rng.normal(0, 0.0009, n)))
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return Series.from_candles("KRW-BTC", "minute1", [
+        Candle(ts=start + timedelta(minutes=i), open=float(c), high=float(c) * 1.0004,
+               low=float(c) * 0.9996, close=float(c), volume=1.0)
+        for i, c in enumerate(closes)
+    ])
+
+
+def _projected(seed=0, ahead=20):
+    from patternscan.odds import find_matches, project
+
+    series = _walk(seed)
+    matches = find_matches(series, 20, similarity=0.5, top_k=200, max_horizon=ahead + 5)
+    assert matches is not None
+    return series, project(series, matches, ahead=ahead)
+
+
+def test_the_projection_is_a_band_not_a_line():
+    """가운뎃값만 주면 확신을 파는 것이 된다. 퍼진 정도가 함께 나와야 한다."""
+    _, forward = _projected()
+    assert forward is not None
+    for i in range(len(forward.median)):
+        assert forward.worst[i] <= forward.low[i] <= forward.median[i]
+        assert forward.median[i] <= forward.high[i] <= forward.best[i]
+
+
+def test_the_projection_starts_where_we_are_now():
+    """지금 값이 기준점이다. 0에서 시작하지 않으면 선이 안 이어진다."""
+    _, forward = _projected()
+    for which in ("median", "low", "high", "worst", "best"):
+        assert getattr(forward, which)[0] == 0.0
+
+
+def test_the_band_widens_as_it_goes():
+    """멀어질수록 모르는 게 늘어난다. 띠가 안 넓어지면 뭔가 잘못된 것이다."""
+    _, forward = _projected()
+    near = forward.high[1] - forward.low[1]
+    far = forward.high[-1] - forward.low[-1]
+    assert far > near, "시간이 갈수록 불확실성이 줄어든다고 그렸습니다"
+
+
+def test_the_projection_never_uses_the_future():
+    """직후 경로를 아직 다 못 본 매치는 빼야 한다."""
+    from patternscan.odds import find_matches, project
+
+    series = _walk(1)
+    matches = find_matches(series, 20, similarity=0.5, top_k=200, max_horizon=30)
+    forward = project(series, matches, ahead=20)
+    assert forward.samples <= matches.ends.size
+
+
+def test_prices_line_up_with_the_ratios():
+    _, forward = _projected()
+    prices = forward.prices("median")
+    assert prices[0] == pytest.approx(forward.price_now)
+    assert prices[-1] == pytest.approx(forward.price_now * (1 + forward.median[-1]))
+
+
+def test_too_few_matches_means_no_picture():
+    """표본 몇 개로 그린 예상 그림은 그림이 아니라 착시다."""
+    from patternscan.odds import Matches, project
+
+    series = _walk(2)
+    thin = Matches(ends=np.array([100, 200]), distances=np.array([0.1, 0.1]),
+                   query=series.close[:20], limit=500)
+    assert project(series, thin, ahead=10) is None

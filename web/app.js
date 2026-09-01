@@ -1,57 +1,133 @@
-'use strict';
+// 화면. 계산은 워커가 하고, 여기서는 그리기만 한다.
+//
+// 그림은 전부 SVG로 그린다. 이전 판(canvas)에서는 화면 배율이 2 이상인
+// 기기에서 다시 그릴 때마다 캔버스가 배율만큼 계속 커지는 버그가 있었다.
+// SVG는 viewBox가 좌표계를 고정하고 크기는 CSS가 정하므로 그 문제가 아예
+// 생기지 않는다.
 
-// 그림은 전부 SVG로 그린다.
-// 이전 판(canvas)에서는 화면 배율이 2 이상인 기기에서 다시 그릴 때마다
-// 캔버스가 배율만큼 계속 커지는 버그가 있었다. SVG는 viewBox가 좌표계를
-// 고정하고 크기는 CSS가 정하므로 그 문제가 아예 생기지 않는다.
+import { MARKETS, marketLabel } from './core/models.js';
+import { MAX_BARS, PERIODS } from './core/analysis.js';
+import { UpbitClient } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
 const signed = (x, d = 2) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
 
 let selected = null;      // {timeframe, horizon}
-let shownAnalysis = -1;
-let timer = null;
 let market = 'KRW-BTC';
-let everLoaded = false;   // 첫 화면을 한 번은 그렸는가
-let coinsDrawn = '';      // 이미 그린 종목 목록 (매번 다시 그리면 누르는 중에 사라진다)
+let busy = false;
+let lastAnalysis = null;
+let aheadPick = null;
+let theoryPick = null;
 
-// ---------------------------------------------------------------- 통신
-// 서버가 답을 안 준 것과, 서버가 "안 된다"고 답한 것은 완전히 다른 사건이다.
-// 앞의 것은 컴퓨터를 켜야 하고, 뒤의 것은 화면에서 조건을 바꿔야 한다.
-// 둘을 같은 빨간 줄로 보여주면 사용자는 어느 쪽인지 알 수가 없다.
-class Unreachable extends Error {}
+// ---------------------------------------------------------------- 워커
+//
+// 멈추기는 **워커를 통째로 끝내는 것**으로 한다. 메시지로 "그만"을 보내도,
+// 계산이 도는 동안에는 워커가 그 메시지를 읽을 틈이 없어서 다 끝난 뒤에야
+// 멈춘다 — 그건 멈추기가 아니다. 받다가 끊겨도 받은 만큼은 이미 저장돼
+// 있으므로(core/data.js의 onBatch) 잃는 게 없다.
+let worker = null;
 
-async function api(path, options) {
-  let response;
+/** 워커가 지금 결과를 들고 있는가. 멈추기를 누르면 워커째 사라진다. */
+let workerHasResult = false;
+
+function spawn() {
+  // 모듈 워커를 못 만드는 브라우저가 있다(사파리 15 미만). 그때 그냥
+  // 터지면 화면이 아무 말도 없이 멈춘 것처럼 보이므로, 무엇 때문인지
+  // 적어 준다 — 고칠 수 있는 문제이기 때문이다(브라우저를 올리면 된다).
   try {
-    response = await fetch(path, options);
-  } catch (err) {
-    throw new Unreachable('서버에 연결되지 않았습니다');
+    worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  } catch {
+    worker = null;
+    finish();
+    showError('이 브라우저에서는 계산을 시작할 수 없습니다. '
+      + '브라우저를 최신으로 올리거나 다른 브라우저에서 열어 주세요.');
+    return null;
   }
-  let payload = null;
-  try { payload = await response.json(); } catch (err) { /* 아래에서 처리 */ }
-
-  // 이 서버는 오류에 **반드시 이유를 붙여** JSON으로 답한다. 그러니 이유
-  // 없는 오류가 왔다면 답한 쪽이 이 서버가 아니다 — 코드스페이스가 잠들어
-  // 깃허브 프록시가 대신 답했거나, 로그인이 풀렸거나 하는 경우다.
-  // 그때 "오류 404"라고만 띄우면 사용자는 뭘 해야 할지 알 수가 없다.
-  const said = payload && payload.error;
-  if (!response.ok && !said) {
-    throw new Unreachable(`서버가 아닌 곳에서 ${response.status}가 왔습니다`);
-  }
-  if (response.status >= 500) {
-    throw new Unreachable(`서버가 응답하지 못했습니다 (${response.status})`);
-  }
-  if (!response.ok) throw new Error(said);
-  if (!payload) throw new Error(`${path} 응답을 읽지 못했습니다`);
-  return payload;
+  worker.onmessage = (event) => handle(event.data ?? {});
+  worker.onerror = (event) => {
+    event.preventDefault();
+    workerHasResult = false;
+    finish();
+    showError(`계산이 실패했습니다: ${event.message || '알 수 없는 오류'}`);
+  };
+  return worker;
 }
 
-const post = (path, body) => api(path, {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body || {}),
-});
+function send(message) {
+  if (!worker) spawn();
+  if (!worker) return;
+  worker.postMessage(message);
+}
+
+function handle(message) {
+  switch (message.type) {
+    case 'progress':
+      $('job').textContent = message.message || '';
+      showProgress(message.done, message.total);
+      break;
+    case 'warn':
+      showError(message.message);
+      break;
+    case 'summary':
+      if (message.market === market) renderCached(message.cached);
+      break;
+    case 'blocked':
+      // 새 시세를 못 받았다. 결과는 나올 수 있지만(받아둔 것으로) 그건
+      // '지금'이 아니다. 그 사실이 결과보다 먼저 보여야 한다.
+      setBlocked(message.kind);
+      if (!message.stale) finish();
+      break;
+    case 'done':
+      finish();
+      $('job').textContent = message.stale
+        ? '받아둔 시세로 계산했습니다 (새 시세는 못 받았습니다)'
+        : '계산을 마쳤습니다';
+      lastAnalysis = message.analysis;
+      workerHasResult = true;
+      selected = null;
+      render(message.analysis);
+      break;
+    case 'examples':
+      drawExamples(message.examples, lastAnalysis);
+      break;
+    case 'error':
+      workerHasResult = false;
+      finish();
+      reportWorkerError(message);
+      break;
+    default:
+      break;
+  }
+}
+
+function start(text) {
+  busy = true;
+  showError('');
+  setBlocked(null);
+  $('job').textContent = text;
+  for (const id of ['btn-scan', 'btn-live']) $(id).disabled = true;
+  $('btn-stop').hidden = false;
+  setStale(lastAnalysis !== null);
+}
+
+function finish() {
+  busy = false;
+  for (const id of ['btn-scan', 'btn-live']) $(id).disabled = false;
+  $('btn-stop').hidden = true;
+  $('progress').hidden = true;
+  setStale(false);
+}
+
+function showProgress(done, total) {
+  const bar = $('progress');
+  if (total > 0) {
+    bar.hidden = false;
+    $('progress-bar').style.width = `${Math.min(100, (done / total) * 100)}%`;
+  } else {
+    bar.hidden = true;
+  }
+}
 
 function showError(message) {
   const box = $('error');
@@ -59,167 +135,115 @@ function showError(message) {
   box.textContent = message || '';
 }
 
-function setOffline(down) {
-  $('offline').hidden = !down;
-  if (down) showError('');
-}
-
-function report(err) {
-  if (err instanceof Unreachable) { setOffline(true); return; }
-  setOffline(false);
-  showError(err.message);
-}
-
-// ---------------------------------------------------------------- 상태
-//
-// **다음 폴링은 무슨 일이 있어도 잡는다.**
-//
-// 예전에는 오류 종류를 보고 어떤 경우에만 다시 잡았다. 그래서 예상 못 한
-// 오류가 한 번 나면 그 자리에서 폴링이 죽었고, 마지막 응답에서 잠갔던
-// 단추가 영영 잠긴 채로 남았다. 화면이 통째로 굳어서, 새로고침 말고는
-// 되살릴 방법이 없었다. 실제로 404 한 번에 그렇게 됐다.
-async function refreshState() {
-  // 탭이 안 보이면 **되묻지 않는다.**
-  //
-  // 코드스페이스는 접속이 끊겨야 잠든다. 그런데 이 화면은 열어만 둬도
-  // 15초마다 상태를, 5초마다 시세를 물어봤다. 보고 있지도 않은 탭 하나가
-  // 컨테이너를 24시간 깨워 두고 무료 시간을 녹이고 있었던 셈이다.
-  //
-  // 단, **첫 번째는 반드시 한다.** 안 그러면 배경 탭에서 연 화면이
-  // 영영 빈 채로 남는다 — 실제로 그렇게 만들었다가 되돌렸다.
-  if (everLoaded && document.hidden) {
-    stopPolling();
-    timer = setTimeout(refreshState, HEARTBEAT);
-    return;
-  }
-  let next = HEARTBEAT;
-  try {
-    next = applyState(await api('/api/state'));
-  } catch (err) {
-    report(err);
-    // 서버가 답을 못 하는 동안 단추까지 잠겨 있으면 손쓸 방법이 없어진다.
-    unlock();
-    next = 5000;   // 다시 켜는 순간 알아서 살아나도록 계속 두드린다
-  } finally {
-    stopPolling();
-    timer = setTimeout(refreshState, next);
-  }
-}
-
-function unlock() {
-  for (const id of ['btn-scan', 'btn-live']) $(id).disabled = false;
-  $('btn-stop').hidden = true;
-  $('progress').hidden = true;
-}
-
-function applyState(state) {
-  everLoaded = true;
-  setOffline(false);
-
-  const job = state.job || {};
-  if (state.markets) renderCoins(state.markets, state.market);
-  if (state.periods) renderPeriods(state.periods);
-  market = state.market;
-  $('ticker-code').textContent = state.market;
-  $('ticker-label').textContent = state.marketLabel || state.market;
-  $('btn-scan').disabled = job.running;
-  $('btn-live').disabled = job.running;
-  $('btn-stop').hidden = !job.running;
-  $('job').textContent = job.running ? (job.message || '작업 중…') : (job.message || '');
-
-  const bar = $('progress');
-  if (job.running && job.total > 0) {
-    bar.hidden = false;
-    $('progress-bar').style.width = `${Math.min(100, (job.done / job.total) * 100)}%`;
-  } else { bar.hidden = true; }
-
-  showError(job.error || '');
-
-  // 표를 매번 다시 그리면 사용자가 누르던 행이 클릭 도중에 사라진다.
-  if (state.analysis && state.analysisId !== shownAnalysis) {
-    shownAnalysis = state.analysisId;
-    selected = null;
-    render(state.analysis);
-  } else if (!state.analysis && state.cached) {
-    renderCached(state.cached);
-  }
-
-  setStale(job.running && state.analysis !== null);
-
-  // 작업 중이면 자주, 아니면 가끔. 놀 때도 계속 물어보는 이유는 하나다 —
-  // **서버가 꺼진 걸 눈치채기 위해서**다. 예전에는 놀 때 폴링을 아예
-  // 멈춰서, 컴퓨터가 꺼져도 화면은 멀쩡해 보였다.
-  return job.running ? 500 : HEARTBEAT;
-}
-
-//: 놀 때 서버가 살아 있는지 확인하는 주기. 로컬이라 부담이 없다.
-const HEARTBEAT = 15000;
-
-function stopPolling() { if (timer !== null) { clearTimeout(timer); timer = null; } }
-
 function setStale(stale) {
   for (const id of ['odds-panel', 'examples-panel']) $(id).classList.toggle('stale', stale);
   $('stale-note').hidden = !stale;
 }
 
+/**
+ * 업비트에 닿지 못했을 때.
+ *
+ * 이 앱에는 서버가 없다. 그래서 잘못될 수 있는 곳도 하나뿐이다 —
+ * **브라우저에서 업비트로 가는 길**. 그 길이 막혔을 때 "실패"라고만 하면
+ * 사용자는 인터넷이 끊긴 건지, 업비트가 막은 건지, 잠깐 점검 중인지
+ * 알 수가 없고, 그러면 다시 시도할지 포기할지도 정할 수 없다.
+ */
+function setBlocked(kind) {
+  const box = $('blocked');
+  box.hidden = kind === null;
+  if (kind === null) return;
+  const said = {
+    offline: `<b>인터넷이 끊겨 있습니다.</b>
+      연결을 확인하고 다시 눌러 주세요.
+      <span class="dim">이미 받아둔 시세로는 <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.</span>`,
+    blocked: `<b>업비트에 닿지 못했습니다.</b>
+      인터넷은 되는데 업비트 쪽으로만 못 가고 있습니다.
+      <span class="dim">업비트가 점검 중이거나, 쓰고 계신 망(회사·학교 와이파이, 일부 VPN)이
+      막고 있을 수 있습니다. 다른 망에서 한 번 시도해 보세요.
+      이미 받아둔 시세로는 <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.</span>`,
+    rate: `<b>업비트 요청 한도를 넘었습니다.</b>
+      잠시 뒤에 다시 눌러 주세요.
+      <span class="dim">아주 긴 과거를 한꺼번에 받을 때 생깁니다.
+      <b>얼마나 과거까지</b>를 줄이면 덜 생깁니다.</span>`,
+    server: `<b>업비트 쪽에서 오류가 왔습니다.</b>
+      우리가 고칠 수 있는 문제가 아닙니다. 잠시 뒤에 다시 눌러 주세요.`,
+  }[kind];
+  box.innerHTML = said ?? '';
+  box.hidden = !said;
+}
+
+function reportWorkerError(message) {
+  if (['offline', 'blocked', 'rate', 'server'].includes(message.kind)) {
+    setBlocked(message.kind);
+    showError('');
+    return;
+  }
+  setBlocked(null);
+  showError(message.message);
+}
+
 // ------------------------------------------------------------ 종목 고르기
-function renderCoins(markets, current) {
+function renderCoins() {
   const box = $('coins');
-  const signature = markets.map((m) => m.code).join(',');
-  if (signature !== coinsDrawn) {
-    coinsDrawn = signature;
-    box.innerHTML = markets
-      .map((m) => `<button type="button" class="coin" data-code="${m.code}">
-                     <b>${m.label}</b><span>${m.code.replace('KRW-', '')}</span>
-                   </button>`)
+  if (!box.children.length) {
+    box.innerHTML = Object.entries(MARKETS)
+      .map(([code, label]) => `<button type="button" class="coin" data-code="${code}">
+                                 <b>${label}</b><span>${code.replace('KRW-', '')}</span>
+                               </button>`)
       .join('');
     for (const button of box.querySelectorAll('.coin')) {
       button.addEventListener('click', () => pickCoin(button.dataset.code));
     }
   }
   for (const button of box.querySelectorAll('.coin')) {
-    button.classList.toggle('on', button.dataset.code === current);
+    button.classList.toggle('on', button.dataset.code === market);
   }
 }
 
 async function pickCoin(code) {
-  if (code === market || $('btn-live').disabled) return;
+  if (code === market || busy) return;
   market = code;
   // 종목마다 시세도 결과도 따로다. 남아 있는 표를 그대로 두면
   // 비트코인 확률을 솔라나 것으로 읽게 된다.
-  shownAnalysis = -1;
+  lastAnalysis = null;
+  workerHasResult = false;
   selected = null;
-  for (const id of ['verdict', 'odds-panel', 'examples-panel']) $(id).hidden = true;
+  aheadPick = null;
+  theoryPick = null;
+  for (const id of ['verdict', 'odds-panel', 'examples-panel', 'ahead-panel',
+    'levels-panel', 'theory-panel']) $(id).hidden = true;
   $('ticker-price').textContent = '—';
   $('ticker-change').textContent = '';
-  renderCoins([...$('coins').querySelectorAll('.coin')]
-    .map((b) => ({ code: b.dataset.code, label: b.querySelector('b').textContent })), code);
+  $('ticker-label').textContent = marketLabel(code);
+  $('ticker-code').textContent = code;
+  renderCoins();
+  send({ type: 'summary', market });
   refreshTicker();
-  await runLive();
+  runLive();
 }
 
 // -------------------------------------------------------- 얼마나 과거까지
-//
-// 예전에는 이 선택이 아예 없어서 화면 버튼이 **늘 30일치만** 요청했다.
-// 명령줄로 8년치를 받아둔 사람이 화면에서 버튼을 누르면 그때부터 30일만
-// 갱신됐고, 왜 숫자가 그것밖에 안 되는지 알 방법이 없었다.
-let periodsDrawn = '';
-
-function renderPeriods(periods) {
-  const signature = periods.map((p) => p.count).join(',');
-  if (signature === periodsDrawn) return;
-  periodsDrawn = signature;
+function renderPeriods() {
   const box = $('in-period');
-  box.innerHTML = periods
-    .map((p) => `<option value="${p.count}" data-note="${p.note}">${p.label}</option>`)
-    .join('');
+  box.innerHTML = PERIODS
+    .map((p) => `<option value="${p.count}">${p.label}</option>`).join('');
   box.addEventListener('change', showPeriodNote);
   showPeriodNote();
 }
 
 function showPeriodNote() {
-  const picked = $('in-period').selectedOptions[0];
-  $('period-note').textContent = picked ? picked.dataset.note : '';
+  // 처음 받을 때 얼마나 걸릴지 미리 말해 준다. 8년치는 200개씩 2만 번을
+  // 받아야 해서 아주 오래 걸린다 — 눌러 놓고 기다리다 포기하지 않도록.
+  const count = parseInt($('in-period').value, 10) || 0;
+  const requests = Math.ceil(count / 200) + Math.ceil(count / 3 / 200)
+    + Math.ceil(count / 5 / 200);
+  const minutes = requests / 8 / 60;   // 초당 8번
+  const guess = minutes < 1
+    ? '처음 받을 때 1분 안'
+    : minutes < 60
+      ? `처음 받을 때 약 ${Math.round(minutes)}분`
+      : `처음 받을 때 약 ${(minutes / 60).toFixed(1)}시간`;
+  $('period-note').textContent = `${guess} · 다음부터는 새 봉만`;
 }
 
 // ------------------------------------------------------------ 돈으로 보기
@@ -240,30 +264,32 @@ function cash(value) {
 }
 
 // ------------------------------------------------------------ 지금 시세
-const won = (x) => x >= 1000
+const won = (x) => (x >= 1000
   ? Math.round(x).toLocaleString('ko-KR')
-  : x.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+  : x.toLocaleString('ko-KR', { maximumFractionDigits: 2 }));
+
+const ticker = new UpbitClient({ retries: 0 });
 
 async function refreshTicker() {
-  if (everLoaded && document.hidden) return;   // 위와 같은 이유
-  let data;
-  try { data = await api(`/api/ticker?market=${encodeURIComponent(market)}`); }
-  catch (err) { return; }   // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다
-  if (!data.ok || data.market !== market) {
-    $('ticker-price').textContent = '—';
-    $('ticker-change').textContent = '';
-    $('ticker').className = 'ticker';
+  if (document.hidden) return;   // 안 보고 있으면 묻지 않는다
+  let rows;
+  try {
+    rows = await ticker.getTicker(market);
+  } catch {
+    // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다.
     return;
   }
-  $('ticker-label').textContent = data.label;
+  const data = rows.find((r) => r.market === market);
+  if (!data) return;
+  $('ticker-label').textContent = marketLabel(data.market);
   $('ticker-code').textContent = data.market;
   $('ticker-price').textContent = `${won(data.price)}원`;
   const rate = data.changeRate;
   const arrow = rate > 0 ? '▲' : rate < 0 ? '▼' : '·';
   $('ticker-change').textContent =
-    `${arrow} ${won(Math.abs(data.changePrice))}  ${signed(Math.abs(rate) * (rate < 0 ? -1 : 1))}`;
+    `${arrow} ${won(Math.abs(data.changePrice))}  ${signed(rate)}`;
   // 업비트와 같은 색: 오르면 빨강, 내리면 파랑.
-  $('ticker').className = `ticker ${data.direction}`;
+  $('ticker').className = `ticker ${rate > 0 ? 'up' : rate < 0 ? 'down' : 'flat'}`;
 }
 
 // ---------------------------------------------------------------- 렌더
@@ -276,15 +302,22 @@ function renderCached(cached) {
                      업비트에서 받아옵니다 (처음 한 번은 몇 분 걸립니다).`;
     return;
   }
-  // 개수만 보여주면 그게 많은 건지 적은 건지 알 수가 없다. 기간을 같이 적는다.
+  const when = (iso) => (iso ? iso.replace('T', ' ').slice(0, 16) : '');
   const rows = cached.map((c) => {
-    const when = c.from && c.to ? `<span class="dim">${c.from} ~ ${c.to}</span>` : '';
+    const span = c.from && c.to
+      ? `<span class="dim">${when(c.from)} ~ ${when(c.to)}</span>` : '';
     return `<div class="cached-row"><b>${c.label}</b>
-            <span class="cached-count">${c.count.toLocaleString()}개</span> ${when}</div>`;
+            <span class="cached-count">${c.count.toLocaleString()}개</span> ${span}</div>`;
   }).join('');
-  box.innerHTML = `<div class="cached-head">받아둔 시세</div>${rows}
+  box.innerHTML = `<div class="cached-head">받아둔 시세 <span class="dim">이 기기에 저장돼
+      있습니다. 지나간 봉은 다시 받지 않습니다.</span></div>${rows}
     <div class="dim cached-foot">더 긴 과거를 보려면 위에서 <b>얼마나 과거까지</b>를 늘리고
-      <b>지금 시세로 판단받기</b>를 누르세요.</div>`;
+      <b>지금 시세로 판단받기</b>를 누르세요.
+      <button type="button" id="btn-forget" class="linky">받아둔 시세 지우기</button></div>`;
+  $('btn-forget').addEventListener('click', () => {
+    if (busy) return;
+    send({ type: 'forget', market });
+  });
 }
 
 function render(analysis) {
@@ -296,14 +329,14 @@ function render(analysis) {
   renderOdds(analysis);
   if (analysis.odds && analysis.odds.length) {
     const first = analysis.odds.find((o) => o.samples >= analysis.minSamples) || analysis.odds[0];
-    select(first.timeframe, first.horizon, analysis);
+    select(first.timeframe, first.horizon);
   } else {
     $('examples-panel').hidden = true;
   }
 }
 
-// 서버가 보낸 문장에서 **강조**만 굵게 만든다. 이스케이프를 **먼저** 하므로
-// 서버 문장에 태그가 섞여 있어도 태그로 살아나지 않는다.
+// 문장에서 **강조**만 굵게 만든다. 이스케이프를 **먼저** 하므로 문장에
+// 태그가 섞여 있어도 태그로 살아나지 않는다.
 const emphasise = (text) => text
   .replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
@@ -323,13 +356,14 @@ function renderCoverage(analysis) {
   const box = $('coverage');
   box.hidden = false;
   const spans = analysis.series
-    .map((s) => `<b>${s.label}</b> ${s.count.toLocaleString()}개` + (s.gaps ? ` (끊긴 곳 ${s.gaps})` : ''))
+    .map((s) => `<b>${s.label}</b> ${s.count.toLocaleString()}개${s.gaps ? ` (끊긴 곳 ${s.gaps})` : ''}`)
     .join(' · ');
   const missing = (analysis.missing || []).length
     ? `<br><b class="warn">${analysis.missing.map((m) => m.label).join(', ')} 시세가 없어 빠졌습니다.</b>`
     : '';
   box.innerHTML = `${spans}${missing}<br>왕복 비용 <b>${pct(analysis.cost, 2)}</b> ·
-    직전 <b>${analysis.oddsLength}개</b> 봉 기준 · 닮았다고 볼 기준 상관계수 <b>${analysis.similarity.toFixed(2)}</b>`;
+    직전 <b>${analysis.oddsLength}개</b> 봉 기준 · 닮았다고 볼 기준 상관계수
+    <b>${analysis.similarity.toFixed(2)}</b>`;
 }
 
 function renderOdds(analysis) {
@@ -348,7 +382,7 @@ function renderOdds(analysis) {
   const groups = {};
   for (const row of rows) (groups[row.timeframe] ||= []).push(row);
 
-  for (const [timeframe, group] of Object.entries(groups)) {
+  for (const group of Object.values(groups)) {
     const first = group[0];
     const section = document.createElement('div');
     section.className = 'odds-group';
@@ -388,10 +422,10 @@ function renderOdds(analysis) {
           평소 ${pct(row.baseUp)}</span></td>
         <td class="${row.upEdge >= 0 ? 'pos' : 'neg'}">${signed(row.upEdge, 0)}</td>
         <td class="dim">${pct(row.ciLow)}~${pct(row.ciHigh)}${
-          row.tellsUsAnything ? '' : '<span class="sub2">평소와 구분 안 됨</span>'}</td>
+  row.tellsUsAnything ? '' : '<span class="sub2">평소와 구분 안 됨</span>'}</td>
         <td class="big">${pct(row.beatRate)}<span class="sub2">평소 ${pct(row.baseBeat)}</span></td>
         ${moneyCell(row, analysis)}`;
-      tr.addEventListener('click', () => select(row.timeframe, row.horizon, analysis));
+      tr.addEventListener('click', () => select(row.timeframe, row.horizon));
       tbody.appendChild(tr);
     }
     body.appendChild(section);
@@ -416,17 +450,27 @@ function markSelected() {
 }
 
 // ---------------------------------------------------------------- 실제 사례
-async function select(timeframe, horizon, analysis) {
+function select(timeframe, horizon) {
   selected = { timeframe, horizon };
   markSelected();
-  try {
-    const data = await api(
-      `/api/examples?timeframe=${encodeURIComponent(timeframe)}&horizon=${horizon}`);
-    drawExamples(data, analysis);
-  } catch (err) { report(err); }
+  // 멈추기를 누르면 워커를 통째로 끝낸다. 그때 표는 그대로 남아 있지만
+  // 사례를 그릴 재료(찾아둔 과거 구간)는 워커와 함께 사라졌다. 그냥
+  // 아무 일도 안 일어나면 사용자는 눌러도 반응이 없다고 여긴다.
+  if (!workerHasResult) {
+    $('examples-panel').hidden = false;
+    $('examples-title').textContent = '실제 사례';
+    $('examples-note').textContent = '';
+    for (const id of ['rose-list', 'fell-list']) {
+      $(id).innerHTML = '<p class="footnote">멈춘 뒤라 사례를 다시 그리려면 '
+        + '<b>받아둔 시세로 다시 계산</b>을 눌러 주세요.</p>';
+    }
+    return;
+  }
+  send({ type: 'examples', timeframe, horizon });
 }
 
 function drawExamples(data, analysis) {
+  if (!analysis) return;
   const panel = $('examples-panel');
   panel.hidden = false;
   const minutes = data.horizon * (parseInt(data.timeframe.replace('minute', ''), 10) || 1);
@@ -439,7 +483,7 @@ function drawExamples(data, analysis) {
     const box = $(id);
     box.innerHTML = '';
     if (!list.length) {
-      box.innerHTML = `<p class="footnote">해당하는 사례가 없습니다.</p>`;
+      box.innerHTML = '<p class="footnote">해당하는 사례가 없습니다.</p>';
       continue;
     }
     for (const example of list) box.appendChild(exampleCard(example, data));
@@ -468,21 +512,23 @@ function exampleCard(example, data) {
 }
 
 function scaleTo(values, height, pad) {
-  let low = Math.min(...values), high = Math.max(...values);
+  let low = Math.min(...values);
+  let high = Math.max(...values);
   if (!(high > low)) { high = low + 1; low -= 1; }
   // 위아래 여백. 넉넉히 두면 선이 상자 가운데 작게 눌려 보인다 —
   // 안 그래도 1분봉 움직임은 0.03% 남짓이라 눌릴 여유가 없다.
   const margin = (high - low) * 0.06;
-  low -= margin; high += margin;
+  low -= margin;
+  high += margin;
   return (v) => height - pad - ((v - low) / (high - low)) * (height - pad * 2);
 }
 
 function polyline(values, y, width, pad, color, stroke, alpha) {
   const x = (i) => pad + (i / Math.max(1, values.length - 1)) * (width - pad * 2);
   const points = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  return `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${stroke}"` +
-         ` stroke-opacity="${alpha}" vector-effect="non-scaling-stroke"` +
-         ` stroke-linejoin="round" stroke-linecap="round"/>`;
+  return `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${stroke}"`
+       + ` stroke-opacity="${alpha}" vector-effect="non-scaling-stroke"`
+       + ' stroke-linejoin="round" stroke-linecap="round"/>';
 }
 
 function overlay(shape, query) {
@@ -494,158 +540,87 @@ function overlay(shape, query) {
 
 function afterPath(after, cost, good) {
   const y = scaleTo(after.concat([0, cost, -cost]), 120, 8);
-  const rule = (v, color) =>
-    `<line x1="8" y1="${y(v).toFixed(1)}" x2="112" y2="${y(v).toFixed(1)}" stroke="${color}"` +
-    ` stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
+  const rule = (v, color) => `<line x1="8" y1="${y(v).toFixed(1)}" x2="112" y2="${y(v).toFixed(1)}"`
+    + ` stroke="${color}" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
   return rule(0, '#1b3a2a') + rule(cost, '#00ff9c')
        + polyline(after, y, 120, 8, good ? '#00ff9c' : '#ff4d5e', 2, 1);
 }
 
 // ---------------------------------------------------------------- 조작
-function settings() {
+function settings(fresh) {
   return {
+    type: 'run',
     market,
-    count: parseInt($('in-period').value, 10) || undefined,
-    oddsLength: parseInt($('in-length').value, 10),
+    fresh,
+    count: Math.min(parseInt($('in-period').value, 10) || PERIODS[0].count, MAX_BARS),
+    length: parseInt($('in-length').value, 10),
     similarity: parseFloat($('in-similarity').value),
     fee: parseFloat($('in-fee').value),
     slippage: parseFloat($('in-slippage').value),
   };
 }
 
-$('btn-scan').addEventListener('click', () => run('/api/scan'));
-$('btn-live').addEventListener('click', () => runLive());
-
-$('btn-stop').addEventListener('click', async () => {
-  $('btn-stop').disabled = true;
-  try { await post('/api/stop', {}); } catch (err) { report(err); }
-  $('btn-stop').disabled = false;
-  refreshState();
-});
-
-async function run(path) {
-  showError('');
-  try {
-    const answer = await post(path, settings());
-    // 시작 안 됐는데 아무 말도 안 하면, 눌러도 반응이 없는 것처럼 보인다.
-    if (answer && answer.started === false) {
-      showError('이미 하고 있습니다. 끝나기를 기다리거나 멈추기를 누르세요.');
-    }
-  } catch (err) { report(err); }
-  refreshState();
+function run(fresh) {
+  if (busy) return;
+  start(fresh ? '업비트에서 받는 중…' : '다시 계산하는 중…');
+  send(settings(fresh));
 }
 
-const runLive = () => run('/api/live');
+const runLive = () => run(true);
+
+$('btn-scan').addEventListener('click', () => run(false));
+$('btn-live').addEventListener('click', () => runLive());
+
+$('btn-stop').addEventListener('click', () => {
+  // 워커를 끝낸다. 받던 중이었다면 그때까지 받은 것은 이미 저장돼 있다.
+  if (worker) worker.terminate();
+  worker = null;
+  workerHasResult = false;
+  finish();
+  $('job').textContent = '멈췄습니다';
+  send({ type: 'summary', market });
+});
 
 // 1분마다 자동 갱신. 새 봉이 생기는 주기가 1분이므로 그보다 자주 물어도 의미가 없다.
 let auto = null;
 $('in-auto').addEventListener('change', (e) => {
   if (auto !== null) { clearInterval(auto); auto = null; }
-  if (e.target.checked) auto = setInterval(() => {
-    // 안 보고 있는데 1분마다 시세를 받고 계산까지 할 이유가 없다.
-    if (!document.hidden && !$('btn-live').disabled) runLive();
-  }, 60000);
+  if (e.target.checked) {
+    auto = setInterval(() => {
+      // 안 보고 있는데 1분마다 시세를 받고 계산까지 할 이유가 없다.
+      if (!document.hidden && !busy) runLive();
+    }, 60000);
+  }
 });
 
 // ------------------------------------------------------ 앱처럼 설치하기
 //
-// 서비스 워커는 **보안 컨텍스트에서만** 등록된다. localhost와 https는 되고,
+// 서비스 워커는 **보안 컨텍스트에서만** 등록된다. https와 localhost는 되고,
 // 같은 와이파이의 http://192.168.x.x 는 안 된다. 안 되는 자리에서 굳이
 // 시도하면 콘솔만 빨개지고 얻는 게 없으므로 아예 건너뛴다.
-//
-// 다행히 홈 화면 추가 자체는 서비스 워커가 없어도 된다. iOS는 index.html의
-// meta 태그만 보고 주소창 없는 전체 화면으로 띄운다. 즉 LAN 주소에서도
-// '앱처럼'은 되고, 다만 서버가 꺼졌을 때 대신 띄워 줄 화면이 없을 뿐이다.
 if ('serviceWorker' in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+  navigator.serviceWorker.register(new URL('./sw.js', import.meta.url)).catch(() => undefined);
 }
-
-// 홈 화면에 얹는 방법은 README에 적어 뒀다. 매번 보는 화면에 붙박이로
-// 두기에는, 한 번 하고 나면 다시 볼 일이 없는 안내였다.
-
-// ------------------------------------------------------------ 떨어지는 글자
-//
-// 화면 뒤에 아주 옅게 깔리는 장식이다. 장식이 본업을 방해하면 안 되므로
-// 세 가지를 지킨다.
-//
-//   1. 탭이 안 보이면 멈춘다. 아이패드에서 배터리를 계속 먹으면 곤란하다.
-//   2. 움직임을 불편해하는 사람에게는 아예 안 그린다.
-//   3. 캔버스 하나에 열별로만 그린다 — 폴링이 0.5초마다 도는 화면이라
-//      여기서 프레임을 잡아먹으면 진행 막대가 끊긴다.
-(function rain() {
-  const canvas = $('rain');
-  if (!canvas || !canvas.getContext) return;
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-  const ctx = canvas.getContext('2d', { alpha: true });
-  const GLYPHS = 'ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ0123456789';
-  const SIZE = 16;
-  let columns = [];
-  let width = 0;
-  let height = 0;
-
-  function resize() {
-    // 화면 배율만큼만 키운다. 예전에 캔버스가 다시 그릴 때마다 계속
-    // 커지던 버그가 있었으므로, 매번 CSS 크기에서 새로 계산한다.
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    width = canvas.clientWidth;
-    height = canvas.clientHeight;
-    canvas.width = Math.floor(width * ratio);
-    canvas.height = Math.floor(height * ratio);
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.font = `${SIZE}px ${'ui-monospace, monospace'}`;
-    const count = Math.ceil(width / SIZE);
-    columns = Array.from({ length: count }, () => Math.random() * -height);
-  }
-
-  function draw() {
-    // 지우지 않고 옅은 검정을 덮는다 — 지나간 글자가 서서히 사라진다.
-    ctx.fillStyle = 'rgba(5, 8, 7, 0.09)';
-    ctx.fillRect(0, 0, width, height);
-    for (let i = 0; i < columns.length; i += 1) {
-      const y = columns[i];
-      const glyph = GLYPHS[(Math.random() * GLYPHS.length) | 0];
-      ctx.fillStyle = y < SIZE * 2 ? '#c8ffdd' : '#00ff66';   // 맨 앞 글자만 밝게
-      ctx.fillText(glyph, i * SIZE, y);
-      columns[i] = y > height + Math.random() * 400 ? 0 : y + SIZE;
-    }
-  }
-
-  let ticking = null;
-  function start() {
-    if (ticking === null) ticking = setInterval(draw, 70);
-  }
-  function stop() {
-    if (ticking !== null) { clearInterval(ticking); ticking = null; }
-  }
-
-  resize();
-  start();
-  window.addEventListener('resize', () => { resize(); });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stop(); else start();
-  });
-})();
 
 // ============================================================ 앞으로의 모양
 //
 // 선 하나로 그리면 거짓말이 된다. 실제로 일어날 일은 하나지만 우리가 아는
 // 건 "비슷했던 과거들이 제각각 흩어졌다"뿐이다. 그래서 띠로 그린다.
 // 띠가 넓으면 그건 모른다는 뜻이고, 그게 눈에 보여야 한다.
-let aheadPick = null;
-
 function renderAhead(analysis) {
   const all = analysis.projection || {};
   const codes = Object.keys(all);
   const panel = $('ahead-panel');
   if (!codes.length) { panel.hidden = true; return; }
   panel.hidden = false;
-  if (!aheadPick || !all[aheadPick]) aheadPick = codes[0];
+  if (!aheadPick || !all[aheadPick]) [aheadPick] = codes;
   drawAhead(all[aheadPick], analysis);
 }
 
 function drawAhead(p, analysis) {
-  const W = 640, H = 260, PAD = 8;
+  const W = 640;
+  const H = 260;
+  const PAD = 8;
   const past = p.recent || [];
   const ahead = p.median.length;
   // 지나온 길과 앞으로를 같은 자 위에 놓는다. 그래야 이어져 보인다.
@@ -661,12 +636,13 @@ function drawAhead(p, analysis) {
 
   // ── 지나온 길: 진짜 봉으로 그린다. 종가 선만 그으면 꼬리가 사라져
   //    밋밋해지고, 실제 차트로 안 보인다.
-  const width = Math.max(1.4, (W - PAD * 2) / Math.max(1, total) * 0.62);
+  const width = Math.max(1.4, ((W - PAD * 2) / Math.max(1, total)) * 0.62);
   const bars = past.map((k, i) => {
     const up = k.c >= k.o;
     const colour = up ? '#ff5566' : '#4aa3ff';   // 업비트와 같은 색
     const cx = x(i);
-    const top = y(Math.max(k.o, k.c)), bottom = y(Math.min(k.o, k.c));
+    const top = y(Math.max(k.o, k.c));
+    const bottom = y(Math.min(k.o, k.c));
     const body = Math.max(0.8, bottom - top);
     return `<line x1="${cx.toFixed(1)}" y1="${y(k.h).toFixed(1)}"
                   x2="${cx.toFixed(1)}" y2="${y(k.l).toFixed(1)}"
@@ -674,7 +650,7 @@ function drawAhead(p, analysis) {
                   vector-effect="non-scaling-stroke"/>
             <rect x="${(cx - width / 2).toFixed(1)}" y="${top.toFixed(1)}"
                   width="${width.toFixed(1)}" height="${body.toFixed(1)}"
-                  fill="${colour}" fill-opacity="${up ? 0.85 : 0.85}"/>`;
+                  fill="${colour}" fill-opacity="0.85"/>`;
   }).join('');
 
   // ── 앞으로: 띠 + 실제로 갔던 길 몇 개 + 중앙값
@@ -696,8 +672,7 @@ function drawAhead(p, analysis) {
   const cost = analysis.cost || 0;
   const edge = x(split).toFixed(1);
 
-  $('ahead-chart').innerHTML =
-      band(p.worst, p.best, 'rgba(0,255,102,0.06)')
+  $('ahead-chart').innerHTML = band(p.worst, p.best, 'rgba(0,255,102,0.06)')
     + band(p.low, p.high, 'rgba(0,255,102,0.14)')
     // 실제로 갔던 길. 톱니처럼 꺾이는 게 진짜 모습이다 — 중앙값은
     // 100개의 중앙값이라 매끄러울 수밖에 없고, 그것만 보면
@@ -717,7 +692,8 @@ function drawAhead(p, analysis) {
     + path(p.median, '#00ff66', 2.4, 1);
 
   const end = p.median[p.median.length - 1];
-  const lo = p.low[p.low.length - 1], hi = p.high[p.high.length - 1];
+  const lo = p.low[p.low.length - 1];
+  const hi = p.high[p.high.length - 1];
   const money = (r) => `${Math.round(p.priceNow * (1 + r)).toLocaleString('ko-KR')}원`;
   const wide = (hi - lo) > Math.abs(end) * 4;
   const stake = amount();
@@ -743,7 +719,8 @@ function drawAhead(p, analysis) {
 function renderLevels(analysis) {
   // 예상 그림이 없으면 aheadPick이 안 정해진다. 그때도 뭔가는 보여줘야 한다.
   if (!aheadPick || !(analysis.levels || {})[aheadPick]) {
-    aheadPick = Object.keys(analysis.levels || {})[0] || null;
+    [aheadPick] = Object.keys(analysis.levels || {});
+    aheadPick = aheadPick ?? null;
   }
   const found = (analysis.levels || {})[aheadPick] || [];
   const fibs = (analysis.fibonacci || {})[aheadPick] || [];
@@ -754,7 +731,7 @@ function renderLevels(analysis) {
   // 지금 값은 예상 그림이 아니라 시세에서 읽는다. 닮은 과거를 못 찾아
   // 그림이 없을 때도 위아래를 갈라야 한다.
   const now = (analysis.series || []).find((s) => s.timeframe === aheadPick)?.priceNow;
-  const won = (v) => Math.round(v).toLocaleString('ko-KR');
+  const money = (v) => Math.round(v).toLocaleString('ko-KR');
   const strongest = Math.max(...found.map((l) => l.strength), 1);
 
   const line = (l, kind) => {
@@ -763,10 +740,10 @@ function renderLevels(analysis) {
     return `<div class="level ${l.kind === '저항' ? 'res' : 'sup'} ${kind}">
       <span class="level-bar" style="opacity:${weight.toFixed(2)}"></span>
       <span class="level-kind">${kind === 'fib' ? '피보' : l.kind}</span>
-      <span class="level-price">${won(l.price)}원</span>
+      <span class="level-price">${money(l.price)}원</span>
       <span class="level-away">${signed(away)}</span>
-      <span class="level-touch dim">${kind === 'fib' ? '되돌림 자리' :
-        `${l.touches}번 닿음 · ${l.lastTouch}봉 전`}</span>
+      <span class="level-touch dim">${kind === 'fib' ? '되돌림 자리'
+    : `${l.touches}번 닿음 · ${l.lastTouch}봉 전`}</span>
     </div>`;
   };
 
@@ -775,7 +752,7 @@ function renderLevels(analysis) {
   const here = now
     ? `<div class="level now"><span class="level-bar"></span>
        <span class="level-kind">지금</span>
-       <span class="level-price">${won(now)}원</span><span></span><span></span></div>`
+       <span class="level-price">${money(now)}원</span><span></span><span></span></div>`
     : '';
   const above = mixed.filter(([l]) => !now || l.price > now).map(([l, k]) => line(l, k));
   const below = mixed.filter(([l]) => now && l.price <= now).map(([l, k]) => line(l, k));
@@ -783,15 +760,13 @@ function renderLevels(analysis) {
 }
 
 // ============================================================ 차트 이론
-let theoryPick = null;
-
 function renderTheories(analysis) {
   const all = analysis.theories || {};
   const codes = Object.keys(all).filter((k) => k !== 'confirmation');
   const panel = $('theory-panel');
   if (!codes.length) { panel.hidden = true; return; }
   panel.hidden = false;
-  if (!theoryPick || !all[theoryPick]) theoryPick = codes[0];
+  if (!theoryPick || !all[theoryPick]) [theoryPick] = codes;
 
   $('theory-tabs').innerHTML = codes
     .map((c) => `<button type="button" class="tab ${c === theoryPick ? 'on' : ''}"
@@ -807,8 +782,7 @@ function renderTheories(analysis) {
   }
 
   const agreed = all.confirmation || {};
-  $('theory-confirm').innerHTML =
-    `<b>다우의 상호 확인:</b> ${agreed.detail || ''}`;
+  $('theory-confirm').innerHTML = `<b>다우의 상호 확인:</b> ${agreed.detail || ''}`;
   $('theory-confirm').className = `theory-confirm ${arrowClass(agreed.says)}`;
 
   const group = all[theoryPick];
@@ -824,7 +798,7 @@ function renderTheories(analysis) {
     </table></div>`;
 }
 
-const arrowClass = (says) => says === '상승' ? 'up' : says === '하락' ? 'down' : 'flat';
+const arrowClass = (says) => (says === '상승' ? 'up' : says === '하락' ? 'down' : 'flat');
 
 function theoryRow(r) {
   const mark = r.says === '상승' ? '▲' : r.says === '하락' ? '▼' : '·';
@@ -837,11 +811,9 @@ function theoryRow(r) {
   }
   // 칸이 좁다. 긴 문장은 잘려서 오히려 안 읽히므로 짧게 쓰고
   // 자세한 설명은 표 아래 각주에 한 번만 둔다.
-  const verdict = p.worthBelieving
-    ? '<b class="up">우연 아님</b>'
-    : !p.enough
-      ? '<span class="dim">표본 부족</span>'
-      : '<span class="dim">구분 안 됨</span>';
+  let believe = '<span class="dim">구분 안 됨</span>';
+  if (p.worthBelieving) believe = '<b class="up">우연 아님</b>';
+  else if (!p.enough) believe = '<span class="dim">표본 부족</span>';
   return `<tr class="${p.worthBelieving ? 'real' : ''}">
     <td class="l"><b>${r.theory}</b></td>
     <td class="l now-cell ${arrowClass(r.says)}">${mark} ${r.detail}</td>
@@ -849,29 +821,87 @@ function theoryRow(r) {
     <td>${pct(p.rate, 1)}</td>
     <td class="dim">${pct(p.base, 1)}</td>
     <td class="${p.edge > 0 ? 'pos' : 'neg'}">${signed(p.edge, 1)}</td>
-    <td class="l">${verdict}</td></tr>`;
+    <td class="l">${believe}</td></tr>`;
 }
 
+// ------------------------------------------------------------ 떨어지는 글자
+//
+// 화면 뒤에 아주 옅게 깔리는 장식이다. 장식이 본업을 방해하면 안 되므로
+// 세 가지를 지킨다.
+//
+//   1. 탭이 안 보이면 멈춘다. 아이패드에서 배터리를 계속 먹으면 곤란하다.
+//   2. 움직임을 불편해하는 사람에게는 아예 안 그린다.
+//   3. 캔버스 하나에 열별로만 그린다.
+(function rain() {
+  const canvas = $('rain');
+  if (!canvas || !canvas.getContext) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const ctx = canvas.getContext('2d', { alpha: true });
+  const GLYPHS = 'ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ0123456789';
+  const SIZE = 16;
+  let columns = [];
+  let width = 0;
+  let height = 0;
+
+  function resize() {
+    // 화면 배율만큼만 키운다. 예전에 캔버스가 다시 그릴 때마다 계속
+    // 커지던 버그가 있었으므로, 매번 CSS 크기에서 새로 계산한다.
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.font = `${SIZE}px ui-monospace, monospace`;
+    const count = Math.ceil(width / SIZE);
+    columns = Array.from({ length: count }, () => Math.random() * -height);
+  }
+
+  function draw() {
+    // 지우지 않고 옅은 검정을 덮는다 — 지나간 글자가 서서히 사라진다.
+    ctx.fillStyle = 'rgba(5, 8, 7, 0.09)';
+    ctx.fillRect(0, 0, width, height);
+    for (let i = 0; i < columns.length; i += 1) {
+      const y = columns[i];
+      const glyph = GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      ctx.fillStyle = y < SIZE * 2 ? '#c8ffdd' : '#00ff66';   // 맨 앞 글자만 밝게
+      ctx.fillText(glyph, i * SIZE, y);
+      columns[i] = y > height + Math.random() * 400 ? 0 : y + SIZE;
+    }
+  }
+
+  let ticking = null;
+  const startRain = () => { if (ticking === null) ticking = setInterval(draw, 70); };
+  const stopRain = () => { if (ticking !== null) { clearInterval(ticking); ticking = null; } };
+
+  resize();
+  startRain();
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopRain(); else startRain();
+  });
+}());
 
 // ================================================================ 시작
 //
 // 이 블록이 없으면 화면을 열어도 아무 일도 안 일어난다. 단추를 누르기
-// 전까지는 시세도, 받아둔 양도, 서버가 꺼졌다는 안내도 나오지 않는다.
-// 실제로 한동안 그런 채로 있었다 — 안내 문구 하나를 걷어내면서 이 줄들이
-// 같이 지워졌는데, 그 뒤로도 계속 단추를 눌러 확인했기 때문에 못 봤다.
+// 전까지는 시세도, 받아둔 양도 나오지 않는다. 실제로 한동안 그런 채로
+// 있었다 — 안내 문구 하나를 걷어내면서 이 줄들이 같이 지워졌는데, 그
+// 뒤로도 계속 단추를 눌러 확인했기 때문에 못 봤다.
 //
 // 맨 아래에 둔다. 위에서 쓰는 함수들이 모두 정의된 뒤여야 한다.
+
+renderCoins();
+renderPeriods();
+spawn();
+send({ type: 'summary', market });
 
 refreshTicker();
 setInterval(refreshTicker, 5000);
 
 // 탭을 다시 보면 곧바로 따라잡는다. 안 보는 동안 아무것도 안 물어봤으므로
-// 화면이 그만큼 뒤처져 있다.
+// 맨 위 시세가 그만큼 뒤처져 있다.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
-  refreshTicker();
-  stopPolling();
-  refreshState();
+  if (!document.hidden) refreshTicker();
 });
-
-refreshState();

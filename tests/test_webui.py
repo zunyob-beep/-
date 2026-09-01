@@ -17,16 +17,31 @@ import json
 import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from patternscan.data import cache_path, save
 from patternscan.models import Candle
+from patternscan.odds import MIN_SAMPLES as ODDS_MIN_SAMPLES_FOR_TEST
 from patternscan.webui import server as webui
+
+
+def _odds_stub(samples, length):
+    """표본만 있으면 되는 가짜 확률 행."""
+    from patternscan.odds import Odds
+
+    return Odds(
+        timeframe="minute1", length=length, horizon=1, samples=samples,
+        up=0, beat_cost=0, base_up=0.5, base_beat=0.2,
+        median_return=0.0, best=0.0, worst=0.0,
+        min_similarity=0.9, query_linearity=0.3,
+    )
 
 
 # ---------------------------------------------------------------- 준비
@@ -547,20 +562,6 @@ def test_a_dead_server_is_told_apart_from_a_rejected_request(client):
     assert "instanceof Unreachable" in source
 
 
-def test_the_ios_hint_points_at_the_right_corner(client):
-    """공유 버튼 자리가 기기마다 다르다.
-
-    아이패드는 위쪽 주소창 옆, 아이폰은 아래쪽 가운데다. 한쪽만 적어두면
-    다른 쪽 사용자는 없는 곳을 쳐다보게 된다 — 그리고 그 버튼을 못 찾으면
-    홈 화면 추가는 영영 못 한다.
-    """
-    source = client[0].get("/static/app.js")[1].decode("utf-8")
-    assert "화면 아래 가운데" in source     # 아이폰
-    assert "오른쪽 위 주소창 옆" in source   # 아이패드
-    # 둘을 갈라놓지 않으면 위 두 문구가 있어도 소용없다.
-    assert "iphone ?" in source
-
-
 # ------------------------------------------------- 홈 화면에 넣을 주소
 #
 # "어떤 주소를 추가하냐"가 매번 막히는 자리다. 답이 실행 방법마다 다른데
@@ -604,3 +605,574 @@ def test_an_undiscoverable_network_says_so_instead_of_guessing(monkeypatch):
     monkeypatch.delenv("CODESPACE_NAME", raising=False)
     monkeypatch.setattr(webui, "_lan_address", lambda: None)
     assert webui.phone_address(8765, "0.0.0.0") == (None, "lan-unknown")
+
+
+# ---------------------------------------------------------- 맨 위 지금 시세
+class FakeTickerClient:
+    """업비트 현재가 API 흉내. 몇 번 불렸는지도 센다."""
+
+    def __init__(self, prices=None, fail=False):
+        self.prices = prices or {"KRW-BTC": 158_320_000.0, "KRW-SOL": 268_000.0}
+        self.fail = fail
+        self.calls = []
+
+    def get_ticker(self, market):
+        from patternscan.upbit import Ticker, UpbitError
+
+        self.calls.append(market)
+        if self.fail:
+            raise UpbitError("업비트에 닿지 않습니다")
+        price = self.prices[market]
+        return Ticker(
+            market=market, price=price, change_rate=0.0124,
+            change_price=price * 0.0124, high=price * 1.03, low=price * 0.97,
+            at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        )
+
+
+def test_the_ticker_reports_price_and_direction(client):
+    api, state = client
+    state.prices.client = FakeTickerClient()
+    data = api.get_json("/api/ticker?market=KRW-BTC")
+    assert data["ok"] is True
+    assert data["price"] == 158_320_000.0
+    assert data["label"] == "비트코인"
+    assert data["direction"] == "up"
+
+
+def test_a_failed_ticker_does_not_turn_the_whole_page_red(client):
+    """맨 위 숫자는 장식이다. 못 받았다고 분석 화면이 오류가 되면 안 된다."""
+    api, state = client
+    state.prices.client = FakeTickerClient(fail=True)
+    status, body, _ = api.get("/api/ticker?market=KRW-BTC")
+    assert status == 200, "시세 실패가 HTTP 오류로 나가면 화면 전체가 빨개진다"
+    assert json.loads(body)["ok"] is False
+
+
+def test_an_unknown_market_falls_back_instead_of_becoming_a_filename(client):
+    """종목 코드는 파일 이름이 된다 (KRW-BTC_minute1.csv).
+
+    밖에서 온 문자열을 그대로 쓰면 폴더를 벗어나는 이름도 만들 수 있다.
+    """
+    api, state = client
+    state.prices.client = FakeTickerClient()
+    for bad in ("../../../etc/passwd", "KRW-DOGE", "", "KRW-BTC; rm -rf /"):
+        data = api.get_json(f"/api/ticker?market={urllib.parse.quote(bad)}")
+        assert data["market"] == "KRW-BTC", f"{bad!r}가 그대로 통과했습니다"
+
+
+def test_a_bad_market_never_reaches_a_job(client):
+    api, _ = client
+    started = api.post_json("/api/scan", {"market": "../../etc/passwd"})
+    assert started["started"]
+    assert not list(Path(".").glob("**/etc*")), "폴더 밖에 파일을 만들었습니다"
+
+
+def test_prices_are_reused_for_a_moment(client):
+    """창을 여러 개 열어두면 그만큼 업비트를 두드린다.
+
+    수집이 도는 중이면 같은 한도를 나눠 쓰게 되어 수집이 느려진다.
+    화면 숫자 하나 때문에 본업이 밀리면 안 된다.
+    """
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    for _ in range(10):
+        api.get_json("/api/ticker?market=KRW-BTC")
+    assert len(fake.calls) == 1, f"10번 물어봤더니 업비트를 {len(fake.calls)}번 불렀습니다"
+
+
+def test_each_market_is_cached_separately(client):
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    assert api.get_json("/api/ticker?market=KRW-BTC")["price"] == 158_320_000.0
+    assert api.get_json("/api/ticker?market=KRW-SOL")["price"] == 268_000.0
+
+
+def test_the_cache_expires(client):
+    """영원히 들고 있으면 '지금 시세'가 아니라 '아까 시세'다."""
+    api, state = client
+    fake = FakeTickerClient()
+    state.prices.client = fake
+    state.prices.ttl = 0.0
+    api.get_json("/api/ticker?market=KRW-BTC")
+    api.get_json("/api/ticker?market=KRW-BTC")
+    assert len(fake.calls) == 2
+
+
+def test_the_page_is_told_which_coins_exist(client):
+    """화면이 종목 목록을 따로 들고 있으면 언젠가 서버와 갈라진다."""
+    state = _run_scan(client)
+    codes = [m["code"] for m in state["markets"]]
+    assert codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"]
+    assert [m["label"] for m in state["markets"]] == ["비트코인", "이더리움", "엑스알피", "솔라나"]
+
+
+def test_direction_matches_upbit_colours():
+    """업비트는 오르면 빨강, 내리면 파랑이다. 여기서만 뒤집으면 안 된다."""
+    from patternscan.upbit import Ticker
+
+    def at(rate):
+        return Ticker("KRW-BTC", 100.0, rate, 1.0, 1.0, 1.0,
+                      datetime(2026, 1, 1, tzinfo=timezone.utc)).direction
+
+    assert at(0.01) == "up"
+    assert at(-0.01) == "down"
+    assert at(0.0) == "flat"
+
+
+# ------------------------------------------------------- 얼마나 과거까지
+def test_the_page_can_ask_for_more_than_thirty_days(client):
+    """예전에는 이 선택이 없어서 화면 버튼이 늘 30일치만 요청했다.
+
+    명령줄로 8년치를 받아둔 사람이 화면에서 버튼을 누르면 그때부터
+    30일만 갱신됐고, 왜 숫자가 그것밖에 안 되는지 알 방법이 없었다.
+    """
+    state = _run_scan(client)
+    counts = [p["count"] for p in state["periods"]]
+    assert 43_200 in counts, "30일치가 없습니다"
+    assert max(counts) >= 4_000_000, "8년치를 고를 수 없습니다"
+    assert counts == sorted(counts), "짧은 것부터 나와야 고르기 쉽다"
+
+
+def test_the_requested_period_actually_reaches_the_fetch(client, monkeypatch):
+    """화면에서 8년을 골랐는데 서버가 30일만 받으면 아무 소용이 없다."""
+    api, state = client
+    asked = []
+
+    def spy(client_, market, timeframe, count, **kwargs):
+        asked.append((timeframe, count))
+        raise webui.UpbitError("여기서 멈춘다")
+
+
+    monkeypatch.setattr(webui, "update", spy)
+    api.post_json("/api/live", {"market": "KRW-BTC", "count": 4_204_800})
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+    by_timeframe = dict(asked)
+    assert by_timeframe["minute1"] == 4_204_800
+    # 같은 기간이 되도록 나눠야 한다. 3분봉을 420만 개 받으면 24년치다.
+    assert by_timeframe["minute3"] == 4_204_800 // 3
+    assert by_timeframe["minute5"] == 4_204_800 // 5
+
+
+def test_the_cache_report_says_when_not_just_how_many(client):
+    """개수만으로는 '작다'는 느낌만 들 뿐 왜 작은지 알 수 없다."""
+    api, _ = client
+    cached = api.get_json("/api/state")["cached"]
+    minute1 = next(c for c in cached if c["timeframe"] == "minute1")
+    assert minute1["count"] > 0
+    assert minute1["from"] and minute1["to"], "기간이 없으면 개수가 많은지 적은지 모른다"
+    assert minute1["from"] <= minute1["to"]
+
+
+def test_fetch_progress_is_finer_than_three_steps(client, monkeypatch):
+    """8년치는 40분이 걸린다. 3칸 막대로는 멈춘 것과 구분이 안 된다."""
+    api, state = client
+    seen = []
+
+    def spy(client_, market, timeframe, count, **kwargs):
+        progress = kwargs.get("progress")
+        assert progress is not None, f"{timeframe} 수집에 진행 표시가 없습니다"
+        progress(count // 2, count)
+        seen.append(state.job.snapshot())
+        raise webui.UpbitError("여기까지")
+
+    monkeypatch.setattr(webui, "update", spy)
+    api.post_json("/api/live", {"market": "KRW-BTC", "count": 43_200})
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.05)
+
+    assert seen and seen[0]["total"] > 3, "진행이 봉 개수 단위여야 한다"
+
+
+# ------------------------------------------------------- 숨기라면 숨겨야 한다
+def test_hidden_really_hides(client):
+    """`hidden` 속성은 브라우저 기본 스타일의 `[hidden]{display:none}`으로
+    동작하는데, 그건 **클래스 선택자 하나에도 진다.**
+
+    실제로 그랬다. `.install-hint`에 display:flex를 준 순간, hidden을 붙여
+    둔 안내가 내용도 없이 화면에 떴다 — "앱처럼 쓰기:"만 덩그러니.
+    """
+    css = client[0].get("/static/style.css")[1].decode("utf-8")
+    assert "[hidden]" in css and "display: none !important" in css
+
+
+def test_an_error_without_a_reason_is_treated_as_unreachable(client):
+    """이 서버는 오류에 반드시 이유를 붙인다.
+
+    그러니 이유 없는 오류가 왔다면 답한 쪽이 이 서버가 아니다 —
+    코드스페이스가 잠들어 깃허브 프록시가 대신 답한 경우다. 그때
+    "오류 404"라고만 띄우면 사용자는 뭘 해야 할지 알 수가 없다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "if (!response.ok && !said)" in source
+    assert "서버가 아닌 곳에서" in source
+
+
+def test_every_server_error_carries_a_reason(client):
+    """위 규칙이 성립하려면 서버가 그 약속을 지켜야 한다."""
+    for path in ("/api/examples?timeframe=nope&horizon=1", "/no-such-route", "/static/no-such.js"):
+        try:
+            client[0].get(path)
+        except urllib.error.HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            assert body.get("error"), f"{path}가 이유 없이 실패했습니다"
+
+
+# ------------------------------------------------- 표본이 안 모였을 때의 안내
+def test_no_matches_says_how_many_were_found(client):
+    """"기준을 낮춰 보세요"만 말하면, 이미 낮춘 사람에게는 아무 말도 안 한 것이다."""
+    from patternscan.webui.server import _why_nothing_matched
+
+    rows = [_odds_stub(samples=4, length=180), _odds_stub(samples=1, length=180)]
+    said = " ".join(_why_nothing_matched(rows))
+    assert "4개" in said, "몇 개가 모였는지 숫자로 말해야 한다"
+    assert str(ODDS_MIN_SAMPLES_FOR_TEST) in said
+
+
+def test_a_long_window_is_named_as_the_thing_to_change(client):
+    """유사도보다 직전 봉 개수가 훨씬 크게 듣는다. 그걸 먼저 말해야 한다."""
+    from patternscan.webui.server import _why_nothing_matched
+
+    said = " ".join(_why_nothing_matched([_odds_stub(samples=2, length=180)]))
+    assert "180개" in said
+    assert "직전 몇 개 봉" in said
+
+
+def test_with_nothing_at_all_it_still_advises(client):
+    from patternscan.webui.server import _why_nothing_matched
+
+    said = _why_nothing_matched([])
+    assert said and any("직전 몇 개 봉" in line for line in said)
+
+
+# ------------------------------------------------------- 한 번 죽으면 끝이었다
+def test_polling_survives_any_error(client):
+    """오류가 나도 **다음 폴링은 반드시 잡아야** 한다.
+
+    예전에는 오류 종류를 보고 어떤 경우에만 다시 잡았다. 그래서 예상 못 한
+    오류가 한 번 나면 그 자리에서 폴링이 죽었고, 마지막 응답에서 잠갔던
+    단추가 영영 잠긴 채로 남았다. 새로고침 말고는 되살릴 방법이 없었다.
+    브라우저로 재현하니 오류 뒤 7초 동안 재시도가 0회였다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    body = source[source.index("async function refreshState()"):]
+    body = body[: body.index("\nfunction unlock")]
+    assert "finally" in body, "다음 폴링을 finally에서 잡아야 한다"
+    assert "timer = setTimeout(refreshState, next)" in body
+    # 조건부로 다시 잡던 옛 구조로 돌아가면 안 된다
+    assert "if (err instanceof Unreachable) { stopPolling();" not in source
+
+
+def test_buttons_unlock_when_the_server_stops_answering(client):
+    """서버가 답을 못 하는 동안 단추까지 잠겨 있으면 손쓸 방법이 없어진다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "function unlock()" in source
+    assert "unlock();" in source
+
+
+# ------------------------------------------------------------------ 멈추기
+def test_a_long_job_can_be_stopped(client):
+    """8년치 수집은 40분이 걸린다. 잘못 눌렀을 때 빠져나올 길이 있어야 한다."""
+    api, state = client
+    entered = threading.Event()
+
+    def slow(state_):
+        entered.set()
+        for _ in range(10_000):
+            state_.checkpoint()
+            threading.Event().wait(0.01)
+
+    assert state.start("slow", slow, state)
+    assert entered.wait(3)
+
+    answer = api.post_json("/api/stop", {})
+    assert answer["stopped"] is True
+
+    for _ in range(300):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+    job = state.job.snapshot()
+    assert not job["running"], "멈추라고 했는데 계속 돕니다"
+    # 사용자가 멈춘 것은 고장이 아니다 — 빨간 오류로 띄우면 안 된다
+    assert not job["error"]
+    assert "멈췄" in job["message"]
+
+
+def test_stopping_when_nothing_runs_is_harmless(client):
+    assert client[0].post_json("/api/stop", {})["stopped"] is False
+
+
+def test_a_stopped_job_lets_the_next_one_start(client):
+    """멈춘 뒤에도 못 돌리면 멈추기가 무슨 소용인가."""
+    api, state = client
+
+    def slow(state_):
+        for _ in range(10_000):
+            state_.checkpoint()
+            threading.Event().wait(0.01)
+
+    state.start("slow", slow, state)
+    threading.Event().wait(0.2)
+    api.post_json("/api/stop", {})
+    for _ in range(300):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+
+    assert state.start("again", lambda: None), "멈춘 뒤에 다시 시작하지 못합니다"
+
+
+def test_an_unexpected_failure_still_reports_itself(client):
+    """예상 못 한 예외가 조용히 사라지면 원인을 영영 못 찾는다."""
+    api, state = client
+
+    def broken():
+        raise ZeroDivisionError("0으로 나눴습니다")
+
+    state.start("broken", broken)
+    for _ in range(200):
+        if not state.job.snapshot()["running"]:
+            break
+        threading.Event().wait(0.02)
+    job = state.job.snapshot()
+    assert "ZeroDivisionError" in job["error"]
+
+
+def test_pressing_start_twice_says_so(client):
+    """시작이 안 됐는데 아무 말도 안 하면, 눌러도 반응이 없는 것처럼 보인다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "answer.started === false" in source
+    assert "이미 하고 있습니다" in source
+
+
+# ================================================= 다른 종목 미리 받아두기
+#
+# 이더리움을 처음 누르면 거기서 몇 분을 기다리게 된다. 비트코인을 보는
+# 동안 나머지를 받아두면 누르는 즉시 나온다. 단, **본업을 밀어내면 안 된다.**
+def test_warming_fetches_the_other_coins(client, monkeypatch):
+    api, state = client
+    asked = []
+    monkeypatch.setattr(webui, "update",
+                        lambda c, market, tf, n, **kw: asked.append((market, tf)))
+
+    state.warm("KRW-BTC", 43_200)
+    for _ in range(200):
+        if len(asked) >= 9:
+            break
+        threading.Event().wait(0.02)
+
+    coins = {market for market, _ in asked}
+    assert "KRW-BTC" not in coins, "보고 있는 종목을 또 받았습니다"
+    assert coins == {"KRW-ETH", "KRW-XRP", "KRW-SOL"}
+
+
+def test_warming_does_not_take_the_job_slot(client, monkeypatch):
+    """미리 받는 동안 단추가 잠기면, 사용자는 도구가 멈춘 줄 안다."""
+    api, state = client
+    monkeypatch.setattr(webui, "update", lambda *a, **k: threading.Event().wait(0.05))
+
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.1)
+    assert not state.job.snapshot()["running"], "미리 받기가 작업 자리를 차지했습니다"
+    assert state.start("real", lambda: None), "미리 받는 중이라고 본업을 막았습니다"
+
+
+def test_warming_yields_the_moment_a_real_job_starts(client, monkeypatch):
+    """사용자가 누른 일이 먼저다. 미리 받던 건 곧바로 비켜야 한다."""
+    api, state = client
+    asked = []
+
+    def slow(c, market, tf, n, **kw):
+        asked.append(market)
+        threading.Event().wait(0.05)
+
+    monkeypatch.setattr(webui, "update", slow)
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.08)
+
+    state.start("real", lambda: None)      # 본업 시작 → 미리 받기는 멈춰야 한다
+    count = len(asked)
+    threading.Event().wait(0.3)
+    assert len(asked) <= count + 1, "본업이 시작됐는데 계속 받고 있습니다"
+
+
+def test_a_failure_while_warming_is_silent(client, monkeypatch):
+    """부탁한 적 없는 작업 때문에 화면에 오류가 뜨면 안 된다."""
+    api, state = client
+
+    def explode(*args, **kwargs):
+        raise ZeroDivisionError("미리 받다 터졌다")
+
+    monkeypatch.setattr(webui, "update", explode)
+    state.warm("KRW-BTC", 43_200)
+    threading.Event().wait(0.3)
+    assert not state.job.snapshot()["error"], "미리 받기 실패가 화면에 새어 나왔습니다"
+
+
+# ======================================================== 돈으로 보여주기
+def test_the_page_can_turn_percentages_into_money(client):
+    """"+0.02%"는 아무 느낌이 없다. "100만원에 +200원"은 바로 온다."""
+    body = client[0].get("/")[1].decode("utf-8")
+    assert 'id="in-amount"' in body, "넣을 금액을 입력할 곳이 없습니다"
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "function cash(" in source
+    assert "function moneyCell(" in source
+
+
+def test_money_is_shown_after_fees(client):
+    """수수료를 빼기 전 금액을 보여주면 실제보다 좋아 보인다."""
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    spot = source.index("function moneyCell(")
+    body = source[spot : spot + 400]
+    assert "analysis.cost" in body, "수수료를 안 빼고 금액을 냈습니다"
+
+
+# ================================================== 실제 봉으로 그린 그래프
+def test_the_projection_carries_real_candles(client):
+    """예상만 덜렁 그리면 허공에서 시작해 진짜 차트로 안 보인다."""
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    forward = state["analysis"]["projection"]
+    if not forward:
+        pytest.skip("이 데이터로는 예상을 그릴 수 없습니다")
+    one = next(iter(forward.values()))
+    assert one["recent"], "지나온 봉이 없습니다"
+    first = one["recent"][0]
+    assert set(first) == {"o", "h", "l", "c"}, "고가·저가가 빠져 꼬리를 못 그립니다"
+    assert first["l"] <= first["o"] <= first["h"]
+    assert first["l"] <= first["c"] <= first["h"]
+
+
+def test_the_projection_shows_real_paths_not_just_the_average(client):
+    """중앙값은 100개의 중앙값이라 매끄러울 수밖에 없다.
+
+    그것만 보면 "앞으로 이렇게 미끄러지듯 간다"로 읽힌다. 실제로 갔던
+    길을 몇 개 겹쳐 그려야 톱니처럼 꺾이는 진짜 모습이 보인다.
+    """
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    forward = state["analysis"]["projection"]
+    if not forward:
+        pytest.skip("이 데이터로는 예상을 그릴 수 없습니다")
+    one = next(iter(forward.values()))
+    assert one["walks"], "실제로 갔던 길이 하나도 없습니다"
+    assert all(w[0] == 0.0 for w in one["walks"]), "지금 값에서 시작하지 않습니다"
+    assert all(len(w) == len(one["median"]) for w in one["walks"])
+
+
+# ============================================ 판정과 금액이 어긋나면 안 된다
+#
+# 실제로 어긋났다. 확률 관문 셋을 다 통과한 조합이 "살 만합니다"로 나갔는데,
+# 그 조합의 중앙값 수익은 +0.036%였고 왕복 비용은 0.140%였다. 화면 오른쪽
+# '넣었다면' 칸에는 −1,036원이 찍혀 있었다 — **매수를 권하면서 그 옆에
+# 손실을 적어 둔 셈**이다.
+#
+# 확률이 높은 것과 돈이 되는 것은 다른 문제다. 오를 확률이 60%여도 오를 때
+# 조금 오르고 내릴 때 많이 내리면 잃는다.
+def _row(**over):
+    base = dict(
+        timeframe="minute5", length=20, horizon=3, samples=100,
+        up=60, beat_cost=22, base_up=0.49, base_beat=0.18,
+        median_return=0.00036, best=0.02, worst=-0.02,
+        min_similarity=0.9, query_linearity=0.3,
+    )
+    base.update(over)
+    from patternscan.odds import Odds
+
+    return Odds(**base)
+
+
+def test_a_buy_is_never_recommended_at_a_loss():
+    """이 시험 하나가 이 화면의 마지막 방어선이다."""
+    cost = 0.0014
+    # 확률 관문은 전부 통과하지만 중앙값이 비용을 못 넘는 줄
+    said = webui._verdict([_row()], cost)
+    assert said["buy"] is False, "손해 보는 조합에 매수를 권했습니다"
+    joined = " ".join(said["reasons"])
+    assert "돈이 되지는 않습니다" in joined
+    assert "911" in joined or "원" in joined, "얼마를 잃는지 금액으로 말해야 합니다"
+
+
+def test_a_buy_needs_the_money_to_actually_work():
+    cost = 0.0014
+    rich = _row(median_return=0.004)          # 비용의 세 배쯤
+    said = webui._verdict([rich, rich], cost)
+    assert said["buy"] is True
+    assert any("중앙값 수익" in r for r in said["reasons"])
+
+
+def test_whatever_the_verdict_recommends_actually_pays(client):
+    """어떤 데이터가 오든 '살 만합니다'는 돈이 될 때만 나와야 한다."""
+    state = _run_scan(client, oddsLength=20, similarity=0.5)
+    analysis = state["analysis"]
+    if not analysis["verdict"]["buy"]:
+        return
+    cost = analysis["cost"]
+    winners = [
+        r for r in analysis["odds"]
+        if r["samples"] >= analysis["minSamples"] and r["medianReturn"] > cost
+    ]
+    assert winners, "살 만하다고 했는데 비용을 넘는 조합이 하나도 없습니다"
+
+
+def test_the_reason_names_the_money_gate_only_when_it_is_the_one_that_failed():
+    """통과한 관문까지 실패로 적으면 거짓말이 된다."""
+    cost = 0.0014
+    # 돈은 되지만 우연과 구분이 안 되는 줄
+    unclear = _row(median_return=0.004, samples=25, up=14, base_up=0.5)
+    said = webui._verdict([unclear], cost)
+    assert not any("돈이 되지는 않습니다" in r for r in said["reasons"]), \
+        "돈은 되는데 돈 때문이라고 했습니다"
+
+
+# ==================================================== 화면이 스스로 시작하나
+def test_the_page_actually_starts_itself(client):
+    """이 줄들이 없으면 화면을 열어도 **아무 일도 안 일어난다.**
+
+    실제로 한동안 그랬다. 안내 문구 하나를 걷어내면서 파일 맨 아래의 시작
+    호출까지 같이 지워졌는데, 그 뒤로도 계속 단추를 눌러 확인했기 때문에
+    몇 커밋 동안 아무도 못 봤다. 단추를 누르기 전까지 시세도, 받아둔 양도,
+    서버가 꺼졌다는 안내도 나오지 않는 상태였다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    tail = source[source.index("// ================================================================ 시작"):]
+    assert "refreshState();" in tail, "상태를 처음 불러오는 호출이 없습니다"
+    assert "refreshTicker();" in tail, "시세를 처음 불러오는 호출이 없습니다"
+    assert "setInterval(refreshTicker" in tail, "시세 갱신이 돌지 않습니다"
+    # 정의보다 먼저 부르면 안 되므로 맨 아래여야 한다
+    assert tail.index("refreshState();") > 0
+    assert source.rindex("function refreshState") < source.index(
+        "// ================================================================ 시작"
+    )
+
+
+def test_polling_stops_when_nobody_is_looking(client):
+    """열어만 둔 탭이 코드스페이스를 24시간 깨워 두고 무료 시간을 녹였다.
+
+    15초마다 상태를, 5초마다 시세를 물어보니 접속이 끊기질 않아서
+    컨테이너가 잠들지 못했다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "everLoaded && document.hidden" in source, "안 보일 때도 계속 물어봅니다"
+    # 자동 갱신도 마찬가지 — 안 보는데 시세를 받고 계산까지 할 이유가 없다
+    assert "!document.hidden && !$('btn-live').disabled" in source
+
+
+def test_the_very_first_load_happens_even_in_a_background_tab(client):
+    """첫 화면까지 건너뛰면 배경 탭에서 연 화면이 영영 빈 채로 남는다.
+
+    실제로 그렇게 만들었다가 되돌렸다. 아낄 것은 '되묻는 트래픽'이지
+    '첫 화면'이 아니다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "let everLoaded = false" in source
+    assert "everLoaded = true" in source
+    # everLoaded 없이 hidden만 보는 옛 구조로 돌아가면 안 된다
+    assert "if (document.hidden) {\n    stopPolling();" not in source

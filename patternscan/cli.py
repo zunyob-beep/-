@@ -12,8 +12,16 @@ import logging
 import os
 import sys
 
-from .data import cache_path, fetch, load_cached, save
-from .models import HORIZONS, KST, WINDOW_LENGTHS, Series, timeframe_label
+from .data import (
+    cache_path,
+    count_cached,
+    fetch,
+    load_cached,
+    save,
+    span_cached,
+    update,
+)
+from .models import HORIZONS, KST, MARKETS, WINDOW_LENGTHS, Series, timeframe_label
 from .odds import format_odds, odds_all
 from .report import (
     format_coverage,
@@ -71,7 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
         ("doctor", "파이썬·업비트·시세가 준비됐는지 하나씩 점검"),
     ):
         p = sub.add_parser(name, help=help_text)
-        p.add_argument("--market", default="KRW-BTC", help="마켓 코드 (기본 KRW-BTC)")
+        if name == "ui":
+            # 화면의 종목 단추는 이 넷뿐이다. 다른 걸 받아두면 서버는
+            # KRW-DOGE인데 화면은 비트코인을 가리키는 상태가 된다.
+            p.add_argument(
+                "--market", default="KRW-BTC", choices=list(MARKETS),
+                help=f"화면에서 고를 수 있는 종목 ({', '.join(MARKETS.values())})",
+            )
+        else:
+            p.add_argument("--market", default="KRW-BTC", help="마켓 코드 (기본 KRW-BTC)")
         p.add_argument("--data-dir", default="data", help="CSV 캐시 폴더")
         if name == "fetch":
             p.add_argument("--count", type=int, default=None, help="1분봉 기준 받을 봉 개수")
@@ -177,15 +193,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         def progress(done: int, total: int, tf: str = timeframe) -> None:
             print(f"  {tf}: {done:,}/{total:,}", end="\r", flush=True)
 
-        series = fetch(
+        update(
             client, args.market, timeframe, count,
             directory=args.data_dir, refresh=args.refresh, progress=progress,
         )
-        span = series.span
+        # 받은 것이 아니라 **파일에 있는 것**을 말한다. 그게 사실이고,
+        # 게다가 420만 봉을 다시 만들지 않아도 된다.
+        have = count_cached(args.market, timeframe, args.data_dir)
+        span = span_cached(args.market, timeframe, args.data_dir)
         window = ""
         if span:
             window = f"  {span[0]:%Y-%m-%d %H:%M} ~ {span[1]:%Y-%m-%d %H:%M} UTC"
-        print(f"  {timeframe}: 봉 {len(series):,}개 확보{window}          ")
+        print(f"  {timeframe}: 봉 {have:,}개 확보{window}          ")
     return 0
 
 

@@ -57,7 +57,16 @@ if [ ! -f "data/${MARKET}_minute1.csv" ]; then
   say "${DIM}중간에 끊겨도 받은 만큼 저장되니, 다시 실행하면 이어서 받습니다.${OFF}"
   say ""
 fi
-python -m patternscan fetch --market "$MARKET" --count "$COUNT"
+# 시세를 못 받아도 **화면은 연다.** 예전에는 여기서 죽어서, 잠깐 인터넷이
+# 안 되거나 업비트가 막힌 것뿐인데 빨간 글씨만 잔뜩 보고 끝났다. 화면은
+# 받아둔 시세로도 돌아가고, 아무것도 없으면 무엇을 하면 되는지 안내한다.
+if ! python -m patternscan fetch --market "$MARKET" --count "$COUNT"; then
+  say ""
+  say "${BOLD}시세를 받지 못했습니다.${OFF} 그래도 화면은 엽니다."
+  say "${DIM}인터넷이 안 되거나 업비트가 막혀 있을 수 있습니다."
+  say "어디가 막혔는지 보려면 다른 창에서:  python -m patternscan doctor${OFF}"
+  say ""
+fi
 
 # ---------------------------------------------------------------- 화면 열기
 HOST_ARG=()

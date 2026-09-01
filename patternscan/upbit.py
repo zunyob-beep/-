@@ -11,6 +11,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +36,26 @@ PAGE = 200
 
 class UpbitError(RuntimeError):
     """시세 조회 실패."""
+
+
+@dataclass(frozen=True)
+class Ticker:
+    """지금 이 순간의 값. 봉과 달리 '확정'을 기다리지 않는다."""
+
+    market: str
+    price: float
+    #: 전일 종가 대비. 업비트 화면의 그 숫자다.
+    change_rate: float
+    change_price: float
+    high: float
+    low: float
+    at: datetime
+
+    @property
+    def direction(self) -> str:
+        if self.change_rate > 0:
+            return "up"
+        return "down" if self.change_rate < 0 else "flat"
 
 
 class RateLimiter:
@@ -135,14 +156,29 @@ class UpbitClient:
         candles.sort(key=lambda c: c.ts)
         return candles
 
-    def get_markets(self) -> list[dict[str, Any]]:
-        return self._get("/v1/market/all", {"isDetails": "false"}) or []
+    def get_ticker(self, market: str) -> Ticker:
+        """지금 얼마인지. 봉이 아니라 현재가다.
 
-    def get_ticker(self, market: str) -> dict[str, Any]:
+        봉은 그 분이 끝나야 확정되므로, '지금 시세'로 쓰면 최대 1분
+        늦은 값을 보여주게 된다. 화면 맨 위에 큰 글씨로 띄울 숫자는
+        그러면 안 된다.
+        """
         rows = self._get("/v1/ticker", {"markets": market}) or []
         if not rows:
-            raise UpbitError(f"{market} 시세가 없습니다")
-        return rows[0]
+            raise UpbitError(f"{market} 현재가를 받지 못했습니다")
+        row = rows[0]
+        return Ticker(
+            market=str(row.get("market", market)),
+            price=float(row["trade_price"]),
+            change_rate=float(row.get("signed_change_rate", 0.0)),
+            change_price=float(row.get("signed_change_price", 0.0)),
+            high=float(row.get("high_price", 0.0)),
+            low=float(row.get("low_price", 0.0)),
+            at=datetime.now(timezone.utc),
+        )
+
+    def get_markets(self) -> list[dict[str, Any]]:
+        return self._get("/v1/market/all", {"isDetails": "false"}) or []
 
     def collect(
         self,

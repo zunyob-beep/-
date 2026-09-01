@@ -1,0 +1,88 @@
+# 웹앱을 GitHub Pages에 올린다.
+#
+# 이걸 켜 두면 코드를 밀어 넣을 때마다 주소가 알아서 갱신된다. 아이패드
+# 홈 화면의 아이콘은 그 주소를 가리키므로, 다음에 열 때 새 판이 뜬다.
+#
+# **처음 한 번은 사람이 해야 하는 일이 있다** (README에 적어 뒀다):
+#   1. 저장소를 공개(Public)로 바꾼다 — 무료 요금제에서 Pages는 공개
+#      저장소에서만 됩니다.
+#   2. Settings → Pages → Source를 **GitHub Actions**로 고른다.
+#
+# 올리기 전에 테스트를 먼저 돌린다. 계산이 깨진 판이 아이패드까지
+# 올라가면, 화면에는 그럴듯한 숫자가 그대로 찍히기 때문에 알아채기 어렵다.
+
+name: 웹앱 올리기
+
+on:
+  push:
+    branches:
+      - main
+      - claude/bitcoin-auto-trading-program-cxyddm
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 올리는 중에 또 밀어 넣으면 나중 것이 이긴다. 중간에 끊지는 않는다 —
+# 반쯤 올라간 상태로 남는 게 제일 나쁘다.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # 이름표(name)는 한글이어도 되지만 **왼쪽의 job 아이디는 영문이어야 한다.**
+  # 한글로 쓰면 깃허브가 파일을 못 읽어서 작업 0개짜리 실패로 끝난다.
+  check:
+    name: 검사
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 파이썬 결과와 대조
+        run: node --test "tests/js/*.test.js"
+
+  deploy:
+    name: 올리기
+    needs: check
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: web 폴더만 담기
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 여기까지 못 오면 십중팔구 이유가 하나다 — Pages를 아직 안 켰다.
+      # 그런데 그때 나오는 메시지는 영어에 알아보기 어려워서, 무엇을
+      # 눌러야 하는지 알 수가 없다. 실행 화면 맨 위에 한국어로 적어 준다.
+      - name: 안 됐으면 무엇을 눌러야 하는지
+        if: failure()
+        run: |
+          {
+            echo "## 올리기가 안 됐습니다"
+            echo ""
+            echo "거의 항상 Pages를 아직 안 켜서입니다. 순서대로 해 보세요."
+            echo ""
+            echo "1. **Settings → Pages → Source** 를 **GitHub Actions** 로 고릅니다."
+            echo "   여기서 고를 수 있으면 그걸로 끝입니다."
+            echo ""
+            echo "2. 고를 수 없고 \"공개로 바꾸거나 요금제를 올리라\"고 하면,"
+            echo "   그때만 **Settings → 맨 아래 Change repository visibility →"
+            echo "   Public** 으로 바꾸고 1번을 다시 합니다."
+            echo "   (무료 요금제의 Pages는 공개 저장소에서만 됩니다."
+            echo "   이 저장소에는 API 키도 비밀번호도 없습니다.)"
+            echo ""
+            echo "둘 다 하신 뒤 이 화면 오른쪽 위 **Re-run all jobs** 를 누르세요."
+            echo "그러면 주소가 생깁니다: https://zunyob-beep.github.io/-/"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Pages가 꺼져 있거나 저장소가 비공개입니다. 실행 화면 위의 안내를 보세요."

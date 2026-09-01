@@ -20,10 +20,10 @@ import numpy as np
 
 OUT = Path(__file__).resolve().parent.parent / "patternscan" / "webui" / "static"
 
-GROUND = (0x0F, 0x11, 0x16)
-LINE = (0x3D, 0x7E, 0xFF)
+GROUND = (0x05, 0x08, 0x07)
+LINE = (0x00, 0xFF, 0x66)
 
-#: 파비콘과 같은 꺾은선. 32칸 좌표계 기준.
+#: 파비콘과 같은 꺾은선. 32칸 좌표계 기준. 색은 화면과 같은 인광 초록.
 POINTS = [(5, 21), (11, 13), (16, 17), (21, 7), (27, 12)]
 
 #: 4배로 그린 뒤 줄인다. 계단이 안 보이는 가장 싼 방법이다.

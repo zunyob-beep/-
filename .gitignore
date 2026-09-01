@@ -21,3 +21,7 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# 브라우저 테스트에 쓰는 것 (npm install --no-save playwright)
+node_modules/
+package-lock.json
