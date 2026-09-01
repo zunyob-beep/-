@@ -540,13 +540,13 @@ function renderOdds(analysis) {
 /** 중앙 수익을 금액으로. **수수료를 뺀 뒤**의 숫자여야 의미가 있다. */
 function moneyCell(row, analysis) {
   const stake = amount();
-  if (!stake) return '<td class="dim">—</td>';
+  if (!stake) return '<td class="dim money">—</td>';
   const net = row.medianReturn - (analysis.cost || 0);
   // 값이 오르내린 결과이므로 **업비트와 같은 색**(오르면 빨강, 내리면 파랑)을
   // 쓴다. 초록·빨강은 '좋다/나쁘다'를 뜻하는 자리(초과 승률 같은)에만 남긴다 —
   // --up과 --bad가 같은 빨강이라, 두 뜻을 같은 화면에서 섞으면 빨간 숫자가
   // 무슨 뜻인지 원리적으로 알 수 없게 된다.
-  return `<td class="big ${net >= 0 ? 'up' : 'down'}">${cash(stake * net)}
+  return `<td class="big money ${net >= 0 ? 'up' : 'down'}">${cash(stake * net)}
     <span class="sub2">중앙 ${signed(row.medianReturn, 3)}</span></td>`;
 }
 

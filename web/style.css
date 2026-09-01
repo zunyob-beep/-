@@ -380,7 +380,14 @@ table.odds th.l, table.odds td.l, table.theories th.l, table.theories td.l {
 table.odds tbody tr { cursor: pointer; }
 table.odds tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
 table.odds tbody tr.selected { background: var(--accent-deep); }
-table.odds tr.informative td.big { color: var(--text); }
+/* 의미 있는 줄은 확률을 흰색으로 도드라지게 한다.
+ *
+ * **금액 칸은 빼야 한다.** `.big`을 확률 칸과 금액 칸이 같이 쓰는데, 여기서
+ * 통째로 흰색을 씌우면 금액의 빨강·파랑이 지워진다. 그러면 의미 있는 줄일수록
+ * 금액이 무채색이 되는 정반대 결과가 나온다 — 실제로 그랬다. 한 줄만
+ * 빨갛고 나머지는 흰색이라, 그 한 줄이 특별해 보였는데 사실은 그 줄만
+ * '평소와 구분 안 되는' 줄이었다. */
+table.odds tr.informative td.big:not(.money) { color: var(--text); }
 .big { font-size: 14px; color: var(--text-2); }
 .sub2 { display: block; font-size: 10.5px; color: var(--dim); font-family: var(--sans); }
 .dim { color: var(--dim); }
