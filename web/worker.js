@@ -130,7 +130,9 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
           onProgress: (done, total, info) => progress(
             info?.stalled
               ? `${label} 잠시 걸렸습니다 — 쉬었다 이어서 받습니다${kept}`
-              : `${label} 받는 중…${kept}`,
+              // 지금 속도를 같이 적는다. 느릴 때 왜 느린지 보이지 않으면
+              // 멈춘 건지 기다리는 건지 알 수가 없다.
+              : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${kept}`,
             done, total,
           ),
         });
