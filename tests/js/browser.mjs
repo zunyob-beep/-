@@ -199,6 +199,57 @@ check('확률 표에 줄이 있다', rows > 0, `${rows}줄`);
 const theoryRows = await page.locator('table.theories tbody tr').count();
 check('이론 표에 11줄이 있다', theoryRows === 11, `${theoryRows}줄`);
 
+// 이론 표의 방향 색(빨강·파랑)이 실제로 칠해지는가.
+//
+// 줄 수만 세고 있었더니, 스타일시트를 다시 쓰면서 색이 통째로 사라진 걸
+// 시험이 하나도 못 잡았다. 명시도 싸움에서 진 것이라 눈으로만 보였다.
+// **과거 성적을 못 낸 줄(quiet)에서도** 방향 색은 남아야 한다 — 봉이
+// 모자라면 열한 줄이 전부 그 줄이 되기 때문이다.
+const colours = await page.evaluate(() => {
+  const seen = { up: null, down: null, quietUp: null, quietDown: null };
+  for (const td of document.querySelectorAll('table.theories td.now-cell')) {
+    const quiet = td.closest('tr').classList.contains('quiet');
+    const way = td.classList.contains('up') ? 'up' : td.classList.contains('down') ? 'down' : null;
+    if (!way) continue;
+    const key = quiet ? (way === 'up' ? 'quietUp' : 'quietDown') : way;
+    seen[key] ??= getComputedStyle(td).color;
+  }
+  return seen;
+});
+// 업비트와 같은 색: 오르면 빨강, 내리면 파랑. 회색으로 덮이면 안 된다.
+const reddish = (c) => /^rgba?\((\d+), (\d+), (\d+)/.test(c)
+  && Number(RegExp.$1) > Number(RegExp.$3) + 40;
+const bluish = (c) => /^rgba?\((\d+), (\d+), (\d+)/.test(c)
+  && Number(RegExp.$3) > Number(RegExp.$1) + 40;
+const painted = Object.entries(colours).filter(([, c]) => c !== null);
+check(
+  '이론 표의 방향 색이 살아 있다',
+  painted.length > 0 && painted.every(([key, c]) => (key.toLowerCase().includes('up')
+    ? reddish(c) : bluish(c))),
+  painted.map(([k, c]) => `${k}=${c}`).join(' · ') || '방향이 있는 칸이 없었습니다',
+);
+
+// 여기서는 봉이 넉넉해서 quiet 줄이 안 나온다. 하지만 **깨진 자리가 정확히
+// 거기였다** — 아이패드에서는 봉이 모자라 열한 줄이 전부 quiet였다. 데이터가
+// 그 상태가 되기를 기다리지 말고, 줄에 직접 quiet를 걸어 색이 버티는지 본다.
+const quietKeeps = await page.evaluate(() => {
+  const td = document.querySelector('table.theories td.now-cell.up')
+    ?? document.querySelector('table.theories td.now-cell.down');
+  if (!td) return null;
+  const row = td.closest('tr');
+  const had = row.classList.contains('quiet');
+  const before = getComputedStyle(td).color;
+  row.classList.add('quiet');
+  const after = getComputedStyle(td).color;
+  if (!had) row.classList.remove('quiet');
+  return { before, after };
+});
+check(
+  '과거 성적을 못 낸 줄에서도 방향 색이 남는다',
+  quietKeeps !== null && quietKeeps.before === quietKeeps.after,
+  quietKeeps ? `${quietKeeps.before} → ${quietKeeps.after}` : '방향이 있는 칸이 없었습니다',
+);
+
 check('예상 그림이 그려졌다', (await page.locator('#ahead-chart polyline').count()) > 0);
 check('사례가 그려졌다', (await page.locator('.example').count()) > 0);
 
@@ -258,6 +309,21 @@ check(
   (await page.locator('#job').innerText()).includes('못 받았습니다')
     || !(await page.locator('#blocked').isHidden()),
   await page.locator('#job').innerText(),
+);
+
+// ── 연결 진단이 실제로 돌아가는가
+//
+// 이건 결과를 맞히는 시험이 아니다. **버튼을 눌렀을 때 화면에 무언가가
+// 제대로 나오는지**를 본다. 진단은 내가 여기서 못 보는 것을 사용자 기기에서
+// 대신 봐 주는 물건이라, 이게 조용히 깨져 있으면 다음 단서를 통째로 잃는다.
+await page.click('#btn-diag');
+await page.waitForSelector('#btn-diag-copy', { timeout: 60000 });
+const diagRows = await page.locator('#diag table tbody tr').count();
+check('연결 진단이 여덟 가지를 다 물어본다', diagRows === 8, `${diagRows}줄`);
+check(
+  '진단 결과에 되고 안 된 것이 적힌다',
+  /됨|안 됨/.test(await page.locator('#diag').innerText()),
+  (await page.locator('#diag table tbody tr').first().innerText()).replace(/\s+/g, ' '),
 );
 
 // ── 하위 경로에서 제대로 얹혔는가 (진짜 배포와 같은 모양)

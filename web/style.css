@@ -404,8 +404,30 @@ table.odds tr.informative td.big { color: var(--text); }
 .tally { font-size: 12.5px; color: var(--dim); margin-bottom: 10px; }
 .tally b { font-weight: 600; }
 .now-cell { max-width: 30rem; }
-table.theories tr.quiet td { color: var(--dim); }
+
+/* 표 안의 방향 색.
+ *
+ * `.up` 하나만으로는 아래 quiet 규칙에 진다(명시도 (0,1,0) 대 (0,2,3)).
+ * 실제로 그렇게 져서 이론 표의 빨강·파랑이 통째로 사라졌다. */
+table.theories td.up { color: var(--up); }
+table.theories td.down { color: var(--down); }
+
+/* 과거 성적을 못 낸 줄은 흐리게 한다. **색을 덮지 않고 흐리게만 한다.**
+ *
+ * 여기서 `color: var(--dim)`을 쓰면 방향 색이 통째로 지워진다. 봉이
+ * 모자라면 열한 줄이 전부 이 줄이 되므로, 화면에서 빨강·파랑이 하나도
+ * 안 남는다 — 실제로 그렇게 됐다. 방향은 채점과 무관하게 읽을 수 있는
+ * 정보이므로 남아야 한다. */
+table.theories tr.quiet td { opacity: 0.6; }
 table.theories tr.real td.l b { color: var(--accent); }
+
+/* 진단 결과를 그대로 펼 자리. 클립보드가 막혀 있을 때만 나온다. */
+.diag-text {
+  margin: 10px 0 0; padding: 10px; font-family: var(--mono); font-size: 11px;
+  line-height: 1.7; color: var(--text-2); background: var(--raised);
+  border: 1px solid var(--line); white-space: pre-wrap; word-break: break-all;
+  user-select: all; overflow-x: auto;
+}
 
 /* ------------------------------------------------------------ 지지·저항 */
 .level {
