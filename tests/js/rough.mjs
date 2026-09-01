@@ -73,6 +73,12 @@ async function stubUpbit(context, getMode) {
       return route.fulfill({ status: 429, body: '', headers: {} });
     }
     const url = new URL(route.request().url());
+    if (mode === 'bars-walled' && url.pathname.startsWith('/v1/candles/')) {
+      // **맥 사파리에서 실제로 나온 상태.** 현재가는 49ms에 되는데 봉만
+      // 전부 안 된다. 차단이라면 현재가도 막히므로 이건 다른 종류다 —
+      // 앱이 이 둘을 섞어 말하면 사용자는 기다리면 될 줄 알고 밤을 새운다.
+      return route.fulfill({ status: 429, body: '', headers: {} });
+    }
     const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
     if (url.pathname === '/v1/ticker') {
       const now = Math.floor(Date.now() / 1000);
@@ -190,6 +196,19 @@ await page.click('#btn-diag');
 await page.waitForSelector('#btn-diag-copy', { timeout: 60000 });
 const said = await page.locator('.diag-said').innerText();
 note('막힌 상태를 진단이 제대로 읽는다', said.includes('막고 있'), said.slice(0, 46));
+// ── 5-2. 현재가는 되는데 봉만 막히는 상태
+//
+// 이 표를 사용자가 보내 왔다 — 현재가 49ms 성공, 봉은 to 없이 1개짜리도 실패.
+// 예전 진단은 현재가가 됐다는 이유로 이 상태를 그냥 지나쳤고, 화면에는
+// "업비트에 닿지 못했습니다"라는 **사실이 아닌 말**이 떴다. 그러면 사용자는
+// 기다리면 되는 줄 알고 계속 누른다.
+mode = 'bars-walled';
+await page.click('#btn-diag');
+await page.waitForSelector('#btn-diag-copy', { timeout: 60000 });
+const barsSaid = await page.locator('.diag-said').innerText();
+note('현재가는 되고 봉만 막힌 것을 가려낸다', barsSaid.includes('봉'), barsSaid.slice(0, 46));
+note('기다리면 된다고 하지 않는다', !barsSaid.includes('닿고 있'), barsSaid.slice(0, 46));
+
 await page.click('#btn-diag-copy');
 await page.waitForTimeout(500);
 const copyLabel = await page.locator('#btn-diag-copy').innerText().catch(() => '');

@@ -239,16 +239,22 @@ test('받다가 한 번 걸려도 이어서 받는다', async () => {
 
 test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => {
   // 사람이 10분 뒤에 다시 누르는 대신 앱이 스스로 기다린다.
-  let calls = 0;
+  // **막힌 상태를 개수가 아니라 상태로 흉내 낸다.**
+  //
+  // 예전에는 '몇 번째 요청부터 풀린다'로 썼는데, 그건 막힘이 아니라 세는
+  // 것이라 진단이 주소를 하나 더 물어보자마자 어긋났다. 막혔을 때는 봉이든
+  // 현재가든 **다 막힌다** — 그게 막힘의 정의다.
+  let tries = 0;
   const UNBLOCKS_AT = 3;
   const client = new UpbitClient({
     retries: 0, perSecond: 100000, quietSteps: [20],
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);   // 닿기는 한다 = 막힌 상태
-      calls += 1;
-      if (calls < UNBLOCKS_AT) throw new TypeError('Load failed');
-      return OK(candleRows(2, 1700000000 - calls * 600));
+      const blocked = tries < UNBLOCKS_AT;
+      if (String(url).includes('/v1/candles/')) tries += 1;
+      if (blocked) throw new TypeError('Load failed');
+      return OK(candleRows(2, 1700000000 - tries * 600));
     },
   });
 
@@ -417,4 +423,63 @@ test('밤새 막혀 있어도 시간당 몇 번밖에 안 두드린다', async (
   } finally {
     Date.now = realNow;
   }
+});
+
+// --------------------------------------- 현재가는 되는데 봉만 안 되는 상태
+//
+// 아이패드가 아니라 맥 사파리에서 나온 진단표다.
+//
+//   됨    현재가 (to 없음)        1개 받음 (49ms)
+//   안 됨 봉 1개 (to 없음)        TypeError: Load failed
+//   안 됨 봉 200개 (to 없음)      TypeError: Load failed
+//   ...
+//   됨    같은 주소를 no-cors로   닿았습니다 (58ms)
+//
+// **차단이라면 현재가도 막혀야 한다.** 현재가가 49ms에 되는데 봉만 전부
+// 안 되는 것은 다른 종류의 문제다. 그런데 앱은 이걸 "업비트에 닿지
+// 못했습니다"라고 말했다 — 사실이 아니다. 원인은 진단이 **되는 것을 물어보고
+// 안 되는 것을 판단**했기 때문이다. plainWorks()가 현재가를 물어봤다.
+
+test('현재가만 되고 봉이 다 막히면 "못 닿았다"고 하지 않는다', async () => {
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      if (String(url).includes('/v1/ticker')) return OK([{ market: 'KRW-BTC' }]);
+      throw new TypeError('Load failed');       // 봉만 안 된다
+    },
+  });
+  const failure = await client.getCandles('KRW-BTC', 'minute1', 200)
+    .then(() => null, (error) => error);
+  assert.equal(failure.kind, 'candles', `종류가 ${failure.kind}입니다`);
+  assert.ok(failure.message.includes('현재가는'), '현재가는 된다는 걸 말해야 합니다');
+  assert.ok(failure.message.includes('기다려도'), '기다려서 될 일이 아니라고 말해야 합니다');
+  // **조용히 기다리는 상태로 들어가면 안 된다.** 기다려도 안 풀리는 종류라,
+  // 30분씩 입을 다물어 봐야 아무 소득 없이 앱만 멈춘다.
+  assert.equal(client.knownBlocked(), false, '기다려도 소용없는 걸 기다리고 있습니다');
+});
+
+test('진단은 우리가 실제로 필요한 것을 물어본다', async () => {
+  // plainWorks()가 현재가를 물어보던 시절에는, 봉이 안 되는데도 "잘 된다"고
+  // 답해서 판단이 통째로 어긋났다. 물어보는 주소를 시험으로 묶는다.
+  const asked = [];
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      asked.push(`${init?.mode === 'no-cors' ? 'no-cors ' : ''}${String(url)}`);
+      throw new TypeError('Load failed');
+    },
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200).catch(() => {});
+  // 첫 요청 자체가 봉이므로 '봉을 한 번 불렀다'로는 아무것도 확인 못 한다.
+  // **진단이 따로 봉을 물어봤는지**를 봐야 하고, 그러면 두 번이어야 한다.
+  const bars = asked.filter((u) => u.includes('/v1/candles/') && !u.startsWith('no-cors'));
+  assert.ok(
+    bars.length >= 2,
+    `진단이 봉을 안 물어봤습니다 (봉 요청 ${bars.length}번): ${asked.join(' | ')}`,
+  );
 });

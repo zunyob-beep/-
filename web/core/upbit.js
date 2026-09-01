@@ -355,14 +355,28 @@ export class UpbitClient {
       ), true);
     }
 
-    if (!(await this.plainWorks()) && await this.reaches()) {
-      return remember(new UpbitError(
-        '업비트가 지금 우리 요청을 막고 있습니다. 업비트까지는 갔고 답도 왔지만 '
-        + '브라우저가 그 답을 읽을 수 없습니다 — 거절당했을 때 그렇습니다. '
-        + '요청이 잦아서 잠시 막힌 것일 수 있습니다. **지금부터는 두드리지 않고 '
-        + '기다립니다** — 막혀 있는 동안 계속 두드리면 차단이 길어지기 때문입니다.',
-        'throttled',
-      ), true);
+    if (!(await this.candlesWork())) {
+      // **현재가는 되는데 봉만 안 되는가.**
+      //
+      // 그렇다면 차단이 아니다. 차단이라면 현재가도 같이 막힌다. 기다려서
+      // 풀릴 문제가 아니므로 기다리라고 말하면 안 되고, 조용히 있는 시간을
+      // 늘려도 소용없다 — 그래서 blocked 표시를 하지 않는다.
+      if (await this.tickerWorks()) {
+        return remember(new UpbitError(
+          '업비트가 봉(과거 시세) 주소만 브라우저에 안 열어 주고 있습니다. '
+          + '현재가는 받아지는데 봉만 거절당합니다 — 기다려도 풀리지 않는 종류입니다.',
+          'candles',
+        ));
+      }
+      if (await this.reaches()) {
+        return remember(new UpbitError(
+          '업비트가 지금 우리 요청을 막고 있습니다. 업비트까지는 갔고 답도 왔지만 '
+          + '브라우저가 그 답을 읽을 수 없습니다 — 거절당했을 때 그렇습니다. '
+          + '요청이 잦아서 잠시 막힌 것일 수 있습니다. 지금부터는 두드리지 않고 '
+          + '기다립니다 — 막혀 있는 동안 계속 두드리면 차단이 길어지기 때문입니다.',
+          'throttled',
+        ), true);
+      }
     }
     if (this.succeeded > 0) {
       return remember(new UpbitError(
@@ -377,16 +391,34 @@ export class UpbitClient {
     ));
   }
 
-  /** 가장 평범한 요청이 되는가. */
-  async plainWorks() {
+  /** 그 주소가 되는가. 던지지 않고 참·거짓으로만 답한다. */
+  async works(path, params) {
     try {
-      const response = await this.fetch(`${this.base}/v1/ticker?markets=KRW-BTC`, {
-        cache: 'no-store',
-      });
+      const url = new URL(this.base + path);
+      for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+      const response = await this.fetch(url.toString(), { cache: 'no-store' });
       return response.status < 400;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * **우리가 실제로 필요한 것**이 되는가 — 가장 단순한 봉 요청.
+   *
+   * 예전에는 여기서 현재가(`/v1/ticker`)를 물어봤다. 그게 틀렸다. 현재가는
+   * 잘 되는데 봉만 안 되는 상태가 실제로 있었고(진단표가 그걸 보여줬다),
+   * 그때 이 함수는 "잘 된다"고 답했다. 그래서 진단이 '막힘'이 아니라
+   * '못 닿음'으로 흘러가 버렸고, 화면에는 "업비트에 닿지 못했습니다"라는
+   * **사실이 아닌 말**이 떴다. 되는 것을 물어보고 안 되는 것을 판단할 수는 없다.
+   */
+  async candlesWork() {
+    return this.works(ENDPOINTS.minute1, { market: 'KRW-BTC', count: 1 });
+  }
+
+  /** 현재가는 되는가. 봉만 거절당하는 상태를 가려내는 데 쓴다. */
+  async tickerWorks() {
+    return this.works('/v1/ticker', { markets: 'KRW-BTC' });
   }
 
   /** 업비트에 닿기는 하는가. 내용은 못 읽어도 답이 왔는지는 알 수 있다. */
