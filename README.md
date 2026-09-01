@@ -55,12 +55,16 @@ API 키도 필요 없습니다 (업비트 공개 시세만 씁니다).
 
 **처음 한 번만 준비하면 됩니다.**
 
-1. `github.com/zunyob-beep/-` → **Settings** → 맨 아래 **Change repository
-   visibility** → **Public**
-   *(무료 요금제에서 GitHub Pages는 공개 저장소에서만 됩니다. 이 저장소에는
-   API 키도 비밀번호도 없습니다 — 업비트 공개 시세만 씁니다.)*
-2. **Settings → Pages → Source**를 **GitHub Actions**로 고릅니다
-3. **Actions** 탭에서 `웹앱 올리기`가 초록불이 될 때까지 기다립니다 (1~2분)
+1. `github.com/zunyob-beep/-` → **Settings → Pages → Source**를
+   **GitHub Actions**로 고릅니다.
+2. 여기서 고를 수 없고 *"공개로 바꾸거나 요금제를 올리라"*고 하면, **그때만**
+   **Settings → 맨 아래 Change repository visibility → Public**으로 바꾸고
+   1번을 다시 합니다.
+   *(무료 요금제의 Pages는 공개 저장소에서만 됩니다. 유료 요금제라면 비공개인
+   채로 그냥 됩니다. 공개로 바꾸는 건 되돌리기 번거로우니 필요할 때만 하세요 —
+   이 저장소에 API 키나 비밀번호는 없습니다.)*
+3. **Actions** 탭에서 `웹앱 올리기`가 초록불이 될 때까지 기다립니다 (1~2분).
+   빨간불이면 그 화면 맨 위에 **무엇을 눌러야 하는지 한국어로 적혀 있습니다.**
 4. 주소가 생깁니다: **`https://zunyob-beep.github.io/-/`**
 5. 사파리에서 그 주소를 열고 → 공유 버튼(□↑) → **홈 화면에 추가**
 
