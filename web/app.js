@@ -350,8 +350,11 @@ function renderCached(cached) {
       <td class="num span">${when(c.from)} <span class="dim">~</span> ${when(c.to)}</td>
     </tr>`;
   }).join('');
-  box.innerHTML = `<div class="section-title">받아둔 시세
-      <span class="hint">이 기기에 저장돼 있습니다. 지나간 봉은 다시 받지 않습니다.</span></div>
+  box.innerHTML = `<div class="section-title">받아둔 시세</div>
+    <p class="keep"><b>한 번 받은 과거는 다시 받지 않습니다.</b>
+      지나간 봉은 변하지 않으니 받아 둘 필요도 한 번뿐입니다. 이 기기에 저장돼 있어
+      앱을 껐다 켜도, 중간에 끊겨도 그대로 남습니다 —
+      <b>다시 누르면 멈춘 자리에서 이어서</b> 받습니다.</p>
     <div class="table-wrap"><table class="cached">
       <thead><tr><th>봉</th><th>개수</th><th>기간</th><th>언제부터 언제까지 (UTC)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
@@ -410,6 +413,10 @@ function renderCoverage(analysis) {
     ? `<p class="note-line warn">${analysis.missing.map((m) => m.label).join(', ')} 시세가 없어 빠졌습니다.</p>`
     : '';
   box.innerHTML = `<div class="section-title">무엇으로 계산했나</div>
+    <p class="keep"><b>여기 있는 과거는 다시 받지 않습니다.</b>
+      지나간 봉은 변하지 않으니 받아 둘 필요도 한 번뿐입니다. 이 기기에 저장돼 있어
+      앱을 껐다 켜도, 중간에 끊겨도 그대로 남습니다 —
+      <b>다시 누르면 멈춘 자리에서 이어서</b> 받습니다.</p>
     <div class="table-wrap"><table class="cached">
       <thead><tr><th>봉</th><th>개수</th><th>기간</th>
         <th>언제부터 언제까지 (UTC)</th><th></th></tr></thead>
@@ -610,6 +617,7 @@ function settings(fresh) {
     similarity: parseFloat($('in-similarity').value),
     fee: parseFloat($('in-fee').value),
     slippage: parseFloat($('in-slippage').value),
+    stake: amount(),
   };
 }
 
@@ -624,6 +632,28 @@ const runLive = () => run(true);
 $('btn-scan').addEventListener('click', () => run(false));
 $('btn-live').addEventListener('click', () => runLive());
 $('btn-diag').addEventListener('click', () => { runDiagnosis(); });
+
+// 넣을 금액은 **바꾸는 즉시** 반영돼야 한다.
+//
+// 지금까지 이 칸에는 듣는 사람이 아무도 없었다. 금액을 고쳐도 표의 돈은
+// 그대로였고, 판정 문구는 아예 100만원이 박혀 있었다. 얼마를 넣을지 물어
+// 놓고 답에는 안 쓴 셈이다.
+//
+// 표와 그림의 돈은 계산이 필요 없다(확률은 금액과 무관하다) — 곧바로 다시
+// 그린다. 판정 문구만 계산을 거쳐야 하므로, 타이핑이 멎은 뒤에 한 번만
+// 다시 센다. 받아둔 시세로만 하니 업비트에 가지 않는다.
+let amountTimer = null;
+$('in-amount').addEventListener('input', () => {
+  if (lastAnalysis) {
+    renderOdds(lastAnalysis);
+    renderAhead(lastAnalysis);
+    markSelected();
+  }
+  clearTimeout(amountTimer);
+  amountTimer = setTimeout(() => {
+    if (!busy && lastAnalysis) run(false);
+  }, 800);
+});
 
 $('btn-stop').addEventListener('click', () => {
   // 워커를 끝낸다. 받던 중이었다면 그때까지 받은 것은 이미 저장돼 있다.

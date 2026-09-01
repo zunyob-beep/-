@@ -82,6 +82,22 @@ export const SWEEP_PAUSE = 2000;
 /** 아무리 느려져도 이보다 느려지지는 않는다 (초당 회수). */
 export const SLOWEST = 0.5;
 
+/** 이만큼 연속으로 성공하면 도로 빨라져 본다. */
+export const SPEEDUP_AFTER = 20;
+
+/**
+ * 받는 도중에 걸렸을 때 **같은 자리에서 몇 번까지 다시 이어 받을지.**
+ *
+ * 받은 쪽은 그때그때 저장된다(collect의 onBatch). 그러니 중간에 한 번
+ * 걸렸다고 통째로 포기할 이유가 없다. 실제로 4,812개까지 잘 받다가 한 번
+ * 걸려서 거기서 끝났는데, 그건 4,812개를 버린 게 아니라 **남은 걸 안 받은**
+ * 것이다. 쉬었다 이어 받으면 된다.
+ */
+export const STALL_RETRIES = 6;
+
+/** 걸렸을 때 쉬는 시간. 다시 걸릴수록 더 오래 쉰다. */
+export const STALL_PAUSE = 3000;
+
 /**
  * 요청을 **고르게 벌려서** 내보낸다.
  *
@@ -99,6 +115,8 @@ export const SLOWEST = 0.5;
 export class RateLimiter {
   constructor(perSecond = PER_SECOND) {
     this.perSecond = Math.max(SLOWEST, perSecond);
+    /** 원래 속도. 잘 되면 여기까지 다시 올린다. */
+    this.top = this.perSecond;
     this.next = 0;
   }
 
@@ -126,16 +144,32 @@ export class RateLimiter {
     this.perSecond = Math.max(SLOWEST, this.perSecond / 2);
     return this.perSecond;
   }
+
+  /**
+   * 잘 되고 있으면 도로 빨라진다.
+   *
+   * 이게 없으면 **한 번의 딸꾹질이 영구적인 벌이 된다.** 4년치를 받는 동안
+   * 중간에 한 번 실패하면 그때부터 끝까지 절반 속도로 기어간다. 실제로
+   * 화면이 많이 느려졌다는 말을 들었고, 원인이 이것이었다.
+   *
+   * 내릴 때는 절반씩(빠르게), 올릴 때는 조금씩(천천히). 다시 막히면 곧장
+   * 절반으로 내려가므로, 올리다 과해져도 금방 제자리를 찾는다.
+   */
+  speedUp() {
+    this.perSecond = Math.min(this.top, this.perSecond * 1.5);
+    return this.perSecond;
+  }
 }
 
 export class UpbitClient {
   constructor({
     base = API_BASE, retries = 4, perSecond = PER_SECOND, fetcher = null,
-    sweepPause = SWEEP_PAUSE,
+    sweepPause = SWEEP_PAUSE, stallPause = STALL_PAUSE,
   } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.sweepPause = sweepPause;
+    this.stallPause = stallPause;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
@@ -148,6 +182,12 @@ export class UpbitClient {
      */
     this.planAt = 0;
     this.toProven = false;
+    /** 연속 성공 횟수. 잘 되고 있으면 도로 빨라지려고 센다. */
+    this.streak = 0;
+    /** 더 빠른 조합을 시도해 봤다가 안 돼서 되돌아온 상태. 그러면 그만 올린다. */
+    this.settled = false;
+    /** 지금 더 빠른 조합을 시험해 보는 중이면, 안 될 때 돌아갈 자리. */
+    this.fallback = null;
   }
 
   /** 더듬어 볼 조합. 표기 3가지 × 개수 3가지 = 9가지. */
@@ -245,6 +285,20 @@ export class UpbitClient {
 
         // 이 조합으로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
         if (wantsTo) this.toProven = true;
+        this.streak += 1;
+        // 시험 삼아 올려 본 조합이 통했다. 그럼 그게 새 기준이다.
+        if (this.fallback !== null) this.fallback = null;
+        if (this.streak >= SPEEDUP_AFTER) {
+          this.streak = 0;
+          this.limiter.speedUp();
+          // **개수도 도로 올려 본다.** 더듬는 중에 딸꾹질 한 번으로 10개짜리
+          // 조합에 눌러앉으면, 그 뒤로 계속 스무 배 많은 요청을 보내게 된다.
+          // 4,812개에서 멈추고 "많이 느리다"는 말이 나온 이유가 여기다.
+          if (wantsTo && !this.settled && this.planAt > 0) {
+            this.fallback = this.planAt;
+            this.planAt -= 1;
+          }
+        }
         return payload;
       }
 
@@ -267,6 +321,17 @@ export class UpbitClient {
         last = new UpbitError(
           `업비트가 요청을 거부했습니다 (${response.status}): ${body.slice(0, 200)}`, 'refused',
         );
+      }
+
+      this.streak = 0;
+
+      // 더 빠른 조합을 시험해 보다가 실패했다면, 원래 자리로 돌아가고
+      // 다시는 올리지 않는다. 통하던 것을 잃으면 안 된다.
+      if (this.fallback !== null) {
+        this.planAt = this.fallback;
+        this.fallback = null;
+        this.settled = true;
+        continue;
       }
 
       // `to` 보내는 법을 아직 못 정했으면 다음 조합을 넣어 본다. 서버가
@@ -398,6 +463,7 @@ export class UpbitClient {
     let cursor = end;
     let got = 0;
     let previousOldest = null;
+    let stalls = 0;
     const step = { minute1: 60, minute3: 180, minute5: 300 }[timeframe];
 
     while (got < count) {
@@ -407,8 +473,39 @@ export class UpbitClient {
       // 않지만, 몇 개를 받을지 말해 놓고 다른 개수를 받는 것은 뒤에서
       // 개수를 세는 쪽(진행률·시험)을 전부 어긋나게 만든다.
       const asking = Math.min(PAGE, count - got);
-      // eslint-disable-next-line no-await-in-loop
-      const batch = await this.getCandles(market, timeframe, asking, cursor);
+
+      // **중간에 걸렸다고 통째로 포기하지 않는다.**
+      //
+      // 받은 쪽은 그때그때 저장된다(onBatch). 4,812개까지 잘 받다가 한 번
+      // 걸려서 거기서 끝난 적이 있는데, 그건 4,812개를 잃은 게 아니라 **남은
+      // 걸 안 받은** 것이다. 쉬었다 같은 자리에서 이어 받으면 된다.
+      //
+      // 인터넷이 끊긴 것만 예외다. 그건 쉬어도 안 되고, 기다리게 하면 안 된다.
+      let batch;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        batch = await this.getCandles(market, timeframe, asking, cursor);
+        stalls = 0;
+      } catch (error) {
+        // **받던 중에** 걸린 것만 기다린다.
+        //
+        // 첫 요청부터 실패했다면 이어 받을 것도 없고, 길이 아예 막힌
+        // 경우다. 그때까지 1분씩 쥐고 있으면 "막혔습니다"라는 말조차 늦게
+        // 나온다 — 사용자는 그동안 무슨 일인지 알 수가 없다.
+        const worthWaiting = error instanceof UpbitError
+          && got > 0 && error.kind !== 'offline' && error.kind !== 'blocked'
+          && stalls < STALL_RETRIES;
+        if (!worthWaiting) throw error;
+        stalls += 1;
+        this.limiter.slowDown();
+        // 살아 있다는 걸 알려야 한다. 아무 표시 없이 몇십 초를 쉬면
+        // 멈춘 것으로 보인다.
+        if (onProgress) onProgress(got, count, { stalled: stalls });
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(this.stallPause * stalls);
+        // eslint-disable-next-line no-continue
+        continue;
+      }
       if (!batch.length) break;
 
       const oldest = batch[0].ts;

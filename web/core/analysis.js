@@ -33,6 +33,15 @@ export const RATIO = { minute1: 1, minute3: 3, minute5: 5 };
  * 270MB가 넘어 아이패드 사파리가 탭을 죽이는 쪽에 가까워서 여기까지로 둔다.
  * 그보다 긴 과거가 필요하면 파이썬 판에 8년이 그대로 있다.
  */
+/**
+ * 판정 문구에서 '얼마를 넣었다면'의 기본값.
+ *
+ * 예전에는 이 숫자가 문장 안에 100만원으로 박혀 있었다. 그래서 화면에서
+ * 금액을 바꿔도 판정은 늘 100만원 기준으로 말했다 — 넣을 금액을 물어 놓고
+ * 답에는 반영하지 않은 셈이다.
+ */
+export const DEFAULT_STAKE = 1000000;
+
 export const MAX_BARS = 2102400;
 
 /** 얼마나 과거까지 볼지 — 화면의 선택지. MAX_BARS를 넘는 것은 두지 않는다. */
@@ -114,7 +123,7 @@ export function whyNothingMatched(rows) {
  * 때 조금 오르고 내릴 때 많이 내리면 잃는다. 그래서 마지막 관문은
  * 확률이 아니라 **금액**이어야 한다.
  */
-export function verdict(rows, cost) {
+export function verdict(rows, cost, stake = DEFAULT_STAKE) {
   const usable = rows.filter((r) => r.samples >= MIN_SAMPLES);
   if (usable.length === 0) {
     return { buy: false, headline: '판단할 수 없습니다', reasons: whyNothingMatched(rows) };
@@ -153,11 +162,11 @@ export function verdict(rows, cost) {
     }
     if (best.medianReturn <= cost) {
       // 이게 대개 마지막까지 남는 이유다. 금액으로 적어야 와닿는다.
-      const loss = (best.medianReturn - cost) * 1000000;
+      const loss = (best.medianReturn - cost) * stake;
       reasons.push(
         '확률이 평소보다 높아도 **돈이 되지는 않습니다** — 중앙값 수익 '
         + `${pctSigned(best.medianReturn, 3)}가 왕복 비용 ${pct(cost, 3)}를 못 넘깁니다. `
-        + `100만원이면 ${wonSigned(loss)}원입니다.`,
+        + `${won(stake)}원이면 ${wonSigned(loss)}원입니다.`,
       );
     } else if (best.tellsUsAnything && best.beatRate > best.baseBeat) {
       reasons.push('다른 조합들이 기준을 넘지 못했습니다.');
@@ -178,7 +187,7 @@ export function verdict(rows, cost) {
       `왕복 비용 ${pct(cost, 2)}까지 넘긴 경우가 ${pct(top.beatRate)}로, `
       + `평소 ${pct(top.baseBeat)}보다 높습니다.`,
       `중앙값 수익 ${pctSigned(top.medianReturn, 3)}가 왕복 비용을 넘습니다 — `
-      + `100만원이면 ${wonSigned((top.medianReturn - cost) * 1000000)}원입니다.`,
+      + `${won(stake)}원이면 ${wonSigned((top.medianReturn - cost) * stake)}원입니다.`,
       `같은 기준을 통과한 조합이 ${winners.length}개입니다.`,
     ],
   };
@@ -352,7 +361,7 @@ export function analysisJson(analysis) {
     projection: mapValues(
       analysis.projection, (p, tf) => projectionJson(p, analysis.series[tf]),
     ),
-    verdict: verdict(analysis.odds, analysis.cost),
+    verdict: verdict(analysis.odds, analysis.cost, analysis.stake ?? DEFAULT_STAKE),
     updatedAt: analysis.updatedAt,
   };
 }
@@ -419,7 +428,12 @@ export function analyse(market, seriesByTimeframe, options = {}) {
     // 그래야 파이썬 쪽이 시점을 무작위로 추려내지 않아 같은 것을 본다.
     points = 300,
     updatedAt = undefined,
+    // 넣을 금액. 계산에는 안 쓰이고 **판정 문구에만** 들어간다 —
+    // 확률은 금액과 무관하지만, "얼마 번다"는 말은 금액이 있어야 한다.
+    stake: rawStake = DEFAULT_STAKE,
   } = options;
+  // 0이나 빈 칸이 들어와도 "0원이면 +0원입니다"라고 말하지 않게 한다.
+  const stake = Number.isFinite(rawStake) && rawStake > 0 ? rawStake : DEFAULT_STAKE;
 
   const series = {};
   for (const [timeframe, one] of Object.entries(seriesByTimeframe)) {
@@ -472,6 +486,7 @@ export function analyse(market, seriesByTimeframe, options = {}) {
   return {
     market,
     cost,
+    stake,
     similarity,
     length,
     series,

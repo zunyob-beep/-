@@ -424,7 +424,15 @@ def _why_nothing_matched(rows: list[Odds]) -> list[str]:
     return [found, *advice]
 
 
-def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
+#: 판정 문구에서 "얼마를 넣었다면"의 기본값.
+#:
+#: 예전에는 이 숫자가 문장 안에 100만원으로 박혀 있었다. 그래서 화면에서
+#: 금액을 바꿔도 판정은 늘 100만원 기준으로 말했다 — 넣을 금액을 물어 놓고
+#: 답에는 반영하지 않은 셈이다. 자바스크립트 판과 같은 값을 쓴다.
+DEFAULT_STAKE = 1_000_000
+
+
+def _verdict(rows: list[Odds], cost: float, stake: float = DEFAULT_STAKE) -> dict[str, Any]:
     """지금 살지 말지.
 
     확률만 보여주기로 했지만, 사용자는 결국 "그래서 사?"를 묻는다.
@@ -485,11 +493,11 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             )
         if best.median_return <= cost:
             # 이게 대개 마지막까지 남는 이유다. 금액으로 적어야 와닿는다.
-            loss = (best.median_return - cost) * 1_000_000
+            loss = (best.median_return - cost) * stake
             reasons.append(
                 f"확률이 평소보다 높아도 **돈이 되지는 않습니다** — 중앙값 수익 "
                 f"{best.median_return:+.3%}가 왕복 비용 {cost:.3%}를 못 넘깁니다. "
-                f"100만원이면 {loss:+,.0f}원입니다."
+                f"{stake:,.0f}원이면 {loss:+,.0f}원입니다."
             )
         elif best.tells_us_anything and best.beat_rate > best.base_beat:
             reasons.append("다른 조합들이 기준을 넘지 못했습니다.")
@@ -508,7 +516,7 @@ def _verdict(rows: list[Odds], cost: float) -> dict[str, Any]:
             f"왕복 비용 {cost:.2%}까지 넘긴 경우가 {top.beat_rate:.0%}로, "
             f"평소 {top.base_beat:.0%}보다 높습니다.",
             f"중앙값 수익 {top.median_return:+.3%}가 왕복 비용을 넘습니다 — "
-            f"100만원이면 {(top.median_return - cost) * 1_000_000:+,.0f}원입니다.",
+            f"{stake:,.0f}원이면 {(top.median_return - cost) * stake:+,.0f}원입니다.",
             f"같은 기준을 통과한 조합이 {len(winners)}개입니다.",
         ],
     }

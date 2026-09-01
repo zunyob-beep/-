@@ -250,6 +250,37 @@ check(
   quietKeeps ? `${quietKeeps.before} → ${quietKeeps.after}` : '방향이 있는 칸이 없었습니다',
 );
 
+// ── 넣을 금액이 실제로 반영되는가
+//
+// 이 칸에는 듣는 사람이 아무도 없었다. 금액을 고쳐도 표의 돈은 그대로였고,
+// 판정 문구에는 100만원이 아예 박혀 있었다 — 얼마를 넣을지 물어 놓고 답에는
+// 안 쓴 셈이다.
+const moneyOf = () => page.locator('#odds-body tbody tr td:last-child').first().innerText();
+const moneyBefore = await moneyOf();
+await page.fill('#in-amount', '2000000');
+await page.waitForFunction(
+  (was) => document.querySelector('#odds-body tbody tr td:last-child')?.innerText !== was,
+  moneyBefore, { timeout: 15000 },
+).catch(() => {});
+const moneyAfter = await moneyOf();
+check(
+  '금액을 바꾸면 표의 돈이 곧바로 바뀐다',
+  moneyBefore !== moneyAfter,
+  `${moneyBefore.replace(/\s+/g, ' ')} → ${moneyAfter.replace(/\s+/g, ' ')}`,
+);
+
+// 판정 문구도 그 금액으로 말해야 한다 (다시 세고 나면).
+const saidAmount = await page.waitForFunction(
+  () => document.getElementById('verdict-reasons')?.innerText.includes('2,000,000원'),
+  null, { timeout: 30000 },
+).then(() => true, () => false);
+check(
+  '판정 문구도 그 금액으로 말한다',
+  saidAmount,
+  (await page.locator('#verdict-reasons').innerText()).split('\n').pop() ?? '',
+);
+await page.fill('#in-amount', '1000000');
+
 check('예상 그림이 그려졌다', (await page.locator('#ahead-chart polyline').count()) > 0);
 check('사례가 그려졌다', (await page.locator('.example').count()) > 0);
 
@@ -280,6 +311,13 @@ await page.waitForFunction(
 check(
   '새로고침해도 받아둔 시세가 남아 있다',
   (await page.locator('#coverage').innerText()).includes('개'),
+);
+// 남아 있다는 사실을 **화면이 말해 줘야** 한다. 그걸 못 믿으면 중간에
+// 끊겼을 때 다시 누르기가 겁난다 — 사실은 누를수록 쌓이는데도.
+check(
+  '다시 받지 않는다는 걸 화면이 말해 준다',
+  (await page.locator('#coverage').innerText()).includes('다시 받지 않습니다'),
+  (await page.locator('.keep').innerText().catch(() => '없음')).replace(/\s+/g, ' ').slice(0, 60),
 );
 
 // ── 업비트가 막혔을 때 무슨 말을 하는가

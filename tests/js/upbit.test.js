@@ -21,15 +21,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  RateLimiter, TO_FORMATS, UpbitClient, UpbitError,
+  RateLimiter, SPEEDUP_AFTER, TO_FORMATS, UpbitClient, UpbitError,
 } from '../../web/core/upbit.js';
 
 const OK = (rows) => ({ status: 200, async json() { return rows; }, async text() { return ''; } });
 
-function candleRows(count = 2) {
+function candleRows(count = 2, at = 1700000000) {
   return Array.from({ length: count }, (_, i) => ({
     market: 'KRW-BTC',
-    candle_date_time_utc: new Date((1700000000 - i * 60) * 1000).toISOString().slice(0, 19),
+    candle_date_time_utc: new Date((at - i * 60) * 1000).toISOString().slice(0, 19),
     opening_price: 100, high_price: 101, low_price: 99, trade_price: 100,
     candle_acc_trade_volume: 1,
   }));
@@ -310,6 +310,113 @@ test('아홉 조합을 다 훑는다 (표기 3 × 개수 3)', async () => {
   });
   await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
   assert.equal(seen.size, 9, `${seen.size}가지만 해 봤습니다: ${[...seen].join(' ')}`);
+});
+
+// ------------------------------------------------- 끊기지 않고, 느려지지 않게
+//
+// 아이패드에서 4,812개까지 잘 받다가 끊겼고, 속도가 많이 느리다고 했다.
+// 원인은 둘 다 '한 번의 딸꾹질이 영구적인 벌이 되는' 구조였다.
+//
+//   · 한 쪽이 실패하면 그때까지 받은 걸 두고 통째로 포기했다
+//   · slowDown()에 짝이 없어서, 한 번 느려지면 끝까지 그 속도였다
+//   · 더듬는 중 딸꾹질 한 번이면 10개짜리 조합에 눌러앉았다 (요청 20배)
+
+test('받다가 한 번 걸려도 이어서 받는다', async () => {
+  // 4,812개에서 끝난 그 상황이다. 받은 건 이미 저장돼 있으니 포기할 이유가 없다.
+  let calls = 0;
+  const client = new UpbitClient({
+    retries: 0, perSecond: 100000, sweepPause: 5, stallPause: 5,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      calls += 1;
+      if (calls === 3) throw new TypeError('Failed to fetch');   // 딱 한 번 걸린다
+      // 매번 더 과거로 내려가도록 시각을 옮겨 준다.
+      return OK(candleRows(2, 1700000000 - calls * 600));
+    },
+  });
+
+  const saved = [];
+  await client.collect('KRW-BTC', 'minute1', 8, {
+    retain: false, onBatch: (batch) => { saved.push(...batch); },
+  });
+  assert.ok(saved.length >= 8, `${saved.length}개에서 멈췄습니다 — 이어 받았어야 합니다`);
+});
+
+test('끝까지 안 되면 그때는 멈춘다 (영원히 매달리지 않는다)', async () => {
+  let calls = 0;
+  const client = new UpbitClient({
+    retries: 0, perSecond: 100000, sweepPause: 5, stallPause: 1,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      calls += 1;
+      if (calls === 1) return OK(candleRows(2));
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  await assert.rejects(
+    () => client.collect('KRW-BTC', 'minute1', 500, { retain: false }),
+    (error) => error instanceof UpbitError,
+  );
+});
+
+test('잘 되면 속도가 도로 올라간다', async () => {
+  // 이게 없으면 딸꾹질 한 번이 끝까지 가는 벌이 된다.
+  const limiter = new RateLimiter(8);
+  limiter.slowDown();
+  limiter.slowDown();
+  const slowed = limiter.perSecond;
+  assert.equal(slowed, 2, `느려진 속도가 ${slowed}입니다`);
+
+  for (let i = 0; i < 20; i += 1) limiter.speedUp();
+  assert.equal(limiter.perSecond, 8, '원래 속도까지 돌아왔어야 합니다');
+  // 원래보다 빨라지면 안 된다 — 그건 처음부터 몰아붙이는 것이다.
+  limiter.speedUp();
+  assert.equal(limiter.perSecond, 8, '원래 속도를 넘겼습니다');
+});
+
+test('작은 개수에 눌러앉지 않고 도로 올려 본다', async () => {
+  // 더듬는 중 딸꾹질 한 번으로 10개짜리에 정착하면 요청이 스무 배가 된다.
+  // 실제로 "많이 느리다"는 말이 나온 원인이다.
+  let first = true;
+  const client = new UpbitClient({
+    retries: 0, perSecond: 100000, sweepPause: 5,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      // 첫 to 요청만 딸꾹질한다. 그 뒤로는 뭐든 다 받아 준다.
+      if (sentTo(url) !== null && first) { first = false; throw new TypeError('Failed to fetch'); }
+      return OK(candleRows());
+    },
+  });
+
+  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.equal(client.planAt, 1, '딸꾹질 뒤 다음 조합으로 갔어야 합니다');
+
+  // 계속 잘 되면 스스로 앞 조합(더 빠른 쪽)으로 돌아간다.
+  for (let i = 0; i < SPEEDUP_AFTER; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000 - i * 600);
+  }
+  assert.equal(client.planAt, 0, `${client.planAt}번 조합에 눌러앉았습니다`);
+});
+
+test('올려 봤다가 안 되면 되돌아가고, 다시는 안 올린다', async () => {
+  const GOOD = 1;   // 1번 조합만 통한다
+  const client = new UpbitClient({
+    retries: 0, perSecond: 100000, sweepPause: 5,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      const to = sentTo(url);
+      if (to !== null && formatIndexOf(to) !== GOOD) throw new TypeError('Failed to fetch');
+      return OK(candleRows());
+    },
+  });
+
+  for (let i = 0; i < SPEEDUP_AFTER + 3; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000 - i * 600);
+  }
+  assert.equal(client.planAt, GOOD, `통하던 조합을 잃었습니다 (지금 ${client.planAt}번)`);
+  assert.ok(client.settled, '한 번 되돌아왔으면 그만 올려야 합니다');
 });
 
 test('느려진 뒤에 통하면 표기가 아니라 속도가 문제였던 것이다', async () => {

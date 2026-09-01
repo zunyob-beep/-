@@ -86,7 +86,7 @@ async function summary(market) {
  * `fresh`가 거짓이면 업비트에 가지 않고 가진 것만으로 다시 센다. 설정만
  * 바꿔 보는데 매번 받으러 가면 느리고, 받을 것도 없다.
  */
-async function run({ market, count, fresh, similarity, fee, slippage, length }) {
+async function run({ market, count, fresh, similarity, fee, slippage, length, stake }) {
   const db = await ready();
   // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
   // 메시지가 그대로 통과해, 브라우저가 감당 못 할 크기를 받으러 간다.
@@ -102,12 +102,26 @@ async function run({ market, count, fresh, similarity, fee, slippage, length }) 
       if (blocked) break;
       const label = timeframeLabel(timeframe);
       const wanted = Math.floor(bars / RATIO[timeframe]);
-      progress(`${label} 받는 중…`, 0, wanted);
+      // **이미 가진 건 다시 안 받는다는 걸 화면에서 보이게 한다.**
+      //
+      // 지나간 봉은 변하지 않으므로 한 번 받아 두면 끝이다. 그런데 화면에는
+      // 그냥 "받는 중…"만 떠서, 중간에 끊기면 처음부터 다시 받는 것처럼
+      // 보인다. 그러면 다시 누르기가 겁난다 — 사실은 누를수록 쌓이는데도.
+      // eslint-disable-next-line no-await-in-loop
+      const already = await db.count(market, timeframe);
+      const kept = already ? ` (이미 ${already.toLocaleString()}개 있음 — 다시 안 받습니다)` : '';
+      const say1 = (done, total) => progress(`${label} 받는 중…${kept}`, done, total);
+      say1(0, Math.max(0, wanted - already));
       try {
         // eslint-disable-next-line no-await-in-loop
         await update(db, market, timeframe, wanted, {
           client,
-          onProgress: (done, total) => progress(`${label} 받는 중…`, done, total),
+          onProgress: (done, total, info) => progress(
+            info?.stalled
+              ? `${label} 잠시 걸렸습니다 — 쉬었다 이어서 받습니다${kept}`
+              : `${label} 받는 중…${kept}`,
+            done, total,
+          ),
         });
       } catch (error) {
         if (error instanceof UpbitError && NETWORK.includes(error.kind)) {
@@ -146,7 +160,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length }) 
   }
 
   analysis = analyse(market, series, {
-    similarity, fee, slippage, length, onStep: progress,
+    similarity, fee, slippage, length, stake, onStep: progress,
   });
   say({ type: 'done', analysis: analysisJson(analysis), stale: blocked !== null });
 }
