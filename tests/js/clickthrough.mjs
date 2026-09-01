@@ -188,6 +188,30 @@ note(
 );
 note('누른 줄이 표시된다', (await page.locator('#odds-body tbody tr.selected').count()) === 1);
 
+// ── 금액 칸의 색이 살아 있는가
+//
+// `.big`을 확률 칸과 금액 칸이 같이 써서, 의미 있는 줄(informative)의 확률을
+// 흰색으로 강조하는 규칙이 **금액의 빨강·파랑까지 지우고 있었다.** 그래서
+// 의미 있는 줄일수록 금액이 무채색이 되는 정반대 결과가 났다.
+const moneyColours = await page.evaluate(() => {
+  const plain = getComputedStyle(document.body).color;
+  const out = [];
+  for (const tr of document.querySelectorAll('#odds-body tbody tr')) {
+    const td = tr.querySelector('td.money');
+    if (!td || !/[+\-−]/.test(td.textContent)) continue;
+    out.push({ informative: tr.classList.contains('informative'), colour: getComputedStyle(td).color, plain });
+  }
+  return out;
+});
+const coloured = (c) => /^rgb\((\d+), (\d+), (\d+)\)$/.test(c)
+  && Math.abs(Number(RegExp.$1) - Number(RegExp.$3)) > 40;
+const withMeaning = moneyColours.filter((m) => m.informative);
+note(
+  '의미 있는 줄에서도 금액에 색이 남는다',
+  withMeaning.length === 0 || withMeaning.every((m) => coloured(m.colour)),
+  withMeaning.length ? `${withMeaning.length}줄 · ${withMeaning[0].colour}` : '해당 줄이 없었습니다',
+);
+
 // ── 금액
 await page.fill('#in-amount', '3000000');
 await page.waitForTimeout(400);
