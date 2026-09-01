@@ -13,11 +13,14 @@
 
 name: 웹앱 올리기
 
+# **main에서만** 올린다.
+#
+# 처음에는 작업 가지에서도 돌게 해 뒀는데, GitHub Pages는 기본 가지가 아닌
+# 곳에서 오는 배포를 막는다. 그래서 작업 가지에 밀어 넣을 때마다 실패한
+# 빨간 X가 하나씩 쌓였고, 진짜 실패와 구분이 안 됐다.
 on:
   push:
-    branches:
-      - main
-      - claude/bitcoin-auto-trading-program-cxyddm
+    branches: [main]
   workflow_dispatch:
 
 permissions:

@@ -161,6 +161,12 @@ function setBlocked(kind) {
       <span class="dim">업비트가 점검 중이거나, 쓰고 계신 망(회사·학교 와이파이, 일부 VPN)이
       막고 있을 수 있습니다. 다른 망에서 한 번 시도해 보세요.
       이미 받아둔 시세로는 <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.</span>`,
+    stalled: `<b>받다가 중간에 막혔습니다.</b>
+      업비트에서 <b>받기는 받았는데</b> 그 뒤로 더 못 받고 있습니다 — 길이 막힌 게
+      아니라 받는 도중에 걸린 것입니다.
+      <span class="dim">받은 만큼은 이미 저장돼 있습니다. <b>지금 시세로 판단받기</b>를
+      다시 누르면 <b>이어서</b> 받습니다 (처음부터 다시 받지 않습니다).
+      <b>얼마나 과거까지</b>를 30일로 줄이면 한 번에 끝날 가능성이 높습니다.</span>`,
     rate: `<b>업비트 요청 한도를 넘었습니다.</b>
       잠시 뒤에 다시 눌러 주세요.
       <span class="dim">아주 긴 과거를 한꺼번에 받을 때 생깁니다.
@@ -173,7 +179,7 @@ function setBlocked(kind) {
 }
 
 function reportWorkerError(message) {
-  if (['offline', 'blocked', 'rate', 'server'].includes(message.kind)) {
+  if (['offline', 'blocked', 'stalled', 'rate', 'server'].includes(message.kind)) {
     setBlocked(message.kind);
     showError('');
     return;
@@ -239,11 +245,12 @@ function showPeriodNote() {
     + Math.ceil(count / 5 / 200);
   const minutes = requests / 8 / 60;   // 초당 8번
   const guess = minutes < 1
-    ? '처음 받을 때 1분 안'
+    ? '처음 1분 안'
     : minutes < 60
-      ? `처음 받을 때 약 ${Math.round(minutes)}분`
-      : `처음 받을 때 약 ${(minutes / 60).toFixed(1)}시간`;
-  $('period-note').textContent = `${guess} · 다음부터는 새 봉만`;
+      ? `처음 약 ${Math.round(minutes)}분`
+      : `처음 약 ${(minutes / 60).toFixed(1)}시간`;
+  // 짧게 적는다. 길면 이 칸만 넓어져 줄이 어긋나 보인다.
+  $('period-note').textContent = guess;
 }
 
 // ------------------------------------------------------------ 돈으로 보기
@@ -794,20 +801,27 @@ function renderTheories(analysis) {
         <th class="l">이론</th><th class="l">지금</th>
         <th>예측</th><th>적중</th><th>평소</th><th>초과</th><th class="l">믿을 만한가</th>
       </tr></thead>
-      <tbody>${group.readings.map(theoryRow).join('')}</tbody>
+      <tbody>${group.readings.map((r) => theoryRow(r, group.scoring)).join('')}</tbody>
     </table></div>`;
 }
 
 const arrowClass = (says) => (says === '상승' ? 'up' : says === '하락' ? 'down' : 'flat');
 
-function theoryRow(r) {
+function theoryRow(r, scoring) {
   const mark = r.says === '상승' ? '▲' : r.says === '하락' ? '▼' : '·';
   const p = r.past;
   if (!p) {
+    // 채점을 아예 못 한 것과 '이 이론이 방향을 말한 적이 없다'는 다른
+    // 이야기다. 봉이 모자라면 열한 줄 전부가 같은 문구로 나오는데,
+    // 그러면 이론들이 침묵한 것처럼 읽힌다 — 사실은 우리가 못 센 것이다.
+    const why = scoring && !scoring.ran
+      ? `과거 성적을 내기에 봉이 모자랍니다 (${scoring.need.toLocaleString()}개 필요, `
+        + `지금 ${scoring.have.toLocaleString()}개)`
+      : '이 데이터에서 방향을 말한 적이 없습니다';
     return `<tr class="quiet">
       <td class="l"><b>${r.theory}</b></td>
       <td class="l now-cell ${arrowClass(r.says)}">${mark} ${r.detail}</td>
-      <td colspan="5" class="l dim">이 데이터에서 방향을 말한 적이 없습니다</td></tr>`;
+      <td colspan="5" class="l dim">${why}</td></tr>`;
   }
   // 칸이 좁다. 긴 문장은 잘려서 오히려 안 읽히므로 짧게 쓰고
   // 자세한 설명은 표 아래 각주에 한 번만 둔다.

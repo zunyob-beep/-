@@ -11,7 +11,7 @@ import { levels, retracements } from './levels.js';
 import {
   MIN_SAMPLES, examplesFor, findMatches, oddsFor, project, roundTripCost,
 } from './odds.js';
-import { dow, dowConfirmation, readAll, score, tally } from './theories.js';
+import { LOOKBACK, dow, dowConfirmation, readAll, score, tally } from './theories.js';
 import { normalizeWindow } from './shape.js';
 
 /** 기본으로 받아둘 봉 개수 (1분봉 30일 기준). */
@@ -56,6 +56,17 @@ export function withinLimit(count) {
  * 시작해 진짜 차트로 안 보인다.
  */
 export const RECENT_BARS = 40;
+
+/** 이론 성적을 낼 때 몇 봉 뒤를 보는지. analyse()와 아래 안내가 같이 쓴다. */
+export const SCORE_HORIZON = 10;
+
+/**
+ * 과거 성적을 내려면 최소 몇 봉이 있어야 하는지.
+ *
+ * theories.score는 시점마다 그 이전 LOOKBACK봉을 보고, 결과를 보려고
+ * horizon봉을 더 쓴다. 그보다 짧으면 **한 번도 채점할 수 없다.**
+ */
+export const SCORE_NEEDS = LOOKBACK + SCORE_HORIZON + 2;
 
 /**
  * 왜 표본이 안 모였는지, 그리고 **무엇을 바꾸면 되는지**.
@@ -278,11 +289,17 @@ function theoryJson(analysis) {
   for (const [timeframe, readings] of Object.entries(analysis.readings)) {
     const [ups, downs, flats] = tally(readings);
     const marks = new Map((analysis.scores[timeframe] ?? []).map((s) => [s.theory, s]));
+    const bars = analysis.series[timeframe]?.length ?? 0;
     out[timeframe] = {
       label: timeframeLabel(timeframe),
       up: ups,
       down: downs,
       flat: flats,
+      // 채점을 **아예 못 한** 것과 '이 이론이 방향을 말한 적이 없다'는
+      // 전혀 다른 이야기다. 둘을 같은 문구로 보여주면, 봉이 201개뿐이라
+      // 채점이 통째로 불가능한 상황에서도 열한 줄 모두가 "이 이론은
+      // 방향을 말한 적이 없습니다"로 나온다 — 이론 탓처럼 읽힌다.
+      scoring: { ran: bars >= SCORE_NEEDS, have: bars, need: SCORE_NEEDS },
       readings: readings.map((r) => ({
         theory: r.theory,
         says: r.says,
@@ -445,7 +462,7 @@ export function analyse(market, seriesByTimeframe, options = {}) {
     lines[one.timeframe] = levels(one);
     fibs[one.timeframe] = retracements(one);
     // 이론이 과거에 맞았는지도 **사용자 데이터로 직접** 센다.
-    scores[one.timeframe] = score(one, { horizon: 10, points, cost });
+    scores[one.timeframe] = score(one, { horizon: SCORE_HORIZON, points, cost });
     done += 1;
     onStep(`${label} 완료`, done, total);
   }
