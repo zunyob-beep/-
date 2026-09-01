@@ -324,7 +324,10 @@ label.check input[type="checkbox"]:focus-visible { outline: 2px solid var(--acce
 }
 .verdict .mark { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
 .verdict.buy .mark { background: var(--accent); }
-.verdict.hold .mark { background: var(--up); }
+/* '사지 마세요'는 값이 내렸다는 뜻이 아니라 **판단**이다. 규칙대로
+   판단 색(--bad)을 쓴다. 지금은 --up과 같은 빨강이지만, 뜻이 다른 것을
+   같은 이름으로 부르면 나중에 한쪽만 바꿀 때 조용히 어긋난다. */
+.verdict.hold .mark { background: var(--bad); }
 .verdict.buy h2 { color: var(--accent); }
 .verdict-time {
   margin-left: auto; color: var(--dim);
@@ -360,7 +363,9 @@ table.cached .span { color: var(--text-2); white-space: nowrap; }
   color: var(--dim); font: inherit; cursor: pointer;
   text-decoration: underline; text-underline-offset: 3px;
 }
-.linky:hover { color: var(--up); }
+/* 링크에 손을 얹은 것은 방향도 판단도 아니다. 초록(강조색)을 쓴다 —
+   빨강은 이 화면에서 '올랐다'는 뜻이라 손만 얹어도 그렇게 읽힌다. */
+.linky:hover { color: var(--accent); }
 
 /* ---------------------------------------------------------------- 확률 표 */
 .table-wrap { overflow-x: auto; }
