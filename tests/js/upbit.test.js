@@ -39,6 +39,11 @@ const sentTo = (url) => new URL(url, 'http://test.local/').searchParams.get('to'
 test('업비트 한도 안에서 부른다', () => {
   // 업비트 시세 API의 공개 한도는 초당 10회다.
   assert.ok(PER_SECOND <= 10, `초당 ${PER_SECOND}번은 업비트 한도를 넘습니다`);
+  // **한도 안이라고 안전한 게 아니다.** 5로 두고도 막혔다는 말을 들었다.
+  // 휴대폰 데이터는 한 주소를 여러 사람이 나눠 쓰므로 우리 몫은 한도보다
+  // 훨씬 작아야 한다. 3은 4년치 받기를 끝까지 마친 유일한 속도다.
+  // 올리고 싶으면 실제로 끝까지 받아 보고 이 숫자부터 고쳐라.
+  assert.ok(PER_SECOND <= 3, `초당 ${PER_SECOND}번은 실제로 막혔던 속도입니다`);
   const client = new UpbitClient();
   assert.equal(client.limiter.perSecond, PER_SECOND);
 });

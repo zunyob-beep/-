@@ -148,9 +148,20 @@ const overflow = await page.evaluate(() => {
 });
 note('가로로 삐져나가는 곳이 없다', overflow.length === 0, overflow.join(', '));
 
+// ── 열자마자 골라져 있는 기간
+//
+// 첫 번째(가장 짧은 1일)가 골라져 있으면 안 된다. 하루치로는 닮은 과거가
+// 스무 개도 안 나와서, 처음 온 사람이 "표본이 모자랍니다"만 보고 고장난
+// 줄 안다. 그렇다고 30일치를 기본으로 두면 막힌 날에 아무것도 못 본다.
+const firstPick = await page.locator('#in-period').evaluate(
+  (box) => box.options[box.selectedIndex].textContent.trim(),
+);
+note('열자마자 7일이 골라져 있다', firstPick === '7일', firstPick);
+
 // ── 기간을 바꾸면 안내가 따라 바뀐다
 const noteBefore = await page.locator('#period-note').innerText();
-await page.selectOption('#in-period', { index: 2 });
+const last = await page.locator('#in-period option').count();
+await page.selectOption('#in-period', { index: last - 1 });   // 가장 긴 것
 await page.waitForTimeout(100);
 const noteAfter = await page.locator('#period-note').innerText();
 note('기간을 바꾸면 예상 시간이 바뀐다', noteBefore !== noteAfter, `${noteBefore} → ${noteAfter}`);

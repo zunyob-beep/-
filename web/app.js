@@ -7,7 +7,7 @@
 
 import { MARKETS, marketLabel } from './core/models.js';
 import { VERSION } from './version.js';
-import { MAX_BARS, PERIODS } from './core/analysis.js';
+import { DEFAULT_PERIOD, MAX_BARS, PERIODS } from './core/analysis.js';
 import {
   API_BASE, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
 } from './core/upbit.js';
@@ -266,6 +266,9 @@ function renderPeriods() {
   const box = $('in-period');
   box.innerHTML = PERIODS
     .map((p) => `<option value="${p.count}">${p.label}</option>`).join('');
+  // 첫 번째(가장 짧은 것)가 아니라 정해 둔 기본값을 고른다. 이유는
+  // DEFAULT_PERIOD 옆에 적어 뒀다.
+  box.value = String(DEFAULT_PERIOD);
   box.addEventListener('change', showPeriodNote);
   showPeriodNote();
 }
