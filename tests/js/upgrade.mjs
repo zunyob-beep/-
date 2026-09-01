@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
+import { launchOptions } from './launch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -65,7 +66,7 @@ const note = (name, good, detail = '') => {
 
 const { server, port } = await serve();
 const url = `http://127.0.0.1:${port}${BASE}/`;
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(launchOptions);
 const context = await browser.newContext({ viewport: { width: 1024, height: 768 } });
 // 업비트는 안 부른다. 여기서 보는 건 판 갈아타기뿐이다.
 await context.route('https://api.upbit.com/**', (route) => route.abort('failed'));

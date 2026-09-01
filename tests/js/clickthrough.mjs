@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
+import { launchOptions } from './launch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -103,8 +104,7 @@ const note = (name, good, detail = '') => {
 
 const { server, port } = await serve();
 const url = `http://127.0.0.1:${port}${BASE}/`;
-// 이 환경에는 크로미움이 미리 깔려 있다. 받으러 나가지 않는다.
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(launchOptions);
 
 // 아이패드 크기. 사용자가 쓰는 화면이다.
 const context = await browser.newContext({

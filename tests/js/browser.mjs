@@ -18,6 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
+import { launchOptions } from './launch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -135,7 +136,7 @@ const check = (name, ok, detail = '') => {
 };
 
 const { server, port } = await serve();
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(launchOptions);
 const context = await browser.newContext({ ...chromium.devices?.['iPad (gen 7)'] });
 await stubUpbit(context);
 const page = await context.newPage();
