@@ -1,0 +1,16 @@
+{
+  "name": "gisigam",
+  "private": true,
+  "type": "module",
+  "description": "기시감 — 브라우저 안에서만 도는 캔들 모양 분석기. 계산에는 아무 의존성도 없고, playwright는 시험에만 쓴다.",
+  "scripts": {
+    "test": "node --test \"tests/js/*.test.js\"",
+    "test:browser": "node tests/js/browser.mjs",
+    "test:click": "node tests/js/clickthrough.mjs",
+    "test:rough": "node tests/js/rough.mjs",
+    "test:upgrade": "node tests/js/upgrade.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0"
+  }
+}

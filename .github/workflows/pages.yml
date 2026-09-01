@@ -48,6 +48,31 @@ jobs:
       - name: 파이썬 결과와 대조
         run: node --test "tests/js/*.test.js"
 
+      # **화면이 실제로 도는지도 여기서 본다.**
+      #
+      # 여태 CI는 계산만 봤다. 그래서 화면이 깨진 채로 배포된 적이 여러
+      # 번이다 — 이론 표의 색이 사라진 것, 조작부 줄이 어긋난 것, 지우기
+      # 단추가 없어진 것. 전부 사람이 눌러 보고서야 알았다.
+      #
+      # 이제 진짜 크로미움을 띄워 아이패드 크기에서 눌러 본다. 깨져 있으면
+      # 배포가 안 된다 — 그게 목적이다.
+      - name: 브라우저 준비
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: 브라우저에서 한 번 돌린다
+        run: node tests/js/browser.mjs
+
+      - name: 사람처럼 눌러 본다
+        run: node tests/js/clickthrough.mjs
+
+      - name: 험한 길에서도 버티는가
+        run: node tests/js/rough.mjs
+
+      - name: 새 판으로 갈아타는가
+        run: node tests/js/upgrade.mjs
+
   deploy:
     name: 올리기
     needs: check
