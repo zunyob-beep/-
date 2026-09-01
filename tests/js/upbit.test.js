@@ -20,7 +20,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TO_FORMATS, UpbitClient, UpbitError } from '../../web/core/upbit.js';
+import {
+  RateLimiter, TO_FORMATS, UpbitClient, UpbitError,
+} from '../../web/core/upbit.js';
 
 const OK = (rows) => ({ status: 200, async json() { return rows; }, async text() { return ''; } });
 
@@ -175,4 +177,91 @@ test('업비트를 몰아붙이지 않는다', () => {
   // 1년치는 2,600번 넘게 요청해야 한다. 너무 빠르면 막힌다.
   const client = new UpbitClient();
   assert.ok(client.limiter.perSecond <= 5, `초당 ${client.limiter.perSecond}번은 너무 잦습니다`);
+});
+
+// ------------------------------------------------------------- 속도
+//
+// 아이패드에서 두 번째로 막혔을 때 화면에 263개가 떠 있었다. 이전 판이
+// 받아둔 201개 + 그 사이 흐른 62분 = 263. 즉 **`to`가 붙은 요청은 이번에도
+// 한 번도 성공하지 못했다.**
+//
+// 그런데 CORS는 쿼리 파라미터를 구분하지 못한다. 같은 주소·같은 방식인데
+// 첫 요청만 되고 그 다음이 안 된다면 남는 설명은 속도뿐이다. 그리고 실제로
+// 속도 제한기에 결함이 있었다 — 초당 회수만 지키고 **간격은 안 지켰다.**
+
+test('요청을 한꺼번에 쏘지 않고 고르게 벌린다', async () => {
+  // 이게 진짜 버그였다. '지난 1초에 5번 미만이면 통과'는 창이 비어 있을 때
+  // 5개를 **동시에** 내보낸다. 평균은 초당 5회지만 순간 속도는 초당 100회다.
+  const limiter = new RateLimiter(20);   // 간격 50ms
+  const at = [];
+  for (let i = 0; i < 4; i += 1) {
+    at.push(Date.now());
+    // eslint-disable-next-line no-await-in-loop
+    await limiter.acquire();
+  }
+  at.push(Date.now());
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  // 타이머는 정확하지 않으므로 넉넉히 본다. 요지는 **0이 아니어야** 한다는 것.
+  assert.ok(
+    gaps.slice(1).every((g) => g >= 35),
+    `요청이 붙어서 나갔습니다: ${gaps}ms`,
+  );
+});
+
+test('동시에 불러도 서로 겹치지 않고 줄을 선다', async () => {
+  // 세 봉 간격을 동시에 받으면 acquire가 겹쳐 불린다. 기다린 뒤에 자리를
+  // 잡으면 셋이 같은 자리를 잡고 함께 나간다 — 고치려던 그 문제가 된다.
+  const limiter = new RateLimiter(20);
+  const at = [];
+  await Promise.all([0, 1, 2, 3].map(async () => {
+    await limiter.acquire();
+    at.push(Date.now());
+  }));
+  at.sort((a, b) => a - b);
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  assert.ok(gaps.every((g) => g >= 35), `동시 요청이 붙어서 나갔습니다: ${gaps}ms`);
+});
+
+test('막히면 스스로 느려진다', async () => {
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  const before = client.limiter.perSecond;
+  await client.getCandles('KRW-BTC', 'minute1', 200).catch(() => {});
+  assert.ok(
+    client.limiter.perSecond < before,
+    `막혔는데도 같은 속도로 계속 부릅니다 (초당 ${client.limiter.perSecond}번)`,
+  );
+});
+
+test('느려진 뒤에 통하면 표기가 아니라 속도가 문제였던 것이다', async () => {
+  // 세 표기가 전부 안 통했다고 해서 '표기 문제'라고 결론 내리면 안 된다.
+  // 너무 빨라서 셋 다 막힌 것일 수도 있다. 그래서 느려진 채로 한 번 더
+  // 훑어 본다. **여기서 통하면 원인은 표기가 아니라 속도다.**
+  const FAIL_UNTIL = 3;    // 첫 훑기(표기 0·1·2)는 전부 막힌다
+  let tries = 0;
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    sweepPause: 5,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      if (sentTo(url) !== null) {
+        tries += 1;
+        if (tries <= FAIL_UNTIL) throw new TypeError('Failed to fetch');
+      }
+      return OK(candleRows());
+    },
+  });
+
+  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.equal(got.length, 2, '두 번째 훑기에서 받아냈어야 합니다');
+  // 첫 표기로 돌아와서 성공했다 — 표기는 처음부터 맞았다는 뜻이다.
+  assert.equal(client.toFormat, 0, `표기 ${client.toFormat}에 정착했습니다`);
+  assert.ok(client.toProven, '통하는 표기를 찾았다고 기록해야 합니다');
 });

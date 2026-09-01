@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -59,28 +58,39 @@ class Ticker:
 
 
 class RateLimiter:
-    """초당 N회 토큰 버킷.
+    """요청을 **고르게 벌려서** 내보낸다.
 
     1분봉 한 달치를 받으려면 200개씩 200번 넘게 요청해야 한다. 한도를
     넘기면 429가 오고, 그러면 수집이 중간에 끊긴다.
+
+    처음에는 '지난 1초에 N번 미만이면 통과'로 만들었다. 그건 초당 회수는
+    지키지만 **간격은 안 지킨다** — 창이 비어 있으면 8개가 한꺼번에 나가고
+    남은 시간을 쉰다. 평균은 초당 8회지만 순간 속도는 그보다 훨씬 빠르다.
+
+    브라우저 판에서 실제로 이것 때문에 막혔다. 맨 위 시세와 첫 쪽은
+    받아지는데 그 뒤가 전부 실패했다 — 한꺼번에 나간 쪽이 통째로 걸린
+    것이다. 같은 결함이 여기에도 있었다.
     """
 
     def __init__(self, per_second: int = 8) -> None:
         self.per_second = max(1, per_second)
-        self._hits: deque[float] = deque()
+        self._next = 0.0
         self._lock = threading.Lock()
 
+    @property
+    def gap(self) -> float:
+        """요청 사이 최소 간격(초)."""
+        return 1.0 / self.per_second
+
     def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                while self._hits and now - self._hits[0] >= 1.0:
-                    self._hits.popleft()
-                if len(self._hits) < self.per_second:
-                    self._hits.append(now)
-                    return
-                wait = 1.0 - (now - self._hits[0])
-            time.sleep(max(wait, 0.01))
+        with self._lock:
+            now = time.monotonic()
+            at = max(now, self._next)
+            # **기다리기 전에** 자리를 잡는다. 기다린 뒤에 잡으면 여러
+            # 스레드가 같은 자리를 잡고 함께 나간다 — 고치려던 그 문제가 된다.
+            self._next = at + self.gap
+        if at > now:
+            time.sleep(at - now)
 
 
 class UpbitClient:
