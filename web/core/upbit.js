@@ -24,6 +24,15 @@ export const API_BASE = 'https://api.upbit.com';
 export const PAGE = 200;
 
 /**
+ * 초당 요청 수.
+ *
+ * 4년치는 1만 6천 번을 넘게 부른다. 너무 빠르면 업비트가 막는다 — 실제로
+ * 8회일 때 첫 쪽만 받고 그 뒤가 전부 막히는 일이 있었다. 화면이 "얼마나
+ * 걸리는지"를 계산할 때도 이 값을 쓰므로, 여기 하나만 고치면 된다.
+ */
+export const PER_SECOND = 5;
+
+/**
  * `to`(어느 시점 이전을 달라)를 적는 방법. 업비트가 여럿을 받아 준다.
  *
  * 왜 여러 개를 두는가 — 아이패드에서 실제로 돌려 보니 **`to`가 붙은 요청만**
@@ -78,7 +87,7 @@ export class RateLimiter {
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 export class UpbitClient {
-  constructor({ base = API_BASE, retries = 4, perSecond = 5, fetcher = null } = {}) {
+  constructor({ base = API_BASE, retries = 4, perSecond = PER_SECOND, fetcher = null } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.limiter = new RateLimiter(perSecond);
