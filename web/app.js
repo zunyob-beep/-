@@ -8,7 +8,7 @@
 import { MARKETS, marketLabel } from './core/models.js';
 import { MAX_BARS, PERIODS } from './core/analysis.js';
 import {
-  API_BASE, CEILING, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
+  API_BASE, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
 } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
@@ -268,9 +268,7 @@ function showPeriodNote() {
   const count = parseInt($('in-period').value, 10) || 0;
   // **1분봉만 받는다.** 3·5분봉은 그걸 묶어서 만드므로 요청이 안 든다.
   const requests = Math.ceil(count / PAGE);
-  // 속도는 조심스럽게 시작해 잘 되면 올라간다. 시작 속도로만 재면 실제보다
-  // 훨씬 오래 걸린다고 겁을 주게 되므로, 올라간 뒤의 속도를 섞어서 잡는다.
-  const minutes = requests / ((PER_SECOND + CEILING * 2) / 3) / 60;
+  const minutes = requests / PER_SECOND / 60;
   const guess = minutes < 1
     ? '1분 안'
     : minutes < 60
@@ -311,8 +309,8 @@ const won = (x) => (x >= 1000
  */
 function refreshTicker() {
   if (document.hidden) return;   // 안 보고 있으면 묻지 않는다
-  // 내려받는 중에는 묻지 않는다. 같은 줄에 끼어들어 봐야 느려지기만 한다.
-  if (busy) return;
+  // 내려받는 중에도 묻는다. 같은 예산 안에서 줄을 서므로 초당 회수를
+  // 넘기지 않고, 20초에 한 번이라 받는 속도에 사실상 영향이 없다.
   send({ type: 'ticker', market });
 }
 

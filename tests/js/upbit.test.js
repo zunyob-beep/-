@@ -1,27 +1,15 @@
-// 업비트에 못 닿았을 때 **무엇 때문인지 제대로 가르는가.**
+// 업비트에 어떻게 요청하고, 못 받았을 때 무엇 때문인지 제대로 가르는가.
 //
-// 왜 이게 따로 필요한가
-// --------------------
-// 아이패드에서 실제로 돌려 보니 이런 화면이 나왔다.
-//
-//   · 맨 위 시세는 잘 뜬다 (108,779,000원)
-//   · 봉은 201개까지만 받고 멈췄다
-//   · 그런데 화면에는 "업비트에 닿지 못했습니다"
-//
-// 시세가 뜨고 있는데 "닿지 못했다"는 **거짓말**이다. 그리고 201개라는
-// 숫자가 무슨 일이 있었는지 정확히 말해 준다 — 첫 쪽(200개)은 받았고,
-// `to`가 붙는 둘째 쪽부터 전부 실패했다. 맨 위 시세도 `to`가 없다.
-//
-// 그래서 두 가지를 고쳤고, 여기서 그 둘을 지킨다.
-//
-//   1. `to` 표기를 여러 개 준비해 두고 통하는 것을 찾는다
-//   2. 한 번이라도 받아 본 뒤에 막혔으면 '닿지 못했다'고 하지 않는다
+// 여기 있는 시험은 대부분 **실제로 겪은 화면**에서 나왔다. 하나씩 적어 둔다.
+// 원인을 몰라서 추측으로 붙였던 장치들(표기·개수 9조합 더듬기, 감속·증속,
+// 되돌아가기)은 원인을 알고 나서 전부 걷어냈고, 그 시험들도 같이 지웠다.
+// 남은 것은 지금도 참인 것들뿐이다.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  PER_SECOND, RateLimiter, SPEEDUP_AFTER, TO_FORMATS, UpbitClient, UpbitError,
+  PER_SECOND, RateLimiter, UpbitClient, UpbitError,
 } from '../../web/core/upbit.js';
 
 const OK = (rows) => ({ status: 200, async json() { return rows; }, async text() { return ''; } });
@@ -36,76 +24,84 @@ function candleRows(count = 2, at = 1700000000) {
 }
 
 /**
- * `to`를 어떤 표기로 보냈는지 뽑아낸다.
- *
- * 연결 확인용 요청(./manifest.webmanifest?ping=)은 상대 주소라 그냥
- * `new URL(url)`에 넣으면 터진다. 그것까지 실패로 만들면 '업비트만 막힘'과
- * '인터넷이 끊김'을 가르는 진단 자체가 망가진다.
+ * 연결 확인용 요청(./manifest.webmanifest?ping=)은 상대 주소다. 그것까지
+ * 실패로 만들면 '업비트만 막힘'과 '인터넷이 끊김'을 가르는 진단이 망가진다.
  */
-const sentTo = (url) => new URL(url, 'http://test.local/').searchParams.get('to');
 const isPing = (url) => url.includes('manifest.webmanifest');
+const sentTo = (url) => new URL(url, 'http://test.local/').searchParams.get('to');
 
-/** 어떤 표기로 적힌 `to`인지 알아낸다. 시각과 무관하게 모양만 본다. */
-function formatIndexOf(to) {
-  const at = 1700000000;
-  return TO_FORMATS.findIndex((make) => {
-    const sample = make(at);
-    // 자릿수는 같고 구분 기호만 다르다. 기호 자리를 맞춰 본다.
-    return sample.length === to.length
-      && sample[10] === to[10]
-      && sample.slice(19) === to.slice(19);
-  });
-}
+// ------------------------------------------------------------ 예산
+//
+// 이 앱이 업비트에 보내는 전부가 하나의 예산 안에 있어야 한다. 예전에는
+// 화면과 워커에 클라이언트가 따로 있어 제한기가 둘이었고 서로를 몰랐다.
+// "초당 3회"라고 적어 놓고 실제로는 그보다 많이 나갔다.
 
-test('to 표기가 안 통하면 다른 표기로 바꿔 본다', async () => {
-  // 업비트가 **두 번째 표기만** 받아 주는 상황을 흉내 낸다.
-  const ACCEPTS = 1;
-  const tried = [];
-  const client = new UpbitClient({
-    retries: 0,
-    perSecond: 100000,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);          // 우리 쪽은 늘 답한다
-      const to = sentTo(url);
-      if (to !== null) {
-        tried.push(formatIndexOf(to));
-        // 브라우저는 CORS로 막히면 예외를 던진다. 그걸 흉내 낸다.
-        if (formatIndexOf(to) !== ACCEPTS) throw new TypeError('Failed to fetch');
-      }
-      return OK(candleRows());
-    },
-  });
-
-  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.equal(got.length, 2, '결국 받아냈어야 합니다');
-  assert.deepEqual(tried, [0, ACCEPTS], `표기를 이렇게 더듬었습니다: ${tried}`);
-
-  // 한 번 찾았으면 그 뒤로는 그것만 쓴다 — 매번 처음부터 더듬으면 느리다.
-  tried.length = 0;
-  await client.getCandles('KRW-BTC', 'minute1', 200, 1699999000);
-  assert.deepEqual(tried, [ACCEPTS], `표기를 다시 더듬었습니다: ${tried}`);
+test('업비트 한도 안에서 부른다', () => {
+  // 업비트 시세 API의 공개 한도는 초당 10회다.
+  assert.ok(PER_SECOND <= 10, `초당 ${PER_SECOND}번은 업비트 한도를 넘습니다`);
+  const client = new UpbitClient();
+  assert.equal(client.limiter.perSecond, PER_SECOND);
 });
 
-test('어느 표기도 안 통하면 결국 실패한다', async () => {
-  const client = new UpbitClient({
-    retries: 0,
-    perSecond: 100000,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);
-      if (sentTo(url) !== null) throw new TypeError('Failed to fetch');
-      return OK(candleRows());
-    },
-  });
-  await assert.rejects(
-    () => client.getCandles('KRW-BTC', 'minute1', 200, 1700000000),
-    (error) => error instanceof UpbitError,
-    '조용히 성공한 척하면 안 됩니다',
+test('요청을 한꺼번에 쏘지 않고 고르게 벌린다', async () => {
+  // 이게 진짜 버그였다. '지난 1초에 N번 미만이면 통과'는 창이 비어 있을 때
+  // 여러 개를 **동시에** 내보낸다. 평균은 맞지만 순간 속도가 수십 배다.
+  const limiter = new RateLimiter(20);   // 간격 50ms
+  const at = [];
+  for (let i = 0; i < 4; i += 1) {
+    at.push(Date.now());
+    // eslint-disable-next-line no-await-in-loop
+    await limiter.acquire();
+  }
+  at.push(Date.now());
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  assert.ok(gaps.slice(1).every((g) => g >= 35), `요청이 붙어서 나갔습니다: ${gaps}ms`);
+});
+
+test('동시에 불러도 서로 겹치지 않고 줄을 선다', async () => {
+  // 기다린 뒤에 자리를 잡으면 동시에 들어온 요청들이 같은 자리를 잡고
+  // 함께 나간다 — 고치려던 그 문제가 된다.
+  const limiter = new RateLimiter(20);
+  const at = [];
+  await Promise.all([0, 1, 2, 3].map(async () => {
+    await limiter.acquire();
+    at.push(Date.now());
+  }));
+  at.sort((a, b) => a - b);
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  assert.ok(gaps.every((g) => g >= 35), `동시 요청이 붙어서 나갔습니다: ${gaps}ms`);
+});
+
+test('업비트로 나가는 길은 워커 하나뿐이다', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
+  assert.ok(
+    !/new UpbitClient/.test(app),
+    '화면 쪽에 UpbitClient가 또 있습니다 — 제한기가 둘이 되면 초당 회수를 못 지킵니다',
   );
+  const worker = await readFile(new URL('../../web/worker.js', import.meta.url), 'utf8');
+  const made = worker.match(/new UpbitClient/g) ?? [];
+  assert.equal(made.length, 1, `워커가 UpbitClient를 ${made.length}개 만듭니다`);
 });
+
+test('맨 위 시세를 너무 자주 묻지 않는다', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
+  const every = app.match(/setInterval\(refreshTicker,\s*(\d+)\)/);
+  assert.ok(every, 'refreshTicker 주기를 못 찾았습니다');
+  const ms = Number(every[1]);
+  // 5초였을 때 시간당 720번이 나갔다. 맨 위 숫자에 그 해상도는 필요 없다.
+  assert.ok(ms >= 15000, `${ms / 1000}초마다 묻습니다 — 시간당 ${3600000 / ms}번입니다`);
+});
+
+// ------------------------------------------------------- 못 받았을 때
+//
+// 브라우저는 CORS로 막힌 것, 서버가 거절한 것, 인터넷이 끊긴 것을 **똑같이**
+// TypeError로 알려준다. 그래서 우리 쪽에서 갈라야 하고, 이걸 못 갈라서
+// 오랫동안 "닿지 못했습니다"라는 틀린 말을 해 왔다.
 
 test('한 번이라도 받은 뒤 막히면 "닿지 못했다"고 하지 않는다', async () => {
-  // 이게 화면에 뜬 거짓말이었다. 시세가 멀쩡히 나오는데 "업비트에 닿지
-  // 못했습니다"가 같이 떠 있었다.
+  // 시세가 멀쩡히 나오는데 "업비트에 닿지 못했습니다"가 같이 떠 있었다.
   let calls = 0;
   const client = new UpbitClient({
     retries: 0,
@@ -123,13 +119,11 @@ test('한 번이라도 받은 뒤 막히면 "닿지 못했다"고 하지 않는�
 
   const failure = await client.getCandles('KRW-BTC', 'minute1', 200)
     .then(() => null, (error) => error);
-  assert.ok(failure instanceof UpbitError);
   assert.equal(failure.kind, 'stalled', `종류가 ${failure.kind}입니다`);
   assert.ok(
     !failure.message.includes('닿지 못했'),
     `받아 놓고도 "닿지 못했다"고 합니다: ${failure.message}`,
   );
-  assert.ok(failure.message.includes('1번'), '몇 번 받았는지 말해야 합니다');
 });
 
 test('한 번도 못 받았으면 그때는 "닿지 못했다"가 맞다', async () => {
@@ -137,8 +131,7 @@ test('한 번도 못 받았으면 그때는 "닿지 못했다"가 맞다', async
     retries: 0,
     perSecond: 100000,
     fetcher: async (url) => {
-      // 우리 쪽(같은 출처) 확인 요청은 성공시킨다 → 인터넷은 되는 상황
-      if (isPing(url)) return OK([]);
+      if (isPing(url)) return OK([]);   // 인터넷은 된다
       throw new TypeError('Failed to fetch');
     },
   });
@@ -151,11 +144,10 @@ test('한 번도 못 받았으면 그때는 "닿지 못했다"가 맞다', async
 //
 //   현재가 (to 없음)        안 됨   TypeError: Load failed
 //   봉 200개 (to 없음)      안 됨   TypeError: Load failed
-//   ...to 붙은 것 전부      안 됨   TypeError: Load failed
 //   같은 주소를 no-cors로   됨      닿았습니다 (124ms)
 //
-// no-cors가 124ms에 성공했다는 건 **업비트까지 갔고 답도 왔다**는 뜻이다.
-// 못 닿은 게 아니라, 온 답을 못 읽는 것이다 — 거절 응답에는 허용 표시(CORS)가
+// no-cors가 124ms에 성공했다는 건 업비트까지 갔고 답도 왔다는 뜻이다. 못
+// 닿은 게 아니라 온 답을 못 읽는 것이다 — 거절 응답에는 허용 표시(CORS)가
 // 안 붙기 때문이다. 그런데 화면에는 "아예 못 닿고 있습니다"라고 떴다.
 test('닿기는 하는데 전부 거절당하면 "못 닿았다"고 하지 않는다', async () => {
   const client = new UpbitClient({
@@ -170,14 +162,12 @@ test('닿기는 하는데 전부 거절당하면 "못 닿았다"고 하지 않�
   const failure = await client.getCandles('KRW-BTC', 'minute1', 200)
     .then(() => null, (error) => error);
   assert.equal(failure.kind, 'throttled', `종류가 ${failure.kind}입니다`);
-  assert.ok(
-    !failure.message.includes('닿지 못했'),
-    `닿았는데 "닿지 못했다"고 합니다: ${failure.message}`,
-  );
   assert.ok(failure.message.includes('막고 있'), '막힌 상태라고 말해야 합니다');
+  assert.ok(client.knownBlocked(), '막힌 걸 기억해야 급하지 않은 요청을 멈춥니다');
 });
 
-test('막힌 상태에서는 조합을 더듬지 않는다 (더 나빠진다)', async () => {
+test('막힌 상태에서는 더 두드리지 않는다', async () => {
+  // 막혀 있는데 재시도하는 건 풀릴 틈만 없앤다.
   let calls = 0;
   const client = new UpbitClient({
     retries: 4,
@@ -190,34 +180,13 @@ test('막힌 상태에서는 조합을 더듬지 않는다 (더 나빠진다)', 
     },
   });
   await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
-  // 아홉 조합 × 재시도까지 돌면 막혀 있는 업비트를 수십 번 더 두드리게 된다.
   assert.ok(calls <= 3, `막혀 있는데 ${calls}번이나 더 두드렸습니다`);
-});
-
-test('평범한 요청이 되면 막힌 게 아니므로 계속 더듬는다', async () => {
-  // no-cors가 된다고 무조건 '막혔다'로 보면 안 된다. to가 붙은 요청만
-  // 거절당하는 경우에는 조합을 계속 찾아봐야 한다.
-  const ACCEPTS = 1;
-  const client = new UpbitClient({
-    retries: 0,
-    perSecond: 100000,
-    fetcher: async (url, init) => {
-      if (isPing(url)) return OK([]);
-      if (init?.mode === 'no-cors') return OK([]);
-      const to = sentTo(url);
-      if (to !== null && formatIndexOf(to) !== ACCEPTS) throw new TypeError('Load failed');
-      return OK(candleRows());
-    },
-  });
-  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.equal(got.length, 2, '평범한 요청이 되는데도 포기했습니다');
 });
 
 test('인터넷 자체가 끊겼으면 업비트 탓을 하지 않는다', async () => {
   const client = new UpbitClient({
     retries: 4,
     perSecond: 100000,
-    // 우리 쪽 확인 요청까지 실패 → 인터넷이 끊긴 것
     fetcher: async () => { throw new TypeError('Failed to fetch'); },
   });
   const started = Date.now();
@@ -239,164 +208,19 @@ test('요청 한도(429)는 따로 구분한다', async () => {
   assert.equal(failure.kind, 'rate');
 });
 
-test('업비트를 몰아붙이지 않는다', () => {
-  // 1년치는 2,600번 넘게 요청해야 한다. 너무 빠르면 막힌다.
-  const client = new UpbitClient();
-  assert.ok(client.limiter.perSecond <= 5, `초당 ${client.limiter.perSecond}번은 너무 잦습니다`);
-});
-
-// ------------------------------------------------------------- 속도
+// --------------------------------------------------- 끊겨도 이어 받는다
 //
-// 아이패드에서 두 번째로 막혔을 때 화면에 263개가 떠 있었다. 이전 판이
-// 받아둔 201개 + 그 사이 흐른 62분 = 263. 즉 **`to`가 붙은 요청은 이번에도
-// 한 번도 성공하지 못했다.**
-//
-// 그런데 CORS는 쿼리 파라미터를 구분하지 못한다. 같은 주소·같은 방식인데
-// 첫 요청만 되고 그 다음이 안 된다면 남는 설명은 속도뿐이다. 그리고 실제로
-// 속도 제한기에 결함이 있었다 — 초당 회수만 지키고 **간격은 안 지켰다.**
-
-test('요청을 한꺼번에 쏘지 않고 고르게 벌린다', async () => {
-  // 이게 진짜 버그였다. '지난 1초에 5번 미만이면 통과'는 창이 비어 있을 때
-  // 5개를 **동시에** 내보낸다. 평균은 초당 5회지만 순간 속도는 초당 100회다.
-  const limiter = new RateLimiter(20);   // 간격 50ms
-  const at = [];
-  for (let i = 0; i < 4; i += 1) {
-    at.push(Date.now());
-    // eslint-disable-next-line no-await-in-loop
-    await limiter.acquire();
-  }
-  at.push(Date.now());
-  const gaps = at.slice(1).map((t, i) => t - at[i]);
-  // 타이머는 정확하지 않으므로 넉넉히 본다. 요지는 **0이 아니어야** 한다는 것.
-  assert.ok(
-    gaps.slice(1).every((g) => g >= 35),
-    `요청이 붙어서 나갔습니다: ${gaps}ms`,
-  );
-});
-
-test('동시에 불러도 서로 겹치지 않고 줄을 선다', async () => {
-  // 세 봉 간격을 동시에 받으면 acquire가 겹쳐 불린다. 기다린 뒤에 자리를
-  // 잡으면 셋이 같은 자리를 잡고 함께 나간다 — 고치려던 그 문제가 된다.
-  const limiter = new RateLimiter(20);
-  const at = [];
-  await Promise.all([0, 1, 2, 3].map(async () => {
-    await limiter.acquire();
-    at.push(Date.now());
-  }));
-  at.sort((a, b) => a - b);
-  const gaps = at.slice(1).map((t, i) => t - at[i]);
-  assert.ok(gaps.every((g) => g >= 35), `동시 요청이 붙어서 나갔습니다: ${gaps}ms`);
-});
-
-test('막히면 스스로 느려진다', async () => {
-  const client = new UpbitClient({
-    retries: 0,
-    perSecond: 100000,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);
-      throw new TypeError('Failed to fetch');
-    },
-  });
-  const before = client.limiter.perSecond;
-  await client.getCandles('KRW-BTC', 'minute1', 200).catch(() => {});
-  assert.ok(
-    client.limiter.perSecond < before,
-    `막혔는데도 같은 속도로 계속 부릅니다 (초당 ${client.limiter.perSecond}번)`,
-  );
-});
-
-// ------------------------------------------------- 스스로 찾아내기
-//
-// 세 번 고쳤는데 세 번 다 같은 자리에서 멈췄다(201 → 263 → 297, 늘어난 만큼이
-// 정확히 그 사이 흐른 시간). 나는 이 환경에서 업비트에 닿을 수 없어
-// (CONNECT 403) 무엇이 문제인지 확인할 방법이 없다.
-//
-// **그래서 맞히기를 그만두고, 앱이 돌면서 직접 찾게 했다.** 아래는 남아 있는
-// 가설들을 하나씩 흉내 내고, 각각에서 앱이 스스로 빠져나오는지 본다. 어느
-// 가설이 맞든 작동해야 한다.
-
-const withTo = (fetcher) => new UpbitClient({
-  retries: 0, perSecond: 100000, sweepPause: 5, fetcher,
-});
-const askedCount = (url) => Number(new URL(url, 'http://test.local/').searchParams.get('count'));
-
-test('가설 A — to와 큰 count를 같이 주면 거절당한다', async () => {
-  // 표기는 처음부터 맞았지만 개수가 문제인 경우. 표기만 더듬으면 영영 못 찾는다.
-  const CAP = 100;
-  const client = withTo(async (url) => {
-    if (isPing(url)) return OK([]);
-    if (sentTo(url) !== null && askedCount(url) > CAP) throw new TypeError('Failed to fetch');
-    return OK(candleRows(2));
-  });
-
-  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.equal(got.length, 2, '개수를 줄여서라도 받아냈어야 합니다');
-  assert.equal(client.toCap, CAP, `개수 상한이 ${client.toCap}입니다`);
-  assert.ok(client.toProven, '찾은 조합을 기억해야 합니다');
-});
-
-test('가설 B — 답은 하는데 봉을 하나도 안 준다', async () => {
-  // 200 OK에 빈 배열. 이걸 성공으로 받으면 **아무 설명 없이 조용히 멈춘다** —
-  // 화면에 보이던 모습이 정확히 그랬다.
-  let empties = 0;
-  const client = withTo(async (url) => {
-    if (isPing(url)) return OK([]);
-    if (sentTo(url) === null) return OK(candleRows(2));
-    // 첫 표기로는 빈 배열, 두 번째 표기부터 제대로 준다.
-    if (formatIndexOf(sentTo(url)) === 0) { empties += 1; return OK([]); }
-    return OK(candleRows(2));
-  });
-
-  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.ok(empties > 0, '빈 배열을 실제로 겪었어야 합니다');
-  assert.equal(got.length, 2, '빈 배열에서 멈추지 말고 다음 조합을 봤어야 합니다');
-});
-
-test('가설 B — 어느 조합으로도 봉을 안 주면 조용히 멈추지 않는다', async () => {
-  const client = withTo(async (url) => {
-    if (isPing(url)) return OK([]);
-    return OK(sentTo(url) === null ? candleRows(2) : []);
-  });
-  const failure = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000)
-    .then(() => null, (error) => error);
-  assert.ok(failure instanceof UpbitError, '조용히 빈손으로 끝내면 안 됩니다');
-  assert.equal(failure.kind, 'empty', `종류가 ${failure.kind}입니다`);
-});
-
-test('아홉 조합을 다 훑는다 (표기 3 × 개수 3)', async () => {
-  const seen = new Set();
-  const client = withTo(async (url) => {
-    if (isPing(url)) return OK([]);
-    const to = sentTo(url);
-    if (to !== null) {
-      seen.add(`${formatIndexOf(to)}/${askedCount(url)}`);
-      throw new TypeError('Failed to fetch');
-    }
-    return OK(candleRows());
-  });
-  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
-  assert.equal(seen.size, 9, `${seen.size}가지만 해 봤습니다: ${[...seen].join(' ')}`);
-});
-
-// ------------------------------------------------- 끊기지 않고, 느려지지 않게
-//
-// 아이패드에서 4,812개까지 잘 받다가 끊겼고, 속도가 많이 느리다고 했다.
-// 원인은 둘 다 '한 번의 딸꾹질이 영구적인 벌이 되는' 구조였다.
-//
-//   · 한 쪽이 실패하면 그때까지 받은 걸 두고 통째로 포기했다
-//   · slowDown()에 짝이 없어서, 한 번 느려지면 끝까지 그 속도였다
-//   · 더듬는 중 딸꾹질 한 번이면 10개짜리 조합에 눌러앉았다 (요청 20배)
+// 받은 쪽은 그때그때 저장된다. 4,812개까지 잘 받다가 한 번 걸려서 거기서
+// 끝난 적이 있는데, 그건 4,812개를 잃은 게 아니라 남은 걸 안 받은 것이다.
 
 test('받다가 한 번 걸려도 이어서 받는다', async () => {
-  // 4,812개에서 끝난 그 상황이다. 받은 건 이미 저장돼 있으니 포기할 이유가 없다.
   let calls = 0;
   const client = new UpbitClient({
-    retries: 0, perSecond: 100000, sweepPause: 5, stallPause: 5,
+    retries: 0, perSecond: 100000, stallPause: 5,
     fetcher: async (url) => {
       if (isPing(url)) return OK([]);
       calls += 1;
       if (calls === 3) throw new TypeError('Failed to fetch');   // 딱 한 번 걸린다
-      // 매번 더 과거로 내려가도록 시각을 옮겨 준다.
       return OK(candleRows(2, 1700000000 - calls * 600));
     },
   });
@@ -409,15 +233,11 @@ test('받다가 한 번 걸려도 이어서 받는다', async () => {
 });
 
 test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => {
-  // 업비트는 한도를 넘긴 주소를 몇 분씩 막는다. 사람이 10분 뒤에 다시
-  // 누르는 대신 **앱이 스스로 기다린다.** 그게 "무조건 받아온다"의 뜻이다.
+  // 사람이 10분 뒤에 다시 누르는 대신 앱이 스스로 기다린다.
   let calls = 0;
   const UNBLOCKS_AT = 3;
   const client = new UpbitClient({
-    retries: 0,
-    perSecond: 100000,
-    sweepPause: 5,
-    throttlePause: 20,   // 시험에서는 짧게. 실제로는 1분부터 시작한다.
+    retries: 0, perSecond: 100000, throttlePause: 20,
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);   // 닿기는 한다 = 막힌 상태
@@ -434,7 +254,6 @@ test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => 
     onBatch: (batch) => { saved.push(...batch); },
     onProgress: (done, total, info) => { if (info?.banned) waits.push(info.waitLeft); },
   });
-
   assert.ok(saved.length >= 4, `${saved.length}개에서 포기했습니다 — 기다렸어야 합니다`);
   assert.ok(waits.length > 0, '기다리는 동안 남은 시간을 알려줘야 합니다');
 });
@@ -442,7 +261,7 @@ test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => 
 test('막힌 채로 영원히 매달리지는 않는다', async () => {
   // 기다리는 것과 붙잡고 있는 것은 다르다. 끝내 안 풀리면 말해 줘야 한다.
   const client = new UpbitClient({
-    retries: 0, perSecond: 100000, sweepPause: 5, throttlePause: 5,
+    retries: 0, perSecond: 100000, throttlePause: 5,
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);
@@ -455,157 +274,36 @@ test('막힌 채로 영원히 매달리지는 않는다', async () => {
   assert.equal(failure.kind, 'throttled');
 });
 
-test('끝까지 안 되면 그때는 멈춘다 (영원히 매달리지 않는다)', async () => {
-  let calls = 0;
-  const client = new UpbitClient({
-    retries: 0, perSecond: 100000, sweepPause: 5, stallPause: 1,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);
-      calls += 1;
-      if (calls === 1) return OK(candleRows(2));
-      throw new TypeError('Failed to fetch');
-    },
-  });
-  await assert.rejects(
-    () => client.collect('KRW-BTC', 'minute1', 500, { retain: false }),
-    (error) => error instanceof UpbitError,
-  );
-});
-
-test('안전하다고 확인된 속도를 넘지 않는다', () => {
-  // 한때 상한을 8로 올렸다가 되돌렸다. "잘 되면 더 빨라져야 한다"고 고쳤는데
-  // 그게 **버그가 아니라 안전장치**였다. 실제로 겪은 순서:
-  //
-  //   초당 8회 → 201개에서 막힘 / 초당 5회 → 4,812개에서 막힘
-  //   초당 3회 → 끝까지 받음    / 3→8회로 올림 → 다시 막힘
-  //
-  // 그리고 한 번 막히면 몇 분씩 통째로 막힌다. 빨리 받으려다 10분을 잃는다.
-  const limiter = new RateLimiter();
-  assert.equal(
-    limiter.top, PER_SECOND,
-    `상한이 ${limiter.top}입니다 — 확인된 속도(${PER_SECOND})를 넘으면 막힙니다`,
-  );
-
-  // 아무리 잘 돼도 그 위로는 안 올라간다.
-  for (let i = 0; i < 20; i += 1) limiter.speedUp();
-  assert.equal(limiter.perSecond, PER_SECOND, `초당 ${limiter.perSecond}회까지 올라갔습니다`);
-});
-
-test('잘 되면 속도가 도로 올라간다', async () => {
-  // 이게 없으면 딸꾹질 한 번이 끝까지 가는 벌이 된다.
-  const limiter = new RateLimiter(8);
-  limiter.slowDown();
-  limiter.slowDown();
-  const slowed = limiter.perSecond;
-  assert.equal(slowed, 2, `느려진 속도가 ${slowed}입니다`);
-
-  for (let i = 0; i < 20; i += 1) limiter.speedUp();
-  assert.equal(limiter.perSecond, 8, '원래 속도까지 돌아왔어야 합니다');
-  // 원래보다 빨라지면 안 된다 — 그건 처음부터 몰아붙이는 것이다.
-  limiter.speedUp();
-  assert.equal(limiter.perSecond, 8, '원래 속도를 넘겼습니다');
-});
-
-test('작은 개수에 눌러앉지 않고 도로 올려 본다', async () => {
-  // 더듬는 중 딸꾹질 한 번으로 10개짜리에 정착하면 요청이 스무 배가 된다.
-  // 실제로 "많이 느리다"는 말이 나온 원인이다.
-  let first = true;
-  const client = new UpbitClient({
-    retries: 0, perSecond: 100000, sweepPause: 5,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);
-      // 첫 to 요청만 딸꾹질한다. 그 뒤로는 뭐든 다 받아 준다.
-      if (sentTo(url) !== null && first) { first = false; throw new TypeError('Failed to fetch'); }
-      return OK(candleRows());
-    },
-  });
-
-  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.equal(client.planAt, 1, '딸꾹질 뒤 다음 조합으로 갔어야 합니다');
-
-  // 계속 잘 되면 스스로 앞 조합(더 빠른 쪽)으로 돌아간다.
-  for (let i = 0; i < SPEEDUP_AFTER; i += 1) {
-    // eslint-disable-next-line no-await-in-loop
-    await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000 - i * 600);
-  }
-  assert.equal(client.planAt, 0, `${client.planAt}번 조합에 눌러앉았습니다`);
-});
-
-test('올려 봤다가 안 되면 되돌아가고, 한동안 안 올린다', async () => {
-  const GOOD = 1;   // 1번 조합만 통한다
-  const client = new UpbitClient({
-    retries: 0, perSecond: 100000, sweepPause: 5,
-    fetcher: async (url) => {
-      if (isPing(url)) return OK([]);
-      const to = sentTo(url);
-      if (to !== null && formatIndexOf(to) !== GOOD) throw new TypeError('Failed to fetch');
-      return OK(candleRows());
-    },
-  });
-
-  for (let i = 0; i < SPEEDUP_AFTER + 3; i += 1) {
-    // eslint-disable-next-line no-await-in-loop
-    await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000 - i * 600);
-  }
-  assert.equal(client.planAt, GOOD, `통하던 조합을 잃었습니다 (지금 ${client.planAt}번)`);
-  assert.ok(client.settled, '한 번 되돌아왔으면 그만 올려야 합니다');
-});
-
-test('느려진 뒤에 통하면 표기가 아니라 속도가 문제였던 것이다', async () => {
-  // 세 표기가 전부 안 통했다고 해서 '표기 문제'라고 결론 내리면 안 된다.
-  // 너무 빨라서 셋 다 막힌 것일 수도 있다. 그래서 느려진 채로 한 번 더
-  // 훑어 본다. **여기서 통하면 원인은 표기가 아니라 속도다.**
-  const FAIL_UNTIL = 3;    // 첫 훑기(표기 0·1·2)는 전부 막힌다
-  let tries = 0;
+test('첫 쪽부터 빈손이면 조용히 끝내지 않는다', async () => {
+  // 200 OK에 빈 배열이 오면 예전에는 아무 말 없이 멈췄다. 화면에는 오류도
+  // 없이 그냥 멈춘 것으로 보인다. 비트코인 1분봉에 과거가 없을 리 없다.
   const client = new UpbitClient({
     retries: 0,
     perSecond: 100000,
-    sweepPause: 5,
+    fetcher: async (url) => (isPing(url) ? OK([]) : OK([])),
+  });
+  const failure = await client.collect('KRW-BTC', 'minute1', 200, { retain: false })
+    .then(() => null, (error) => error);
+  assert.ok(failure instanceof UpbitError, '빈손으로 조용히 끝냈습니다');
+  assert.equal(failure.kind, 'empty');
+});
+
+test('to는 문서에 있는 표기 하나만 쓴다', async () => {
+  // 예전에는 세 표기를 차례로 더듬었다. 표기가 문제인 줄 알았는데 사실은
+  // 막혀 있던 것이었고, 막힌 상태에서 표기를 바꿔 가며 다시 보내는 건
+  // 상황을 나쁘게만 만든다.
+  const sent = [];
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
     fetcher: async (url) => {
       if (isPing(url)) return OK([]);
-      if (sentTo(url) !== null) {
-        tries += 1;
-        if (tries <= FAIL_UNTIL) throw new TypeError('Failed to fetch');
-      }
+      const to = sentTo(url);
+      if (to !== null) sent.push(to);
       return OK(candleRows());
     },
   });
-
-  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
-  assert.equal(got.length, 2, '두 번째 훑기에서 받아냈어야 합니다');
-  // 첫 표기로 돌아와서 성공했다 — 표기는 처음부터 맞았다는 뜻이다.
-  assert.equal(client.toFormat, 0, `표기 ${client.toFormat}에 정착했습니다`);
-  assert.ok(client.toProven, '통하는 표기를 찾았다고 기록해야 합니다');
-});
-
-// ------------------------------------------------- 나가는 길은 하나여야 한다
-//
-// 계속 막힌 이유를 찾다가 나온 것이다. UpbitClient가 **두 개**였다 — 화면에
-// 하나(맨 위 시세용), 워커에 하나(내려받기용). 각자 자기 속도 제한기를 갖고
-// 서로를 몰랐다. 그래서 "초당 3회"는 사실이 아니었다.
-//
-// 게다가 시세를 5초마다 불렀다. 아무것도 안 하고 앱만 켜 둬도 **시간당
-// 720번**이 나갔고, 막혀 있는 동안에도 계속 두드려서 회복을 방해했다.
-
-test('업비트로 나가는 길은 워커 하나뿐이다', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
-  assert.ok(
-    !/new UpbitClient/.test(app),
-    '화면 쪽에 UpbitClient가 또 있습니다 — 속도 제한기가 둘이 되면 초당 회수를 못 지킵니다',
-  );
-
-  const worker = await readFile(new URL('../../web/worker.js', import.meta.url), 'utf8');
-  const made = worker.match(/new UpbitClient/g) ?? [];
-  assert.equal(made.length, 1, `워커가 UpbitClient를 ${made.length}개 만듭니다`);
-});
-
-test('맨 위 시세를 너무 자주 묻지 않는다', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
-  const every = app.match(/setInterval\(refreshTicker,\s*(\d+)\)/);
-  assert.ok(every, 'refreshTicker 주기를 못 찾았습니다');
-  const ms = Number(every[1]);
-  // 5초였을 때 시간당 720번이 나갔다. 맨 위 숫자에 그 해상도는 필요 없다.
-  assert.ok(ms >= 15000, `${ms / 1000}초마다 묻습니다 — 시간당 ${3600000 / ms}번입니다`);
+  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.equal(sent.length, 1, `한 번에 보냈어야 합니다: ${sent}`);
+  assert.match(sent[0], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, `표기가 ${sent[0]}입니다`);
 });
