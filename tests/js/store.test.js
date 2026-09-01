@@ -11,8 +11,12 @@ import {
   CHUNK, CandleStore, MemoryBackend, chunkOf, groupByChunk, mergeCandles,
 } from '../../web/core/store.js';
 import { REFRESH_TAIL, cachedSummary, loadSeries, update } from '../../web/core/data.js';
-import { MAX_BARS, PERIODS, withinLimit } from '../../web/core/analysis.js';
-import { UpbitClient, parseCandle, toCursor } from '../../web/core/upbit.js';
+import {
+  DEFAULT_PERIOD, MAX_BARS, PERIODS, withinLimit,
+} from '../../web/core/analysis.js';
+import {
+  PAGE, PER_SECOND, UpbitClient, parseCandle, toCursor,
+} from '../../web/core/upbit.js';
 
 const STEP = 60;
 const START = 1700000000 - (1700000000 % STEP);
@@ -300,6 +304,26 @@ test('브라우저가 감당할 크기를 넘지 않는다', () => {
   assert.ok(PERIODS.length >= 2, '고를 수 있는 기간이 남아 있어야 합니다');
   // 4년은 실제로 고를 수 있어야 한다.
   assert.ok(PERIODS.some((p) => p.label === '4년'), '4년 선택지가 없습니다');
+});
+
+test('막힌 날에도 끝낼 수 있는 짧은 선택지가 있다', () => {
+  // 예전에는 가장 짧은 것이 30일(216번)이었다. 업비트가 우리 주소를 막고
+  // 있는 날에는 그 216번이 한 번도 안 끝나서 **아무것도 못 봤다.**
+  // 첫 요청이 열 번 안쪽인 선택지가 하나는 있어야, 막힌 와중에도 화면에
+  // 뭔가가 뜬다.
+  const requests = (count) => Math.ceil(count / PAGE);
+  const shortest = requests(PERIODS[0].count);
+  assert.ok(shortest <= 10, `가장 짧은 선택지도 ${shortest}번을 받아야 합니다`);
+});
+
+test('처음 골라져 있는 기간은 빨리 끝나고 통계도 나온다', () => {
+  const chosen = PERIODS.find((p) => p.count === DEFAULT_PERIOD);
+  assert.ok(chosen, `기본값 ${DEFAULT_PERIOD}이 선택지에 없습니다`);
+  // 1분봉으로만 받으므로(3·5분봉은 묶어서 만든다) 요청 수는 이게 전부다.
+  const seconds = Math.ceil(DEFAULT_PERIOD / PAGE) / PER_SECOND;
+  assert.ok(seconds <= 60, `처음 받는 데 ${Math.round(seconds)}초가 걸립니다`);
+  // 그러면서 닮은 과거를 셀 만큼은 돼야 한다. 하루치로는 표본이 안 나온다.
+  assert.ok(DEFAULT_PERIOD >= 1440 * 5, '기본값이 통계를 내기엔 너무 짧습니다');
 });
 
 test('상한은 화면이 아니라 계산 쪽에서 건다', () => {
