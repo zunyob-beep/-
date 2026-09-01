@@ -351,9 +351,18 @@ def volume_confirms(series: Series, window: int = 20) -> Reading:
     ratio = recent / usual
     rising = series.close[-1] > series.close[-4]
     if ratio > 1.5:
+        # **어느 쪽에 힘이 실렸는지 반드시 밝힌다.**
+        #
+        # 예전에는 "거래량이 평소의 2.1배입니다 — 움직임에 힘이 실렸습니다"라고만
+        # 하고 화살표만 ▼로 찍었다. 그러면 "거래량이 늘었는데 왜 하락이지?"로
+        # 읽힌다. 다우의 거래량 원칙은 거래량이 **지금 가는 방향을 확인해 준다**는
+        # 것이라, 내리는 중에 거래량이 붙으면 내리는 쪽에 힘이 실린 것이다.
+        # 그 '지금 가는 방향'을 안 적으면 결론만 남고 이유가 사라진다.
+        way = "오르는" if rising else "내리는"
         return Reading(
             "거래량 확인", UP if rising else DOWN,
-            f"거래량이 평소의 {ratio:.1f}배입니다 — 움직임에 힘이 실렸습니다", 0.6,
+            f"최근 3봉이 {way} 중인데 거래량이 평소의 {ratio:.1f}배입니다"
+            f" — {way} 쪽에 힘이 실렸습니다", 0.6,
         )
     if ratio < 0.6:
         return Reading(

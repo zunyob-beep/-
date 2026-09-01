@@ -172,6 +172,19 @@ main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
 .panel h3 { margin: 0 0 12px; font-size: 14px; }
 .hint { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
 
+/* 조작부의 안내 문구는 **늘 한 줄을 차지한다.**
+   그러지 않으면 문구가 긴 칸만 두 줄이 되어 이름표들이 들쭉날쭉해지고,
+   칸 너비도 문구 길이만큼 벌어져 줄이 어긋난 것처럼 보인다. 빈 문구여도
+   자리를 잡아 두면 모든 칸이 같은 높이가 된다. */
+.row > label > .hint {
+  display: block;
+  margin-left: 0;
+  min-height: 1.2em;
+  line-height: 1.2;
+}
+/* 한 칸이 문구 때문에 통째로 넓어지지 않게. */
+.row > label { max-width: 15rem; }
+
 /* ---------------------------------------------------------------- 조작부 */
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .row.actions { margin-top: 14px; align-items: center; }

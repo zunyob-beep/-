@@ -414,9 +414,18 @@ export function volumeConfirms(series, window = 20) {
   const ratio = fresh / usual;
   const rising = series.close[n - 1] > series.close[n - 4];
   if (ratio > 1.5) {
+    // **어느 쪽에 힘이 실렸는지 반드시 밝힌다.**
+    //
+    // 예전에는 "거래량이 평소의 2.1배입니다 — 움직임에 힘이 실렸습니다"라고만
+    // 하고 화살표만 ▼로 찍었다. 그러면 "거래량이 늘었는데 왜 하락이지?"로
+    // 읽힌다. 다우의 거래량 원칙은 거래량이 **지금 가는 방향을 확인해 준다**는
+    // 것이라, 내리는 중에 거래량이 붙으면 내리는 쪽에 힘이 실린 것이다.
+    // 그 '지금 가는 방향'을 안 적으면 결론만 남고 이유가 사라진다.
+    const way = rising ? '오르는' : '내리는';
     return new Reading(
       '거래량 확인', rising ? UP : DOWN,
-      `거래량이 평소의 ${ratio.toFixed(1)}배입니다 — 움직임에 힘이 실렸습니다`, 0.6,
+      `최근 3봉이 ${way} 중인데 거래량이 평소의 ${ratio.toFixed(1)}배입니다`
+      + ` — ${way} 쪽에 힘이 실렸습니다`, 0.6,
     );
   }
   if (ratio < 0.6) {

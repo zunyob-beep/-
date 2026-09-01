@@ -23,6 +23,21 @@ export const API_BASE = 'https://api.upbit.com';
 /** 한 번에 받을 수 있는 최대 봉 수 */
 export const PAGE = 200;
 
+/**
+ * `to`(어느 시점 이전을 달라)를 적는 방법. 업비트가 여럿을 받아 준다.
+ *
+ * 왜 여러 개를 두는가 — 아이패드에서 실제로 돌려 보니 **`to`가 붙은 요청만**
+ * 막혔다. 맨 위 시세도, 첫 쪽(200개)도 잘 받았는데 둘째 쪽부터 전부
+ * 실패했다. 둘의 유일한 차이가 `to`였다. 어느 표기를 받아 주는지는 여기서
+ * 알 수 없으므로(이 환경에서는 업비트가 막혀 있다) **차례로 넣어 보고
+ * 통하는 것에 고정한다.**
+ */
+export const TO_FORMATS = [
+  (seconds) => `${new Date(seconds * 1000).toISOString().slice(0, 19)}Z`,
+  (seconds) => new Date(seconds * 1000).toISOString().slice(0, 19).replace('T', ' '),
+  (seconds) => `${new Date(seconds * 1000).toISOString().slice(0, 19)}+00:00`,
+];
+
 /** 시세 조회 실패. `kind`로 무엇 때문인지 구분한다. */
 export class UpbitError extends Error {
   constructor(message, kind = 'unknown', extra = {}) {
@@ -62,52 +77,39 @@ export class RateLimiter {
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/**
- * 요청이 왜 실패했는지 알아본다.
- *
- * 브라우저는 CORS로 막힌 요청과 인터넷이 끊긴 요청을 **똑같이** "Failed to
- * fetch"로 알려준다. 일부러 그렇게 만들어 뒀다 — 다른 사이트가 남의 서버
- * 상태를 캐낼 수 없게 하려고. 그래서 우리 쪽에서 갈라야 한다. 우리 서버
- * (이 페이지가 올라간 곳)가 답하는지 먼저 물어보면 갈린다.
- */
-async function diagnose() {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    return new UpbitError(
-      '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
-    );
-  }
-  try {
-    // 같은 출처라 CORS와 무관하다. 캐시를 피해야 진짜로 나갔다 온 게 된다.
-    await fetch(`./manifest.webmanifest?ping=${Date.now()}`, { cache: 'no-store' });
-  } catch {
-    return new UpbitError(
-      '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
-    );
-  }
-  return new UpbitError(
-    '인터넷은 되는데 업비트에 닿지 못했습니다. 업비트가 잠깐 막혔거나 점검 중일 수 있습니다.',
-    'blocked',
-  );
-}
-
 export class UpbitClient {
-  constructor({ base = API_BASE, retries = 4, perSecond = 8, fetcher = null } = {}) {
+  constructor({ base = API_BASE, retries = 4, perSecond = 5, fetcher = null } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
     this.fetch = fetcher ?? ((...args) => globalThis.fetch(...args));
+    /** 지금까지 업비트에서 실제로 받아 온 횟수. 진단이 이걸 본다. */
+    this.succeeded = 0;
+    /** 쓰고 있는 `to` 표기. 통하는 걸 찾으면 거기서 고정한다. */
+    this.toFormat = 0;
+    this.toProven = false;
   }
 
-  async get(path, params = {}) {
-    const url = new URL(this.base + path);
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
-    }
-
+  /**
+   * `toSeconds`를 따로 받는 이유 — 표기를 바꿔 가며 다시 시도해야 하기
+   * 때문이다. URL을 미리 만들어 두면 표기를 못 바꾼다.
+   */
+  async get(path, params = {}, toSeconds = null) {
     let last = null;
     for (let attempt = 0; attempt <= this.retries; attempt += 1) {
+      const url = new URL(this.base + path);
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+      }
+      if (toSeconds !== null) url.searchParams.set('to', TO_FORMATS[this.toFormat](toSeconds));
+
+      // 표기를 아직 못 정했는데 to가 붙은 요청이 막혔다면, 재시도로
+      // 시간을 쓰기 전에 다른 표기부터 한 번씩 넣어 본다.
+      const canTryAnotherFormat = () => toSeconds !== null && !this.toProven
+        && this.toFormat < TO_FORMATS.length - 1;
+
       await this.limiter.acquire();
       let response;
       try {
@@ -115,8 +117,9 @@ export class UpbitClient {
         // 보내는데(사전 요청), 그건 실패할 구멍을 하나 더 만드는 것이다.
         response = await this.fetch(url.toString(), { cache: 'no-store' });
       } catch {
-        last = await diagnose();
+        last = await this.diagnose();
         if (last.kind === 'offline') throw last;   // 재시도해도 소용없다
+        if (canTryAnotherFormat()) { this.toFormat += 1; attempt -= 1; continue; }
         if (attempt >= this.retries) throw last;
         await sleep(Math.min(2 ** attempt, 16) * 1000);
         continue;
@@ -136,17 +139,60 @@ export class UpbitClient {
       }
       if (response.status >= 400) {
         const body = await response.text().catch(() => '');
-        throw new UpbitError(
+        last = new UpbitError(
           `업비트가 요청을 거부했습니다 (${response.status}): ${body.slice(0, 200)}`, 'refused',
         );
+        if (canTryAnotherFormat()) { this.toFormat += 1; attempt -= 1; continue; }
+        throw last;
       }
       try {
-        return await response.json();
+        const payload = await response.json();
+        this.succeeded += 1;
+        // 이 표기로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
+        if (toSeconds !== null) this.toProven = true;
+        return payload;
       } catch {
         throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
       }
     }
     throw last ?? new UpbitError(`GET ${path} 실패`, 'unknown');
+  }
+
+  /**
+   * 무엇 때문에 막혔는지 가른다.
+   *
+   * 브라우저는 CORS로 막힌 요청과 인터넷이 끊긴 요청을 **똑같이** "Failed to
+   * fetch"로 알려준다. 그래서 우리 쪽에서 갈라야 한다.
+   *
+   * **이미 한 번이라도 받아 본 적이 있으면** 이야기가 완전히 다르다.
+   * 업비트까지 가는 길은 뚫려 있다는 뜻이므로 "닿지 못했습니다"는 거짓말이
+   * 된다. 실제로 그렇게 말해서, 시세가 멀쩡히 뜨는 화면에 "업비트에 닿지
+   * 못했습니다"가 같이 떠 있었다.
+   */
+  async diagnose() {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return new UpbitError(
+        '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
+      );
+    }
+    if (this.succeeded > 0) {
+      return new UpbitError(
+        `업비트에서 ${this.succeeded}번은 받았는데 그 뒤로 막혔습니다.`, 'stalled',
+      );
+    }
+    try {
+      // 같은 출처라 CORS와 무관하다. 캐시를 피해야 진짜로 나갔다 온 게 된다.
+      // ?ping= 이 붙은 요청은 서비스 워커가 캐시로 답하지 않는다(web/sw.js).
+      await this.fetch(`./manifest.webmanifest?ping=${Date.now()}`, { cache: 'no-store' });
+    } catch {
+      return new UpbitError(
+        '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
+      );
+    }
+    return new UpbitError(
+      '인터넷은 되는데 업비트에 닿지 못했습니다. 업비트가 잠깐 막혔거나 점검 중일 수 있습니다.',
+      'blocked',
+    );
   }
 
   /** 오래된 것부터 정렬해 돌려준다 (업비트는 최신순으로 준다). */
@@ -156,9 +202,7 @@ export class UpbitClient {
       throw new Error(`모르는 봉 간격 '${timeframe}'. 사용 가능: ${Object.keys(ENDPOINTS).join(', ')}`);
     }
     const params = { market, count: Math.min(Math.max(count, 1), PAGE) };
-    if (to !== null) params.to = toCursor(to);
-
-    const rows = (await this.get(path, params)) ?? [];
+    const rows = (await this.get(path, params, to)) ?? [];
     return rows.map(parseCandle).sort((a, b) => a.ts - b.ts);
   }
 
@@ -256,9 +300,9 @@ export class UpbitClient {
   }
 }
 
-/** 유닉스 초 -> 업비트가 받는 `to` 문자열. */
+/** 유닉스 초 -> 업비트가 받는 `to` 문자열 (기본 표기). */
 export function toCursor(seconds) {
-  return `${new Date(seconds * 1000).toISOString().slice(0, 19)}Z`;
+  return TO_FORMATS[0](seconds);
 }
 
 /** 업비트 응답 한 줄 -> 우리 봉. `ts`는 봉이 열린 시각(유닉스 초, UTC). */

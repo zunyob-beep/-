@@ -40,6 +40,7 @@ from ..scan import (
     round_trip_cost,
 )
 from ..shape import normalize_window
+from ..theories import LOOKBACK as THEORY_LOOKBACK
 from ..theories import Score, dow, dow_confirmation, read_all, score, tally
 from ..upbit import Ticker, UpbitClient, UpbitError
 
@@ -557,9 +558,19 @@ def _theory_json(analysis: Analysis) -> dict[str, Any]:
     for timeframe, readings in analysis.readings.items():
         ups, downs, flats = tally(readings)
         marks = {s.theory: s for s in analysis.scores.get(timeframe, [])}
+        bars = len(analysis.series.get(timeframe, ())) if analysis.series else 0
         out[timeframe] = {
             "label": timeframe_label(timeframe),
             "up": ups, "down": downs, "flat": flats,
+            # 채점을 **아예 못 한** 것과 '이 이론이 방향을 말한 적이 없다'는
+            # 전혀 다른 이야기다. 둘을 같은 문구로 보여주면, 봉이 201개뿐이라
+            # 채점이 통째로 불가능한 상황에서도 열한 줄 모두가 "이 이론은
+            # 방향을 말한 적이 없습니다"로 나온다 — 이론 탓처럼 읽힌다.
+            "scoring": {
+                "ran": bars >= SCORE_NEEDS,
+                "have": bars,
+                "need": SCORE_NEEDS,
+            },
             "readings": [
                 {
                     "theory": r.theory,
@@ -605,6 +616,13 @@ def _level_json(one: Level) -> dict[str, Any]:
 #: 예상 앞에 붙일 **실제 봉** 개수. 지나온 길이 없으면 그림이 허공에서
 #: 시작해 진짜 차트로 안 보인다.
 RECENT_BARS = 40
+
+#: 이론 성적을 낼 때 몇 봉 뒤를 보는지.
+SCORE_HORIZON = 10
+
+#: 과거 성적을 내려면 최소 몇 봉이 있어야 하는지. theories.score는 시점마다
+#: 그 이전 LOOKBACK봉을 보고, 결과를 보려고 horizon봉을 더 쓴다.
+SCORE_NEEDS = THEORY_LOOKBACK + SCORE_HORIZON + 2
 
 
 def _recent_candles(series: Series, count: int = RECENT_BARS) -> list[dict[str, float]]:
