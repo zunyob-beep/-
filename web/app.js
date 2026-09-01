@@ -8,7 +8,7 @@
 import { MARKETS, marketLabel } from './core/models.js';
 import { MAX_BARS, PERIODS } from './core/analysis.js';
 import {
-  API_BASE, CEILING, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS, UpbitClient,
+  API_BASE, CEILING, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
 } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
@@ -73,6 +73,9 @@ function handle(message) {
       break;
     case 'summary':
       if (message.market === market) renderCached(message.cached);
+      break;
+    case 'ticker':
+      if (message.market === market && message.rows.length) showTicker(message.rows);
       break;
     case 'blocked':
       // 새 시세를 못 받았다. 결과는 나올 수 있지만(받아둔 것으로) 그건
@@ -298,17 +301,22 @@ const won = (x) => (x >= 1000
   ? Math.round(x).toLocaleString('ko-KR')
   : x.toLocaleString('ko-KR', { maximumFractionDigits: 2 }));
 
-const ticker = new UpbitClient({ retries: 0 });
-
-async function refreshTicker() {
+/**
+ * 맨 위 시세. **워커를 거쳐서 받는다.**
+ *
+ * 예전에는 여기 UpbitClient가 따로 있었다. 그러면 속도 제한기가 둘이 되어
+ * 서로를 모르고, 5초마다 부르는 이 요청이 내려받기 위에 얹혔다. 아무것도
+ * 안 하고 앱만 켜 둬도 시간당 720번이 나갔고, 막혀 있는 동안에도 계속
+ * 두드려서 회복을 방해했다. 업비트로 나가는 길은 하나여야 한다.
+ */
+function refreshTicker() {
   if (document.hidden) return;   // 안 보고 있으면 묻지 않는다
-  let rows;
-  try {
-    rows = await ticker.getTicker(market);
-  } catch {
-    // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다.
-    return;
-  }
+  // 내려받는 중에는 묻지 않는다. 같은 줄에 끼어들어 봐야 느려지기만 한다.
+  if (busy) return;
+  send({ type: 'ticker', market });
+}
+
+function showTicker(rows) {
   const data = rows.find((r) => r.market === market);
   if (!data) return;
   $('ticker-label').textContent = marketLabel(data.market);
@@ -1193,7 +1201,9 @@ spawn();
 send({ type: 'summary', market });
 
 refreshTicker();
-setInterval(refreshTicker, 5000);
+// 20초마다. 예전엔 5초였는데, 그것만으로 시간당 720번이 나갔다. 맨 위
+// 숫자에 5초 해상도가 필요하지도 않다.
+setInterval(refreshTicker, 20000);
 
 // 탭을 다시 보면 곧바로 따라잡는다. 안 보는 동안 아무것도 안 물어봤으므로
 // 맨 위 시세가 그만큼 뒤처져 있다.
