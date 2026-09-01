@@ -202,6 +202,14 @@ function setBlocked(kind) {
       시간만 알려 드립니다. 받아둔 만큼은 그대로 있고, 풀리면 이어서 받습니다.
       휴대폰 데이터(5G)는 여러 사람이 한 주소를 나눠 쓰기 때문에 남이 쓴 몫까지
       걸립니다 — <b>와이파이에서 해 보시면</b> 달라질 수 있습니다.</span>`,
+    candles: `<b>업비트가 봉 주소만 브라우저에 안 열어 주고 있습니다.</b>
+      <b>현재가는 받아지는데</b> 과거 봉만 거절당합니다. 차단이라면 현재가도 같이
+      막히므로, 이건 요청이 잦아서 생긴 문제가 아닙니다.
+      <span class="dim"><b>기다려도 풀리지 않습니다.</b> 브라우저에서 과거 봉을 받는
+      길이 막힌 것이라, 이 경우에는 파이썬 판으로 받아야 합니다 (README의
+      <b>파이썬으로 쓰기</b>). 받아둔 시세가 있으면 <b>받아둔 시세로 다시 계산</b>은
+      그대로 됩니다. 아래 <b>업비트 연결 진단</b>을 눌러 표를 보내 주시면
+      정말 그런지 한 번 더 확인할 수 있습니다.</span>`,
     empty: `<b>업비트가 답은 했는데 과거 봉을 주지 않았습니다.</b>
       길은 뚫려 있고 지금 시세도 받아집니다. 과거를 달라는 요청에만
       빈 답이 옵니다.
@@ -214,7 +222,7 @@ function setBlocked(kind) {
 }
 
 function reportWorkerError(message) {
-  if (['offline', 'blocked', 'stalled', 'rate', 'server', 'empty', 'throttled']
+  if (['offline', 'blocked', 'stalled', 'rate', 'server', 'empty', 'throttled', 'candles']
     .includes(message.kind)) {
     setBlocked(message.kind);
     showError('');
@@ -990,11 +998,45 @@ async function probe(label, url, init = {}) {
  * 왕복 자체가 비용이다 — 여기서 결론까지 내 준다.
  */
 function conclude(done) {
-  const find = (part) => done.filter((r) => r.label.includes(part));
   const okOf = (rows) => rows.filter((r) => r.ok);
-  const plain = find('to 없음');
+  const bars = done.filter((r) => r.label.startsWith('봉'));
+  const tickers = done.filter((r) => r.label.startsWith('현재가'));
+  const plain = bars.filter((r) => r.label.includes('to 없음'));
   const withTo = done.filter((r) => r.label.includes('+ to'));
   const nocors = done.find((r) => r.label.includes('no-cors'));
+
+  // **봉은 하나도 안 되는데 현재가는 계속 된다.**
+  //
+  // 이건 차단이 아니다. 차단이라면 현재가도 같이 막힌다. 봉을 맨 앞에 놓고
+  // 현재가를 중간에 끼워 넣은 이유가 이걸 가리기 위해서다 — 순서 때문이
+  // 아니라는 것이 이 표로 증명된다.
+  //
+  // 기다려서 풀릴 문제가 아니므로, 기다리라고 말하면 안 된다.
+  if (bars.length && !okOf(bars).length && okOf(tickers).length >= 2) {
+    return ['업비트가 <b>봉 주소만</b> 브라우저에 안 열어 줍니다.',
+      `현재가는 ${okOf(tickers).length}번 다 됐는데 봉은 ${bars.length}번 다 안 됩니다 — `
+      + '봉을 <b>맨 앞에</b> 물어봤는데도 안 됐으니 순서나 속도 문제가 아니고, '
+      + '현재가가 계속 되니 주소가 막힌 것도 아닙니다. 남는 설명은 하나입니다: '
+      + '업비트가 <b>봉 주소에는 브라우저용 허용 표시(CORS)를 안 붙입니다.</b> '
+      + '<b>기다려도 풀리지 않습니다.</b> 이 경우 브라우저만으로는 과거 봉을 받을 수 '
+      + '없고, 파이썬 판으로 받아야 합니다(README의 <b>파이썬으로 쓰기</b>). '
+      + '받아둔 시세가 있다면 <b>받아둔 시세로 다시 계산</b>은 그대로 됩니다.'];
+  }
+
+  // **첫 요청 하나만 통과했다.**
+  //
+  // 순서상 첫 번째만 되고 나머지가 전부 안 되면, 그건 주소의 문제가 아니라
+  // 지금 우리 몫이 그만큼밖에 안 남았다는 뜻이다. 기다리면 풀린다.
+  const first = done[0];
+  const rest = done.slice(1).filter((r) => !r.label.includes('no-cors'));
+  if (first?.ok && rest.length && !okOf(rest).length) {
+    return ['첫 요청 하나만 통과하고 그 뒤로 다 막힙니다.',
+      '주소의 문제가 아니라 <b>지금 우리 몫이 거의 안 남은</b> 상태입니다. '
+      + '앱은 이제 막히면 두드리지 않고 1 → 2 → 5 → 10 → 20 → 30분으로 늘려 가며 '
+      + '조용히 기다립니다. <b>앱을 닫고 30분쯤 두었다가</b> 열어 보세요. '
+      + '휴대폰 데이터(5G)는 한 주소를 여러 사람이 나눠 쓰기 때문에 더 자주 걸립니다 — '
+      + '<b>와이파이에서 해 보시면</b> 달라질 수 있습니다.'];
+  }
 
   // **no-cors 결과를 먼저 본다.** 이게 가장 강한 증거다.
   //
@@ -1060,13 +1102,28 @@ async function runDiagnosis() {
   };
   const withTo = candles({ count: 200, to: TO_FORMATS[0](at) });
 
+  // **순서를 번갈아 놓는다.** 이게 이 표의 핵심이다.
+  //
+  // 예전에는 현재가를 맨 앞에 한 번만 뒀다. 그랬더니 이런 표가 나왔다 —
+  // 현재가만 49ms에 성공하고 봉은 전부 실패. 그런데 그 표로는 **두 가지를
+  // 구분할 수 없다.**
+  //
+  //   ㄱ. 업비트가 봉 주소만 브라우저에 안 열어 준다 (기다려도 안 됨)
+  //   ㄴ. 첫 요청 하나만 통과하고 그 뒤로 막힌다 (기다리면 됨)
+  //
+  // 둘은 할 일이 정반대다. ㄱ이면 이 앱은 브라우저에서 봉을 받을 수 없고,
+  // ㄴ이면 천천히 하면 된다. 그래서 봉을 **맨 앞에** 놓고, 현재가를 중간에
+  // 세 번 끼워 넣는다.
+  //
+  //   봉이 처음부터 실패 + 현재가는 두 번째·세 번째에도 성공  → ㄱ
+  //   첫 요청만 성공하고 그 뒤로 전부 실패                    → ㄴ
   const plan = [
-    ['현재가 (to 없음)', `${API_BASE}/v1/ticker?markets=${market}`, {}],
     ['봉 1개 (to 없음)', candles({ count: 1 }), {}],
+    ['현재가 ①', `${API_BASE}/v1/ticker?markets=${market}`, {}],
     ['봉 200개 (to 없음)', candles({ count: 200 }), {}],
+    ['현재가 ②', `${API_BASE}/v1/ticker?markets=${market}`, {}],
     ['봉 200개 + to (…00Z)', withTo, {}],
-    ['봉 200개 + to (빈칸)', candles({ count: 200, to: TO_FORMATS[1](at) }), {}],
-    ['봉 200개 + to (+00:00)', candles({ count: 200, to: TO_FORMATS[2](at) }), {}],
+    ['현재가 ③', `${API_BASE}/v1/ticker?markets=${market}`, {}],
     ['봉 1개 + to', candles({ count: 1, to: TO_FORMATS[0](at) }), {}],
     ['같은 주소를 no-cors로', withTo, { mode: 'no-cors' }],
   ];
