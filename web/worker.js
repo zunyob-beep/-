@@ -121,8 +121,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
       // eslint-disable-next-line no-await-in-loop
       const already = await db.count(market, timeframe);
       const kept = already ? ` (이미 ${already.toLocaleString()}개 있음 — 다시 안 받습니다)` : '';
-      const say1 = (done, total) => progress(`${label} 받는 중…${kept}`, done, total);
-      say1(0, Math.max(0, wanted - already));
+      progress(`${label} 받는 중…${kept}`, 0, Math.max(0, wanted - already));
       try {
         // eslint-disable-next-line no-await-in-loop
         await update(db, market, timeframe, wanted, {
