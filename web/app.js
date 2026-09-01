@@ -542,7 +542,11 @@ function moneyCell(row, analysis) {
   const stake = amount();
   if (!stake) return '<td class="dim">—</td>';
   const net = row.medianReturn - (analysis.cost || 0);
-  return `<td class="big ${net >= 0 ? 'pos' : 'neg'}">${cash(stake * net)}
+  // 값이 오르내린 결과이므로 **업비트와 같은 색**(오르면 빨강, 내리면 파랑)을
+  // 쓴다. 초록·빨강은 '좋다/나쁘다'를 뜻하는 자리(초과 승률 같은)에만 남긴다 —
+  // --up과 --bad가 같은 빨강이라, 두 뜻을 같은 화면에서 섞으면 빨간 숫자가
+  // 무슨 뜻인지 원리적으로 알 수 없게 된다.
+  return `<td class="big ${net >= 0 ? 'up' : 'down'}">${cash(stake * net)}
     <span class="sub2">중앙 ${signed(row.medianReturn, 3)}</span></td>`;
 }
 
@@ -602,7 +606,10 @@ function exampleCard(example, data) {
     <div class="example-head">
       <span class="when">${example.at}</span>
       <span class="sim">유사도 ${example.similarity.toFixed(3)}</span>
-      <span class="${good ? 'pos' : 'neg'} result">${signed(example.outcome)}</span>
+      <!-- 머리말('올랐던 사례')이 업비트 색인데 이 숫자만 초록·빨강이면,
+           같은 사건에 색이 둘이 된다. 실제로 빨간 머리말 아래 초록 숫자가
+           떠 있었다. 값의 움직임이므로 머리말과 같은 색을 쓴다. -->
+      <span class="${example.outcome >= 0 ? 'up' : 'down'} result">${signed(example.outcome)}</span>
     </div>
     <div class="example-charts">
       <div class="svg-box wide"><svg viewBox="0 0 400 120" preserveAspectRatio="none">
