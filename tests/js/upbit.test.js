@@ -147,6 +147,72 @@ test('한 번도 못 받았으면 그때는 "닿지 못했다"가 맞다', async
   assert.equal(failure.kind, 'blocked');
 });
 
+// 아이패드 진단 화면이 실제로 이랬다.
+//
+//   현재가 (to 없음)        안 됨   TypeError: Load failed
+//   봉 200개 (to 없음)      안 됨   TypeError: Load failed
+//   ...to 붙은 것 전부      안 됨   TypeError: Load failed
+//   같은 주소를 no-cors로   됨      닿았습니다 (124ms)
+//
+// no-cors가 124ms에 성공했다는 건 **업비트까지 갔고 답도 왔다**는 뜻이다.
+// 못 닿은 게 아니라, 온 답을 못 읽는 것이다 — 거절 응답에는 허용 표시(CORS)가
+// 안 붙기 때문이다. 그런데 화면에는 "아예 못 닿고 있습니다"라고 떴다.
+test('닿기는 하는데 전부 거절당하면 "못 닿았다"고 하지 않는다', async () => {
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);              // 인터넷은 된다
+      if (init?.mode === 'no-cors') return OK([]); // 업비트까지 닿는다
+      throw new TypeError('Load failed');          // 그런데 답을 읽을 수 없다
+    },
+  });
+  const failure = await client.getCandles('KRW-BTC', 'minute1', 200)
+    .then(() => null, (error) => error);
+  assert.equal(failure.kind, 'throttled', `종류가 ${failure.kind}입니다`);
+  assert.ok(
+    !failure.message.includes('닿지 못했'),
+    `닿았는데 "닿지 못했다"고 합니다: ${failure.message}`,
+  );
+  assert.ok(failure.message.includes('막고 있'), '막힌 상태라고 말해야 합니다');
+});
+
+test('막힌 상태에서는 조합을 더듬지 않는다 (더 나빠진다)', async () => {
+  let calls = 0;
+  const client = new UpbitClient({
+    retries: 4,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      calls += 1;
+      throw new TypeError('Load failed');
+    },
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
+  // 아홉 조합 × 재시도까지 돌면 막혀 있는 업비트를 수십 번 더 두드리게 된다.
+  assert.ok(calls <= 3, `막혀 있는데 ${calls}번이나 더 두드렸습니다`);
+});
+
+test('평범한 요청이 되면 막힌 게 아니므로 계속 더듬는다', async () => {
+  // no-cors가 된다고 무조건 '막혔다'로 보면 안 된다. to가 붙은 요청만
+  // 거절당하는 경우에는 조합을 계속 찾아봐야 한다.
+  const ACCEPTS = 1;
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      const to = sentTo(url);
+      if (to !== null && formatIndexOf(to) !== ACCEPTS) throw new TypeError('Load failed');
+      return OK(candleRows());
+    },
+  });
+  const got = await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000);
+  assert.equal(got.length, 2, '평범한 요청이 되는데도 포기했습니다');
+});
+
 test('인터넷 자체가 끊겼으면 업비트 탓을 하지 않는다', async () => {
   const client = new UpbitClient({
     retries: 4,

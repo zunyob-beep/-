@@ -26,11 +26,16 @@ export const PAGE = 200;
 /**
  * 초당 요청 수.
  *
- * 4년치는 1만 6천 번을 넘게 부른다. 너무 빠르면 업비트가 막는다 — 실제로
- * 8회일 때 첫 쪽만 받고 그 뒤가 전부 막히는 일이 있었다. 화면이 "얼마나
- * 걸리는지"를 계산할 때도 이 값을 쓰므로, 여기 하나만 고치면 된다.
+ * 너무 빠르면 업비트가 막는다. 8회일 때 첫 쪽만 받고 그 뒤가 전부 막혔고,
+ * 5회로 낮추고 간격을 고르게 벌리자 4,812개까지 갔다. 그런데 그 뒤에 또
+ * 통째로 막혔다 — 진단이 그걸 보여줬다(보통 요청은 다 실패, no-cors는 성공).
+ *
+ * 그래서 3회로 더 낮춘다. 대신 1분봉만 받고 3·5분봉은 묶어서 만들므로
+ * 요청 수 자체가 35% 줄었다. 결과적으로 30일치는 예전보다 오래 걸리지 않는다.
+ *
+ * 화면이 "얼마나 걸리는지"를 계산할 때도 이 값을 쓰므로 여기만 고치면 된다.
  */
-export const PER_SECOND = 5;
+export const PER_SECOND = 3;
 
 /**
  * `to`(어느 시점 이전을 달라)를 적는 방법. 업비트가 여럿을 받아 준다.
@@ -97,6 +102,9 @@ export const STALL_RETRIES = 6;
 
 /** 걸렸을 때 쉬는 시간. 다시 걸릴수록 더 오래 쉰다. */
 export const STALL_PAUSE = 3000;
+
+/** 진단 결과를 이만큼은 그대로 쓴다 (밀리초). */
+export const DIAGNOSIS_TTL = 5000;
 
 /**
  * 요청을 **고르게 벌려서** 내보낸다.
@@ -188,6 +196,8 @@ export class UpbitClient {
     this.settled = false;
     /** 지금 더 빠른 조합을 시험해 보는 중이면, 안 될 때 돌아갈 자리. */
     this.fallback = null;
+    /** 마지막 진단 결과. 실패마다 다시 물어보지 않으려고 잠깐 들고 있는다. */
+    this.lastDiagnosis = null;
   }
 
   /** 더듬어 볼 조합. 표기 3가지 × 개수 3가지 = 9가지. */
@@ -304,7 +314,10 @@ export class UpbitClient {
 
       if (threw) {
         last = await this.diagnose();
-        if (last.kind === 'offline') throw last;   // 재시도해도 소용없다
+        // 재시도해도 소용없는 둘은 곧장 알린다. 특히 'throttled'은 지금
+        // 업비트가 우리를 막고 있는 상태라, 조합을 더듬거나 재시도하는 것이
+        // **상황을 더 나쁘게** 만든다.
+        if (last.kind === 'offline' || last.kind === 'throttled') throw last;
         // **여기가 핵심이다.** 브라우저는 한도 초과 응답(429)에 CORS 헤더가
         // 없으면 상태 코드를 안 보여주고 그냥 예외를 던진다. 그래서 '막혔다'와
         // '너무 빨랐다'가 이 자리에서 똑같이 생겼다. 구분할 수 없으니 **일단
@@ -371,32 +384,92 @@ export class UpbitClient {
    * 못했습니다"가 같이 떠 있었다.
    */
   async diagnose() {
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      return new UpbitError(
-        '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
-      );
+    // 실패할 때마다 확인 요청(우리 쪽 + no-cors)을 새로 보내면, 막혀 있는
+    // 상황을 오히려 더 악화시킨다. 잠깐은 지난 결과를 그대로 쓴다.
+    const now = Date.now();
+    if (this.lastDiagnosis && now - this.lastDiagnosis.at < DIAGNOSIS_TTL) {
+      return this.lastDiagnosis.error;
     }
-    if (this.succeeded > 0) {
-      return new UpbitError(
-        `업비트에서 ${this.succeeded}번은 받았는데 그 뒤로 막혔습니다. `
-        + '너무 자주 부른 것으로 보고 속도를 낮췄습니다. '
-        + '받은 만큼은 저장돼 있으니 다시 누르면 이어서 받습니다.',
-        'stalled',
-      );
+    const remember = (error) => {
+      this.lastDiagnosis = { at: Date.now(), error };
+      return error;
+    };
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return remember(new UpbitError(
+        '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
+      ));
     }
     try {
       // 같은 출처라 CORS와 무관하다. 캐시를 피해야 진짜로 나갔다 온 게 된다.
       // ?ping= 이 붙은 요청은 서비스 워커가 캐시로 답하지 않는다(web/sw.js).
       await this.fetch(`./manifest.webmanifest?ping=${Date.now()}`, { cache: 'no-store' });
     } catch {
-      return new UpbitError(
+      return remember(new UpbitError(
         '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
-      );
+      ));
     }
-    return new UpbitError(
+
+    // **지금 통째로 막힌 것인가, 이 요청만 거절당한 것인가.**
+    //
+    // 증거 두 개로 가른다.
+    //
+    //   1. 평범한 요청(to 없는 현재가)도 실패하는가
+    //   2. no-cors로는 닿는가 — 내용은 못 읽어도 답이 왔는지는 알 수 있다
+    //
+    // 둘 다 그렇다면 업비트까지 갔고 답도 왔는데 그 답을 읽을 수 없다는 뜻이다.
+    // 허용 표시(CORS)는 정상 응답에는 붙고 **거절 응답에는 안 붙으므로**,
+    // 지금 업비트가 우리를 통째로 거절하고 있는 것이다.
+    //
+    // 실제로 아이패드 화면이 이랬다 — 현재가까지 전부 실패하는데 no-cors는
+    // 124ms 만에 성공했다. 그동안 이걸 "닿지 못했습니다"라고 잘못 말해 왔다.
+    //
+    // 1번이 성공하면 통째로 막힌 게 아니다. 그때는 이 요청 모양만 문제이므로
+    // 조합을 계속 더듬어야 한다 — 여기서 포기하면 찾을 수 있는 것도 못 찾는다.
+    if (!(await this.plainWorks()) && await this.reaches()) {
+      return remember(new UpbitError(
+        '업비트가 지금 우리 요청을 막고 있습니다. 업비트까지는 갔고 답도 왔지만 '
+        + '브라우저가 그 답을 읽을 수 없습니다 — 거절당했을 때 그렇습니다. '
+        + '요청이 잦아서 잠시 막힌 것일 수 있으니 10분쯤 뒤에 다시 눌러 주세요.',
+        'throttled',
+      ));
+    }
+
+    if (this.succeeded > 0) {
+      return remember(new UpbitError(
+        `업비트에서 ${this.succeeded}번은 받았는데 그 뒤로 막혔습니다. `
+        + '너무 자주 부른 것으로 보고 속도를 낮췄습니다. '
+        + '받은 만큼은 저장돼 있으니 다시 누르면 이어서 받습니다.',
+        'stalled',
+      ));
+    }
+    return remember(new UpbitError(
       '인터넷은 되는데 업비트에 닿지 못했습니다. 업비트가 잠깐 막혔거나 점검 중일 수 있습니다.',
       'blocked',
-    );
+    ));
+  }
+
+  /** 가장 평범한 요청(to도 없고 개수도 1개)이 되는가. */
+  async plainWorks() {
+    try {
+      const response = await this.fetch(`${this.base}/v1/ticker?markets=KRW-BTC`, {
+        cache: 'no-store',
+      });
+      return response.status < 400;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 업비트에 닿기는 하는가. 내용은 못 읽어도 답이 왔는지는 알 수 있다. */
+  async reaches() {
+    try {
+      await this.fetch(`${this.base}/v1/ticker?markets=KRW-BTC`, {
+        mode: 'no-cors', cache: 'no-store',
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** 오래된 것부터 정렬해 돌려준다 (업비트는 최신순으로 준다). */

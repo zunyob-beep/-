@@ -16,10 +16,10 @@ import {
 import { loadSeries, update } from './core/data.js';
 import { CandleStore, IndexedDbBackend } from './core/store.js';
 import { UpbitClient, UpbitError } from './core/upbit.js';
-import { timeframeLabel } from './core/models.js';
+import { aggregate, timeframeLabel } from './core/models.js';
 
 /** 업비트로 가는 길 자체가 막힌 경우. 화면이 안내를 달리 띄운다. */
-const NETWORK = ['offline', 'blocked', 'stalled', 'rate', 'server', 'empty'];
+const NETWORK = ['offline', 'blocked', 'stalled', 'rate', 'server', 'empty', 'throttled'];
 
 let store = null;
 let analysis = null;   // 마지막으로 끝낸 계산. 사례를 볼 때마다 다시 찾지 않으려고 들고 있는다.
@@ -64,7 +64,10 @@ function asFailure(error) {
 async function summary(market) {
   const db = await ready();
   const rows = [];
-  for (const timeframe of Object.keys(DEFAULT_COUNT)) {
+  // 저장하는 건 1분봉뿐이다. 3·5분봉은 그걸 묶어서 만든다 — 없는 게 아니라
+  // 받을 필요가 없는 것이다. 여기서 셋을 다 보여주면 두 개가 0으로 떠서
+  // '못 받았다'로 읽힌다.
+  for (const timeframe of ['minute1']) {
     // eslint-disable-next-line no-await-in-loop
     const count = await db.count(market, timeframe);
     // eslint-disable-next-line no-await-in-loop
@@ -97,8 +100,16 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   // 소득 없이 45초가 그냥 간다.
   let blocked = null;
 
+  // **1분봉만 받는다.**
+  //
+  // 3분봉은 1분봉 셋을 묶은 것과 정확히 같고, 5분봉은 다섯을 묶은 것과 같다.
+  // 그런데 지금까지 셋을 각각 따로 받았다 — 30일치면 216 + 72 + 43 = 331번.
+  // 이미 받은 걸로 만들 수 있는 것을 다시 받고 있었던 셈이다.
+  //
+  // 업비트가 우리를 막는 이유가 요청이 잦아서이므로(아이패드 진단이 그걸
+  // 보여줬다), 요청 수를 줄이는 게 가장 큰 지렛대다. 216번으로 끝난다.
   if (fresh) {
-    for (const timeframe of Object.keys(DEFAULT_COUNT)) {
+    for (const timeframe of ['minute1']) {
       if (blocked) break;
       const label = timeframeLabel(timeframe);
       const wanted = Math.floor(bars / RATIO[timeframe]);
@@ -137,11 +148,15 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
 
   progress('받아둔 시세를 읽는 중…');
   const series = {};
-  for (const timeframe of Object.keys(DEFAULT_COUNT)) {
-    const wanted = Math.floor(bars / RATIO[timeframe]);
-    // eslint-disable-next-line no-await-in-loop
-    const loaded = await loadSeries(db, market, timeframe, wanted);
-    if (loaded.length) series[timeframe] = loaded;
+  const base = await loadSeries(db, market, 'minute1', bars);
+  if (base.length) {
+    series.minute1 = base;
+    // 받아둔 1분봉으로 3·5분봉을 만든다. 업비트가 주는 것과 같은 값이고,
+    // 요청은 하나도 더 쓰지 않는다.
+    for (const [timeframe, factor] of [['minute3', 3], ['minute5', 5]]) {
+      const made = aggregate(base, factor);
+      if (made.length) series[timeframe] = made;
+    }
   }
 
   // **못 받았다는 사실을 반드시 말한다.**
