@@ -127,14 +127,26 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
         // eslint-disable-next-line no-await-in-loop
         await update(db, market, timeframe, wanted, {
           client,
-          onProgress: (done, total, info) => progress(
-            info?.stalled
-              ? `${label} 잠시 걸렸습니다 — 쉬었다 이어서 받습니다${kept}`
-              // 지금 속도를 같이 적는다. 느릴 때 왜 느린지 보이지 않으면
-              // 멈춘 건지 기다리는 건지 알 수가 없다.
-              : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${kept}`,
-            done, total,
-          ),
+          onProgress: (done, total, info) => {
+            if (info?.banned) {
+              // 몇 분을 기다려야 한다. 남은 시간을 초 단위로 보여주지 않으면
+              // 멈춘 것으로 보이고, 사용자는 앱을 닫는다.
+              progress(
+                `업비트가 막고 있습니다 — ${info.waitLeft}초 뒤에 이어서 받습니다`
+                + ` (받아둔 ${(already + done).toLocaleString()}개는 그대로입니다)`,
+                done, total,
+              );
+              return;
+            }
+            progress(
+              info?.stalled
+                ? `${label} 잠시 걸렸습니다 — ${info.waitLeft}초 뒤 이어서 받습니다${kept}`
+                // 지금 속도를 같이 적는다. 느릴 때 왜 느린지 보이지 않으면
+                // 멈춘 건지 기다리는 건지 알 수가 없다.
+                : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${kept}`,
+              done, total,
+            );
+          },
         });
       } catch (error) {
         if (error instanceof UpbitError && NETWORK.includes(error.kind)) {
