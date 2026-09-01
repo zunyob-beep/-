@@ -7,7 +7,7 @@
 
 import { MARKETS, marketLabel } from './core/models.js';
 import { MAX_BARS, PERIODS } from './core/analysis.js';
-import { UpbitClient } from './core/upbit.js';
+import { PAGE, PER_SECOND, UpbitClient } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
@@ -241,9 +241,10 @@ function showPeriodNote() {
   // 처음 받을 때 얼마나 걸릴지 미리 말해 준다. 8년치는 200개씩 2만 번을
   // 받아야 해서 아주 오래 걸린다 — 눌러 놓고 기다리다 포기하지 않도록.
   const count = parseInt($('in-period').value, 10) || 0;
-  const requests = Math.ceil(count / 200) + Math.ceil(count / 3 / 200)
-    + Math.ceil(count / 5 / 200);
-  const minutes = requests / 8 / 60;   // 초당 8번
+  // 1·3·5분봉을 다 받는다. 3분봉은 개수가 1/3, 5분봉은 1/5다.
+  const requests = Math.ceil(count / PAGE) + Math.ceil(count / 3 / PAGE)
+    + Math.ceil(count / 5 / PAGE);
+  const minutes = requests / PER_SECOND / 60;
   const guess = minutes < 1
     ? '처음 1분 안'
     : minutes < 60

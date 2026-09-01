@@ -291,17 +291,20 @@ test('to 커서가 업비트가 받는 모양이다', () => {
 
 // ------------------------------------------------------------ 한도
 test('브라우저가 감당할 크기를 넘지 않는다', () => {
-  // 8년치(420만 봉)는 배열만 200MB가 넘어 아이패드에서 탭이 죽는다.
-  // 죽는 단추를 화면에 두느니 없는 게 낫다.
+  // 8년치(420만 봉)는 배열만 270MB가 넘어 아이패드에서 탭이 죽는 쪽에
+  // 가깝다. 죽는 단추를 화면에 두느니 없는 게 낫다. 4년까지는 실제로
+  // 재 봤다 — 세 간격 합쳐 2.8초, 배열 135MB.
   for (const period of PERIODS) {
     assert.ok(period.count <= MAX_BARS, `${period.label}이 상한을 넘습니다`);
   }
   assert.ok(PERIODS.length >= 2, '고를 수 있는 기간이 남아 있어야 합니다');
+  // 4년은 실제로 고를 수 있어야 한다.
+  assert.ok(PERIODS.some((p) => p.label === '4년'), '4년 선택지가 없습니다');
 });
 
 test('상한은 화면이 아니라 계산 쪽에서 건다', () => {
   // 화면만 막으면 낡은 화면이나 손으로 보낸 메시지가 그대로 통과한다.
-  assert.equal(withinLimit(4204800), MAX_BARS, '8년치를 그대로 받아들였습니다');
+  assert.equal(withinLimit(4204800), MAX_BARS, '상한을 넘는 값을 그대로 받아들였습니다');
   assert.equal(withinLimit(43200), 43200, '상한 안의 값은 그대로여야 합니다');
   assert.equal(withinLimit(0), PERIODS[0].count);
   assert.equal(withinLimit(-5), PERIODS[0].count);

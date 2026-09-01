@@ -182,12 +182,34 @@ main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
   min-height: 1.2em;
   line-height: 1.2;
 }
-/* 한 칸이 문구 때문에 통째로 넓어지지 않게. */
-.row > label { max-width: 15rem; }
+/* 칸을 **격자로** 나눈다.
+   내용 길이가 배치를 정하게 두면 안 되는 자리다. 실제로 이름표가 긴 칸만
+   입력창까지 넓어져서 한 줄에 놓인 상자들의 크기가 제각각이었다.
+
+   너비를 손으로 못 박는 대신 격자에 맡긴다. 픽셀로 맞추면 칸을 하나
+   더 넣거나 이름표를 고칠 때마다 다시 계산해야 하고, 한 칸이 안 들어가
+   혼자 아랫줄로 밀린다(실제로 '넣을 금액'이 그렇게 됐다). auto-fit이면
+   들어갈 만큼 채우고 남는 폭을 고르게 나눠 준다. */
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+/* 체크박스는 빼야 한다. 네모에 width:100%를 주면 칸을 통째로 차지해
+   옆의 글씨를 좁은 자리로 밀어내고, 그러면 '1분마다 자동 갱신'이 세 줄로
+   접힌다. 실제로 그렇게 됐다. */
+.row > label > input:not([type="checkbox"]),
+.row > label > select { width: 100%; min-width: 0; }
 
 /* ---------------------------------------------------------------- 조작부 */
-.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
-.row.actions { margin-top: 14px; align-items: center; }
+/* 단추 줄은 격자가 아니다. 단추·체크박스·상태 문구는 길이가 제각각이라
+   칸에 가두면 글씨가 접힌다 — 실제로 '1분마다 자동 갱신'이 두 줄로 접혀
+   네모와 떨어졌다. */
+.row.actions {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  align-items: center; margin-top: 14px;
+}
 label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
 label.check { flex-direction: row; align-items: center; gap: 6px; }
 input[type="text"], input[type="number"], select {
