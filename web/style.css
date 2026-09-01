@@ -1,512 +1,483 @@
-/* 인광 초록 단말기.
-   바탕은 완전한 검정이 아니라 초록이 살짝 도는 검정이다 — 순검정에
-   초록 글씨를 얹으면 대비가 너무 세서 오래 못 본다.
+/* 기시감 — 화면 차림새
+   ===========================================================================
 
-   **빨강과 파랑은 건드리지 않는다.** 업비트에서 상승은 빨강, 하락은
-   파랑이고 그건 뜻이 있는 색이다. 화면 분위기 때문에 초록으로 덮으면
-   같은 화면 안에서 색의 뜻이 두 개가 된다. 어두운 초록 바탕에 묻히지
-   않도록 밝기만 올렸다. */
+   어두운 바탕에 초록, 이라는 성격은 그대로 둔다. 대신 **연출을 걷어내고
+   정보 설계로 바꾼다.** 앞선 판은 이런 것들 때문에 '기계가 찍어낸 화면'처럼
+   보였다.
+
+     · 본문·이름표·설명까지 전부 고정폭 글꼴 (터미널 흉내)
+     · 채도 최대 형광 초록(#00ff66)에 발광 그림자
+     · 똑같이 생긴 둥근 카드가 세로로 쭉 쌓임 — 무엇이 중요한지 화면이
+       말해 주지 않는다
+     · 주사선과 떨어지는 가타카나
+     · 제목 14px, 본문 14px — 위계가 없다
+
+   그래서 정한 것
+
+   글꼴  읽는 글자는 시스템 한글 글꼴. 아이패드·맥이면 Apple SD Gothic Neo,
+         윈도우면 맑은 고딕이 잡힌다. 받아올 게 없으니 늦게 뜨지도 않고,
+         한글 웹폰트 몇 MB를 물릴 이유도 없다.
+         **고정폭은 숫자에만** 남긴다 — 확률 표처럼 자릿수가 세로로 맞아야
+         읽히는 자리. 그게 고정폭을 쓰는 유일한 이유다.
+
+   색    초록의 채도를 낮추고 발광을 뺀다. 강조는 '지금 시세로 판단받기'
+         하나에만 준다. 빨강·파랑은 그대로 — 업비트에서 뜻이 있는 색이라
+         분위기 때문에 덮으면 같은 화면에서 색의 뜻이 두 개가 된다.
+
+   구조  둥근 카드 대신 **가는 선으로 구역을 나눈다.** 배경을 따로 주는 것은
+         판정 하나뿐이고, 그래서 눈이 먼저 거기로 간다.
+
+   위계  제목 / 작은 이름표 / 본문 / 숫자의 크기와 자간을 실제로 다르게. */
+
 :root {
-  --bg: #050807;
-  --panel: #0a1310;
-  --panel-2: #0f1c16;
-  --line: #1b3a2a;
-  --text: #b7ffce;      /* 인광 초록 */
-  --text-2: #7fd9a0;    /* 본문 */
-  --dim: #4f8f6c;
-  --up: #ff5566;        /* 업비트: 상승은 빨강 */
-  --down: #4aa3ff;      /* 하락은 파랑 */
-  --good: #00ff9c;
-  --bad: #ff4d5e;
-  --warn: #d8ff6b;
-  --accent: #00ff66;
-  --glow: 0 0 10px rgba(0, 255, 102, 0.35);
+  /* 바탕은 순검정이 아니라 초록이 아주 살짝 도는 먹색. 순검정에 밝은
+     글씨를 얹으면 대비가 세서 오래 못 본다. */
+  --bg: #080b0a;
+  --raised: #0e1211;      /* 판정처럼 띄울 것 */
+  --field: #101514;       /* 입력칸 */
+  --line: #1c2422;        /* 구역을 나누는 가는 선 */
+  --line-soft: #151b19;
+
+  --text: #dfe7e2;        /* 읽는 글자 */
+  --text-2: #aab8b1;      /* 본문 */
+  --dim: #6f8079;         /* 곁들이는 말 */
+
+  --accent: #4ade80;      /* 신호 초록. 형광이 아니라 신호다 */
+  --accent-deep: #14311f;
+
+  --up: #ff5f6d;          /* 업비트: 상승은 빨강 */
+  --down: #5aa9ff;        /* 하락은 파랑 */
+  --good: #4ade80;
+  --bad: #ff5f6d;
+  --warn: #d9c26b;
+
+  /* 읽는 글자 */
+  --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", Pretendard,
+          "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+  /* 숫자. 자릿수가 줄 맞아야 하는 자리에만 쓴다 */
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-          "D2Coding", "Nanum Gothic Coding", "Apple SD Gothic Neo",
-          "Malgun Gothic", monospace;
+          "D2Coding", monospace;
 }
 
 * { box-sizing: border-box; }
 
 /* hidden 속성은 브라우저 기본 스타일시트의 `[hidden] { display: none }`으로
    동작하는데, 그건 **클래스 선택자 하나에도 진다**. 실제로 어떤 안내에
-   display:flex를 준 순간 hidden이 무시돼, 내용도 없는 빈 칸이 화면에 떴다.
-   숨기라고 말한 것이 안 숨겨지는 건 조용히 벌어져서 눈으로만 잡힌다. */
+   display:flex를 준 순간 hidden이 무시돼, 내용도 없는 빈 칸이 화면에 떴다. */
 [hidden] { display: none !important; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text-2);
-  /* 고정폭. 숫자가 세로로 딱 맞아 떨어지는 게 이 화면에는 실제로 이득이다
-     — 확률 표가 온통 숫자다. 한글은 고정폭 글꼴이 흔치 않아 뒤로 넘어간다. */
-  font: 14px/1.65 var(--mono);
+  font: 400 14px/1.7 var(--sans);
+  letter-spacing: -0.1px;
   -webkit-text-size-adjust: 100%;
   position: relative;
 }
 
+/* 숫자는 고정폭 + 자릿수 고정. 표에서 세로로 줄이 맞는다. */
+.num, table.odds td, table.odds th, table.theories td:not(.l),
+.ticker-price, .ticker-change, .level-price, .level-away,
+.example-head, .ahead-legend {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
 /* ------------------------------------------------------------ 떨어지는 글자
-   화면 뒤에 아주 옅게 깔린다. 읽는 데 방해가 되면 안 되므로 투명도를
-   낮게 두고, 글자 위로는 절대 안 올라오게 뒤(z-index -2)에 붙인다. */
+   남겨 두되 아주 옅게. 이게 세면 화면이 '해커 흉내'로 읽힌다. */
 #rain {
   position: fixed; inset: 0; z-index: -2;
   width: 100%; height: 100%;
   pointer-events: none;
-  opacity: 0.16;
+  opacity: 0.04;
 }
+/* 주사선은 뺐다. 옛 브라운관 흉내는 가장 흔한 클리셰인 데다 글자가
+   흔들려 보여서 읽는 데 해롭기만 했다. */
+#scanlines { display: none; }
+@media (prefers-reduced-motion: reduce) { #rain { display: none; } }
 
-/* 주사선. 옛 브라운관 흉내인데, 세게 넣으면 글자가 흔들려 보인다. */
-#scanlines {
-  position: fixed; inset: 0; z-index: 1;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0) 0px,
-    rgba(0, 0, 0, 0) 2px,
-    rgba(0, 20, 8, 0.35) 3px,
-    rgba(0, 20, 8, 0.35) 4px
-  );
-  opacity: 0.35;
-}
-/* 화면이 움직이는 게 불편한 사람에게는 둘 다 끈다. */
-@media (prefers-reduced-motion: reduce) {
-  #rain { display: none; }
-}
-
-/* ---------------------------------------------------------------- 헤더 */
+/* ---------------------------------------------------------------- 머리말 */
 .top {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap;
-  padding: 14px 20px;
-  background: var(--panel);
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  max-width: 1120px; margin: 0 auto;
+  padding: 26px 22px 16px;
   border-bottom: 1px solid var(--line);
-  position: sticky; top: 0; z-index: 5;
 }
-/* 좁은 화면에서는 고정하지 않는다. 세로가 아쉬운 데다, 표를 스크롤하면
-   머리말이 행 위를 덮어 누르려던 행 대신 머리말이 눌린다. */
-@media (max-width: 720px) {
-  .top { position: static; }
-}
-/* 홈 화면에서 열면 주소창이 없어 화면 맨 위까지 쓴다. 그대로 두면
-   제목이 아이폰 시계·노치 밑으로 들어가 안 보인다.
-   (.top의 padding 단축 속성보다 뒤에 와야 이긴다.) */
 @media (display-mode: standalone) {
-  .top { padding-top: calc(14px + env(safe-area-inset-top)); }
+  .top { padding-top: calc(26px + env(safe-area-inset-top)); }
   body { padding-bottom: env(safe-area-inset-bottom); }
 }
 .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.brand h1 { font-size: 17px; margin: 0; letter-spacing: -0.3px; }
-.brand .sub { color: var(--dim); font-size: 12px; }
+.brand h1 {
+  font-size: 21px; font-weight: 700; margin: 0;
+  color: var(--text); letter-spacing: -0.6px;
+}
+.brand .sub { color: var(--dim); font-size: 12.5px; }
+/* 초록 점 하나가 이 화면의 유일한 장식이다. */
 .dot {
-  width: 9px; height: 9px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); align-self: center;
 }
-/* ------------------------------------------------------------ 지금 시세 */
+
+/* ------------------------------------------------------------- 지금 시세 */
 .ticker {
   display: grid;
   grid-template-columns: auto auto;
   grid-template-areas: "name name" "price change";
   align-items: baseline;
-  gap: 1px 10px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 12px;
-  font-variant-numeric: tabular-nums;
+  gap: 2px 10px;
+  text-align: right;
+  justify-items: end;
 }
-.ticker-name { grid-area: name; font-size: 11px; color: var(--dim); }
-.ticker-code { opacity: 0.6; margin-left: 4px; }
+.ticker-name {
+  grid-area: name; font-family: var(--sans);
+  font-size: 11px; color: var(--dim); letter-spacing: 0.2px;
+}
+.ticker-code { opacity: 0.55; margin-left: 5px; }
 .ticker-price {
   grid-area: price;
-  font-size: 19px; font-weight: 650; letter-spacing: -0.4px;
-  /* 자릿수가 바뀔 때 숫자가 튀지 않게 */
-  transition: color 0.25s;
+  font-size: 24px; font-weight: 600; letter-spacing: -0.8px;
+  color: var(--text);
 }
 .ticker-change { grid-area: change; font-size: 12px; }
-/* 업비트와 같은 색: 오르면 빨강, 내리면 파랑. 여기서만 뒤집으면
-   같은 화면 안에서 색의 뜻이 두 개가 된다. */
+/* 업비트와 같은 색: 오르면 빨강, 내리면 파랑. */
 .ticker.up .ticker-price, .ticker.up .ticker-change { color: var(--up); }
 .ticker.down .ticker-price, .ticker.down .ticker-change { color: var(--down); }
 
-/* ------------------------------------------------------------ 종목 고르기 */
-.coins { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-.coin {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  padding: 8px 14px; min-width: 92px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 8px; color: var(--text); cursor: pointer;
-  text-align: left;
+main { max-width: 1120px; margin: 0 auto; padding: 0 22px 80px; }
+
+/* ------------------------------------------------------------------ 구역
+   카드가 아니라 **가는 선으로 나눈 구역**이다. 전부에 테두리와 그림자를
+   두르면 다 똑같이 중요해 보이고, 그러면 아무것도 중요하지 않게 된다. */
+.panel {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line-soft);
 }
-.coin b { font-size: 13px; font-weight: 600; }
-.coin span { font-size: 11px; color: var(--dim); letter-spacing: 0.3px; }
-.coin.on { border-color: var(--accent); background: rgba(0, 255, 102, 0.12); }
+.panel:last-of-type { border-bottom: 0; }
+
+.panel h3, .section-title {
+  margin: 0 0 14px;
+  font-size: 11.5px; font-weight: 600;
+  color: var(--dim);
+  letter-spacing: 1.4px;
+}
+.hint { color: var(--dim); font-weight: 400; font-size: 12px; letter-spacing: -0.1px; }
+.panel h3 .hint, .section-title .hint { margin-left: 8px; }
+
+/* ------------------------------------------------------------ 종목 고르기 */
+/* 칸을 나란히 붙여 하나의 띠로. 낱개 카드 네 장보다 '고르는 자리'로 읽힌다. */
+.coins { display: flex; gap: 0; flex-wrap: wrap; margin-bottom: 22px; }
+.coin {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0;
+  padding: 9px 18px 10px;
+  background: none; border: 1px solid var(--line); border-right: 0;
+  color: var(--dim); cursor: pointer; text-align: left;
+  font-family: var(--sans);
+}
+.coin:first-child { border-radius: 3px 0 0 3px; }
+.coin:last-child { border-right: 1px solid var(--line); border-radius: 0 3px 3px 0; }
+.coin b { font-size: 14px; font-weight: 600; letter-spacing: -0.3px; }
+.coin span { font-family: var(--mono); font-size: 10px; letter-spacing: 0.5px; }
+.coin:hover { color: var(--text-2); }
+.coin.on {
+  background: var(--accent-deep);
+  border-color: #275b39; color: var(--text);
+}
+.coin.on + .coin { border-left-color: #275b39; }
 .coin.on span { color: var(--accent); }
 
-/* ---------------------------------------------------------- 받아둔 시세 */
-.cached-head { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
-.cached-row {
-  display: flex; align-items: baseline; gap: 10px;
-  font-size: 13px; line-height: 1.9;
-  font-variant-numeric: tabular-nums;
-}
-.cached-row b { min-width: 44px; font-weight: 600; }
-.cached-count { min-width: 90px; }
-.cached-foot { font-size: 12px; margin-top: 8px; }
-
-/* 글 속에 섞이는 단추. 단추처럼 보이면 '지우기'가 눈에 너무 크게 들어온다. */
-.linky {
-  background: none; border: 0; padding: 0 0 1px; margin-left: 10px;
-  color: var(--dim); font: inherit; font-size: 12px; cursor: pointer;
-  border-bottom: 1px dotted var(--dim);
-}
-.linky:hover { color: var(--up); border-bottom-color: var(--up); }
-
-main { max-width: 1080px; margin: 0 auto; padding: 18px 16px 60px; }
-
-/* ---------------------------------------------------------------- 패널 */
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 14px;
-}
-.panel h3 { margin: 0 0 12px; font-size: 14px; }
-.hint { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
-
-/* 조작부의 안내 문구는 **늘 한 줄을 차지한다.**
-   그러지 않으면 문구가 긴 칸만 두 줄이 되어 이름표들이 들쭉날쭉해지고,
-   칸 너비도 문구 길이만큼 벌어져 줄이 어긋난 것처럼 보인다. 빈 문구여도
-   자리를 잡아 두면 모든 칸이 같은 높이가 된다. */
-.row > label > .hint {
-  display: block;
-  margin-left: 0;
-  min-height: 1.2em;
-  line-height: 1.2;
-}
-/* 칸을 **격자로** 나눈다.
-   내용 길이가 배치를 정하게 두면 안 되는 자리다. 실제로 이름표가 긴 칸만
-   입력창까지 넓어져서 한 줄에 놓인 상자들의 크기가 제각각이었다.
-
-   너비를 손으로 못 박는 대신 격자에 맡긴다. 픽셀로 맞추면 칸을 하나
-   더 넣거나 이름표를 고칠 때마다 다시 계산해야 하고, 한 칸이 안 들어가
-   혼자 아랫줄로 밀린다(실제로 '넣을 금액'이 그렇게 됐다). auto-fit이면
-   들어갈 만큼 채우고 남는 폭을 고르게 나눠 준다. */
+/* ---------------------------------------------------------------- 조작부
+   칸 너비는 격자에 맡긴다. 픽셀로 못 박으면 칸을 하나 더 넣거나 이름표를
+   고칠 때마다 다시 계산해야 하고, 한 칸이 안 들어가 혼자 아랫줄로 밀린다. */
 .row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 16px 16px;
   align-items: end;
 }
+label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 13px; color: var(--text-2);
+}
+/* 묻는 말은 읽는 글자, 곁들이는 말은 한 단 작게. 둘의 크기가 같으면
+   무엇이 질문인지 안 보인다. */
+.ask {
+  color: var(--text-2); font-size: 12.5px; line-height: 1.35;
+  /* 두 줄 자리를 미리 잡아 둔다. 묻는 말의 길이가 제각각이라 그냥 두면
+     한 줄짜리 칸과 두 줄짜리 칸이 섞여 입력창 줄이 다시 어긋난다. */
+  min-height: 2.7em;
+}
+.row > label > .hint {
+  /* **늘 한 줄을 차지한다.** 그러지 않으면 문구가 긴 칸만 두 줄이 되어
+     이름표들이 들쭉날쭉해지고 입력창 줄이 어긋난다. */
+  display: block; min-height: 1.35em; line-height: 1.35;
+  font-size: 11.5px;
+}
 /* 체크박스는 빼야 한다. 네모에 width:100%를 주면 칸을 통째로 차지해
-   옆의 글씨를 좁은 자리로 밀어내고, 그러면 '1분마다 자동 갱신'이 세 줄로
-   접힌다. 실제로 그렇게 됐다. */
+   옆의 글씨를 좁은 자리로 밀어낸다 — 실제로 세 줄로 접혔다. */
 .row > label > input:not([type="checkbox"]),
 .row > label > select { width: 100%; min-width: 0; }
 
-/* ---------------------------------------------------------------- 조작부 */
-/* 단추 줄은 격자가 아니다. 단추·체크박스·상태 문구는 길이가 제각각이라
-   칸에 가두면 글씨가 접힌다 — 실제로 '1분마다 자동 갱신'이 두 줄로 접혀
-   네모와 떨어졌다. */
-.row.actions {
-  display: flex; flex-wrap: wrap; gap: 12px;
-  align-items: center; margin-top: 14px;
-}
-label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
-label.check { flex-direction: row; align-items: center; gap: 6px; }
 input[type="text"], input[type="number"], select {
-  background: var(--panel-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 6px;
-  padding: 7px 9px; font: inherit; font-size: 13px;
-  min-width: 120px;
+  background: var(--field); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 8px 10px;
+  font: 400 14px/1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+  margin-top: 3px;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+select { font-family: var(--sans); }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
 
-button {
-  background: var(--panel-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 6px;
-  padding: 9px 16px; font: inherit; font-size: 13px; cursor: pointer;
+/* 단추 줄은 격자가 아니다. 단추·체크박스·상태 문구는 길이가 제각각이라
+   칸에 가두면 글씨가 접힌다. */
+.row.actions {
+  display: flex; flex-wrap: wrap; gap: 10px 14px;
+  align-items: center; margin-top: 20px;
 }
-button:hover:not(:disabled) { border-color: var(--accent); }
-/* 밝은 초록 위에 흰 글씨는 거의 안 보인다(대비 1.3:1). 어두운 글씨여야
-   읽힌다 — 단말기에서 반전된 칸처럼 보이기도 해서 이 화면에 더 맞는다. */
+button {
+  background: none; color: var(--text-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 9px 16px; font: 500 13px var(--sans); cursor: pointer;
+  letter-spacing: -0.2px;
+}
+button:hover:not(:disabled) { border-color: var(--dim); color: var(--text); }
+/* 강조는 이 하나뿐이다. 발광은 주지 않는다 — 채도 최대 액센트에 그림자를
+   두르는 건 '생성형 화면'의 대표 조합이다. */
 button.primary {
   background: var(--accent); border-color: var(--accent);
-  color: #04140b; font-weight: 700;
-  box-shadow: 0 0 14px rgba(0, 255, 102, 0.25);
+  color: #06120b; font-weight: 700;
 }
-button.primary:hover:not(:disabled) { background: #4dff94; border-color: #4dff94; }
-button.danger { border-color: rgba(255, 77, 94, 0.5); color: #ff8f9c; }
-button.danger:hover:not(:disabled) { border-color: var(--bad); }
-button:disabled { opacity: 0.5; cursor: default; }
+button.primary:hover:not(:disabled) { background: #6ee79b; border-color: #6ee79b; }
+button.danger { border-color: #4a2429; color: #ff8f9c; }
+button:disabled { opacity: 0.4; cursor: default; }
 
-.job { color: var(--dim); font-size: 12px; }
+/* 체크박스. 기기 기본 네모는 크기가 제멋대로라 옆 글씨와 줄이 안 맞는다. */
+label.check {
+  flex-direction: row; align-items: center; gap: 7px;
+  font-size: 13px; cursor: pointer; user-select: none;
+}
+label.check input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 15px; height: 15px; margin: 0; flex: 0 0 15px;
+  background: var(--field); border: 1px solid var(--line); border-radius: 3px;
+  position: relative; cursor: pointer;
+}
+label.check input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+label.check input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 4px; top: 1px;
+  width: 4px; height: 8px;
+  border: solid #06120b; border-width: 0 2px 2px 0;
+  transform: rotate(42deg);
+}
+label.check input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); }
+
+.job { color: var(--dim); font-size: 12.5px; }
 .progress {
-  height: 4px; background: var(--panel-2); border-radius: 2px;
-  margin-top: 12px; overflow: hidden;
+  height: 2px; background: var(--line); margin-top: 14px; overflow: hidden;
 }
-.progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
-.error {
-  margin: 12px 0 0; padding: 10px 12px;
-  background: rgba(255, 77, 94, 0.12); border: 1px solid rgba(255, 77, 94, 0.4);
-  border-radius: 6px; color: #ff8f9c; font-size: 13px;
+.progress > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+
+.error, .offline, .stale-note {
+  margin: 14px 0 0; padding: 12px 14px;
+  border-left: 2px solid var(--bad); background: rgba(255, 95, 109, 0.05);
+  font-size: 13px; color: var(--text-2); border-radius: 0 3px 3px 0;
 }
+.offline { border-left-color: var(--warn); background: rgba(217, 194, 107, 0.05); }
+.offline b { color: var(--text); }
+.offline .dim { display: block; margin-top: 6px; font-size: 12px; }
+.stale-note { border-left-color: var(--warn); background: none; }
+.stale { opacity: 0.45; }
 
-/* 서버가 꺼진 것은 '오류'가 아니라 '할 일'이다. 빨간 줄이 아니라
-   무엇을 하면 되는지 적힌 칸으로 보여준다. */
-.offline {
-  margin: 12px 0 0; padding: 12px 14px;
-  background: rgba(0, 255, 102, 0.09); border: 1px solid rgba(0, 255, 102, 0.4);
-  border-radius: 6px; font-size: 13px; line-height: 1.75;
-}
-.offline code {
-  background: var(--panel-2); padding: 1px 6px; border-radius: 4px;
-  font-size: 12px; white-space: nowrap;
-}
-.offline .dim { display: block; margin-top: 4px; font-size: 12px; }
-
-.stale-note {
-  margin: 12px 0 0; padding: 9px 12px;
-  background: rgba(216, 255, 107, 0.08); border: 1px solid rgba(216, 255, 107, 0.3);
-  border-radius: 6px; color: var(--warn); font-size: 12.5px;
-}
-
-/* 다시 계산하는 동안 옛 결과를 흐리게 해 둔다 — 지금 결과로 읽히면 안 된다. */
-.stale { opacity: 0.4; }
-.stale tbody tr { pointer-events: none; }
-
-/* ---------------------------------------------------------------- 판정 */
-.verdict-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.verdict h2 { font-size: 17px; margin: 0; letter-spacing: -0.3px; }
-.mark { width: 12px; height: 12px; border-radius: 50%; flex: none; }
-.verdict.enter { border-color: rgba(0, 255, 156, 0.45); }
-.verdict.enter .mark { background: var(--good); }
-.verdict.stay { border-color: rgba(255, 77, 94, 0.4); }
-.verdict.stay .mark { background: var(--bad); }
-.verdict ul { margin: 0; padding-left: 18px; color: var(--text-2); }
-.verdict li { margin: 4px 0; }
-.meta { margin-top: 12px; color: var(--dim); font-size: 12px; }
-
-.coverage { color: var(--dim); font-size: 12.5px; }
-.coverage b { color: var(--text); font-weight: 600; }
-.coverage b.warn { color: var(--warn); }
-
-/* ---------------------------------------------------------------- 표 */
-/* 표는 자기 안에서만 옆으로 넘긴다 — 페이지 전체가 가로로 밀리면 안 된다. */
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 13px; }
-th, td {
-  padding: 7px 9px; text-align: right; white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-/* 좁은 화면에서는 촘촘하게. 안 그러면 정작 중요한 초과·q값이 화면 밖으로 나간다. */
-@media (max-width: 720px) {
-  table { min-width: 600px; font-size: 12px; }
-  th, td { padding: 6px 5px; }
-}
-th { color: var(--dim); font-weight: 500; border-bottom: 1px solid var(--line); font-size: 12px; }
-td { border-bottom: 1px solid rgba(27, 58, 42, 0.55); }
-th.l, td.l { text-align: left; }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: var(--panel-2); }
-tbody tr.selected { background: rgba(0, 255, 102, 0.16); }
-tr.sig td.l::after { content: " ★"; color: var(--warn); }
-tr.pass td.l { color: var(--good); }
-td.pos { color: var(--up); }
-td.neg { color: var(--down); }
-/* 직선에 가까운 '모양'은 눈에 띄게 — 모양이 아니라 추세를 본 것이다 */
-td.trend, b.trend { color: var(--warn); }
-.footnote { color: var(--dim); font-size: 12px; margin: 12px 0 0; }
-
-/* 조합을 바꿀 때마다 설명 길이가 달라지면 그 아래가 위아래로 튄다.
-   두 줄 자리를 미리 잡아 둔다. */
-#chart-note { min-height: 2.8em; }
-
-/* ---------------------------------------------------------------- 차트 */
-.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 720px) { .charts { grid-template-columns: 1fr; } }
-figure { margin: 0; }
-figcaption { color: var(--text); font-size: 12.5px; margin-bottom: 8px; }
-
-/* 크기는 전적으로 CSS가 정한다. SVG는 viewBox로 알아서 늘어나므로
-   화면 배율(devicePixelRatio)에 따라 커지는 문제가 생기지 않는다. */
-.svg-box {
-  background: var(--panel-2);
+/* ---------------------------------------------------------------- 판정
+   배경을 주는 것은 이것 하나뿐이다. 그래서 눈이 먼저 여기로 간다. */
+.verdict {
+  background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  height: 220px;
-  overflow: hidden;
+  border-radius: 4px;
+  padding: 20px 22px;
+  margin: 22px 0;
 }
-.svg-box svg { display: block; width: 100%; height: 100%; }
+.verdict-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.verdict h2 {
+  margin: 0; font-size: 19px; font-weight: 700;
+  color: var(--text); letter-spacing: -0.5px;
+}
+.verdict .mark { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.verdict.buy .mark { background: var(--accent); }
+.verdict.hold .mark { background: var(--up); }
+.verdict.buy h2 { color: var(--accent); }
+.verdict-time {
+  margin-left: auto; color: var(--dim);
+  font-size: 11.5px; font-family: var(--mono);
+}
+.verdict ul { margin: 12px 0 0; padding-left: 17px; }
+.verdict li { margin: 5px 0; font-size: 13.5px; }
+.verdict li b { color: var(--text); }
 
-.note ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
-.note li { margin: 6px 0; }
+.disclaimer { font-size: 13px; color: var(--dim); }
+.disclaimer b { color: var(--text-2); font-weight: 600; }
+.disclaimer .dim { display: block; margin-top: 5px; font-size: 12px; }
 
+.note-line { margin: 10px 0 0; font-size: 12.5px; color: var(--dim); }
+.note-line b { color: var(--text-2); }
+.note-line.warn { color: var(--warn); }
+
+/* ------------------------------------------------------------ 받아둔 시세 */
+table.cached { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.cached th, table.cached td { padding: 6px 14px 6px 0; text-align: left; }
+table.cached thead th {
+  font-weight: 500; color: var(--dim); font-size: 11px;
+  border-bottom: 1px solid var(--line); letter-spacing: 0.2px;
+}
+table.cached tbody th { color: var(--text-2); font-weight: 600; white-space: nowrap; }
+table.cached tbody tr + tr td, table.cached tbody tr + tr th {
+  border-top: 1px solid var(--line-soft);
+}
+table.cached .span { color: var(--text-2); white-space: nowrap; }
+
+.linky {
+  background: none; border: 0; padding: 0; margin-left: 8px;
+  color: var(--dim); font: inherit; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.linky:hover { color: var(--up); }
 
 /* ---------------------------------------------------------------- 확률 표 */
-.disclaimer {
-  background: rgba(0, 255, 102, 0.06);
-  border-color: rgba(0, 255, 102, 0.28);
-  font-size: 13px; color: var(--text-2);
+.table-wrap { overflow-x: auto; }
+table.odds, table.theories { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.odds th, table.theories th {
+  font-family: var(--sans); font-weight: 500; font-size: 11px;
+  color: var(--dim); text-align: right; padding: 0 10px 7px;
+  border-bottom: 1px solid var(--line); white-space: nowrap;
 }
-.disclaimer b { color: var(--text); }
-
-.odds-group { margin-bottom: 22px; }
-.odds-group:last-child { margin-bottom: 0; }
-.odds-group h4 { margin: 0 0 10px; font-size: 13.5px; font-weight: 600; }
-
-table.odds { min-width: 660px; }
-table.odds td.big { font-size: 15px; font-weight: 600; }
-table.odds td .sub2 {
-  display: block; font-size: 11px; font-weight: 400;
-  color: var(--dim); margin-top: 2px;
+table.odds td, table.theories td {
+  padding: 9px 10px; text-align: right;
+  border-bottom: 1px solid var(--line-soft);
 }
-table.odds td.dim { color: var(--dim); }
-table.odds tbody tr.informative td.big { color: var(--good); }
-.trend-warn {
-  margin: 0 0 10px; font-size: 12.5px; color: var(--warn);
+table.odds th.l, table.odds td.l, table.theories th.l, table.theories td.l {
+  text-align: left; font-family: var(--sans); letter-spacing: -0.1px;
 }
-
-/* ---------------------------------------------------------------- 실제 사례 */
-.examples { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 860px) { .examples { grid-template-columns: 1fr; } }
-.example-col h4 { margin: 0 0 10px; font-size: 13px; }
-.example-col h4.rose { color: var(--good); }
-.example-col h4.fell { color: var(--bad); }
-
-.example {
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 8px; padding: 10px; margin-bottom: 10px;
-}
-.example-head {
-  display: flex; align-items: baseline; gap: 10px;
-  font-size: 12px; color: var(--dim); margin-bottom: 8px; flex-wrap: wrap;
-}
-.example-head .when { color: var(--text); font-variant-numeric: tabular-nums; }
-.example-head .result { margin-left: auto; font-size: 14px; font-weight: 600; }
-.example-charts { display: flex; gap: 8px; }
-/* 세로를 늘린다. viewBox는 400×120인데 상자가 600×90이면 가로는 1.5배로
-   늘고 세로는 0.75배로 줄어, 오르내림이 실제보다 반쯤 눌려 보였다.
-   1분봉 한 칸의 움직임이 0.03%짜리라 그 눌림이 그대로 '변화 없음'이 된다. */
-.svg-box.wide { flex: 1 1 auto; height: 150px; }
-.svg-box.narrow { flex: 0 0 110px; height: 150px; }
+table.odds tbody tr { cursor: pointer; }
+table.odds tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+table.odds tbody tr.selected { background: var(--accent-deep); }
+table.odds tr.informative td.big { color: var(--text); }
+.big { font-size: 14px; color: var(--text-2); }
+.sub2 { display: block; font-size: 10.5px; color: var(--dim); font-family: var(--sans); }
 .dim { color: var(--dim); }
-
-
-/* ---------------------------------------------------------------- 판정 */
-.verdict.buy { border-color: rgba(0, 255, 156, 0.5); }
-.verdict.buy .mark { background: var(--good); }
-.verdict.hold { border-color: rgba(255, 77, 94, 0.45); }
-.verdict.hold .mark { background: var(--bad); }
-.verdict-time { margin-left: auto; color: var(--dim); font-size: 12px; }
-
-
-/* ------------------------------------------------------------ 인광 느낌
-   글자에서 빛이 새어 나오는 것처럼. 큰 숫자와 제목에만 준다 —
-   본문까지 번지면 초점이 안 맞은 것처럼 보여서 오래 못 읽는다. */
-.brand h1,
-.ticker-price,
-.verdict h2,
-table.odds td.big {
-  text-shadow: var(--glow);
+.pos { color: var(--good); }
+.neg { color: var(--bad); }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.warn { color: var(--warn); }
+.odds-group + .odds-group { margin-top: 26px; }
+.odds-group h4, .example-col h4 {
+  margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text);
 }
+.odds-group h4 .hint { font-weight: 400; }
+.trend-warn { margin: 0 0 10px; font-size: 12px; color: var(--warn); }
+.footnote { margin: 14px 0 0; font-size: 12px; color: var(--dim); line-height: 1.7; }
+.footnote b { color: var(--text-2); }
+.footnote .dim { color: #58665f; }
 
-.dot { box-shadow: 0 0 8px var(--accent); }
-
-/* 초록 바탕에서 빨강·파랑이 묻히지 않게 자기 색으로 빛낸다 */
-.ticker.up .ticker-price { text-shadow: 0 0 10px rgba(255, 85, 102, 0.4); }
-.ticker.down .ticker-price { text-shadow: 0 0 10px rgba(74, 163, 255, 0.4); }
-
-/* 패널은 유리판처럼 — 뒤의 글자비가 아주 옅게 비쳐 보인다 */
-.panel, .top {
-  background-color: color-mix(in srgb, var(--panel) 88%, transparent);
-}
-
-/* 표 머리말과 라벨은 단말기 말투로 */
-th, .cached-head, .brand .sub, label {
-  letter-spacing: 0.04em;
-}
-
-/* 글자가 화면 맨 앞에 오도록. 주사선은 1, 본문은 그 위. */
-main, .top { position: relative; z-index: 2; }
-
-
-/* ======================================================== 앞으로의 모양 */
-.ahead-wrap { display: grid; grid-template-columns: 1fr 250px; gap: 16px; align-items: start; }
-@media (max-width: 760px) { .ahead-wrap { grid-template-columns: 1fr; } }
-.svg-box.tall { height: 260px; }
-.ahead-legend { font-size: 12.5px; line-height: 1.9; font-variant-numeric: tabular-nums; }
-.ahead-row.big { font-size: 15px; }
-.ahead-row.big b { color: var(--text); }
-/* 금액은 %보다 크게. "+0.02%"는 아무 느낌이 없지만 "+200원"은 바로 온다. */
-.ahead-money {
-  margin-top: 10px; padding: 9px 11px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; font-size: 12.5px; line-height: 1.8;
-}
-.ahead-money b { font-size: 16px; }
-.ahead-money b.up { color: var(--up); }
-.ahead-money b.down { color: var(--down); }
-.rule-cost { color: var(--warn); letter-spacing: -2px; }
-.ahead-warn {
-  margin-top: 8px; padding: 7px 9px; font-size: 12px;
-  background: rgba(216, 255, 107, 0.08);
-  border: 1px solid rgba(216, 255, 107, 0.3);
-  border-radius: 6px; color: var(--warn); line-height: 1.6;
-}
-
-/* ======================================================== 지지·저항 */
-.level {
-  display: grid;
-  grid-template-columns: 3px 42px 120px 62px 1fr;
-  align-items: center; gap: 10px;
-  padding: 5px 0; font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-.level-bar { height: 18px; border-radius: 2px; background: currentColor; }
-.level.res { color: var(--up); }
-.level.sup { color: var(--down); }
-.level.fib { color: var(--warn); }
-.level-kind { font-size: 11px; }
-.level-price { color: var(--text); font-weight: 600; }
-.level-away { font-size: 12px; }
-.level-touch { font-size: 11.5px; }
-/* 지금 값은 눈에 띄게 — 위아래를 가르는 선이다 */
-.level.now {
-  color: var(--accent);
-  border-top: 1px dashed rgba(0, 255, 102, 0.5);
-  border-bottom: 1px dashed rgba(0, 255, 102, 0.5);
-  margin: 5px 0; padding: 8px 0;
-}
-.level.now .level-price { color: var(--accent); text-shadow: var(--glow); }
-
-/* ======================================================== 차트 이론 */
-.tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+/* ---------------------------------------------------------------- 이론 */
+.tabs { display: flex; gap: 0; margin-bottom: 14px; }
 .tab {
-  padding: 6px 14px; font-size: 12.5px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; color: var(--dim); cursor: pointer;
+  border: 1px solid var(--line); border-right: 0;
+  padding: 6px 15px; font-size: 12.5px; border-radius: 0;
 }
-.tab.on { border-color: var(--accent); color: var(--accent); background: rgba(0, 255, 102, 0.1); }
-
+.tab:first-child { border-radius: 3px 0 0 3px; }
+.tab:last-child { border-right: 1px solid var(--line); border-radius: 0 3px 3px 0; }
+.tab.on { background: var(--accent-deep); border-color: #275b39; color: var(--text); }
 .theory-confirm {
   margin: 0 0 12px; padding: 9px 12px; font-size: 12.5px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  border-left: 2px solid var(--line); color: var(--text-2);
 }
-.theory-confirm.up { border-color: rgba(255, 85, 102, 0.4); }
-.theory-confirm.down { border-color: rgba(74, 163, 255, 0.4); }
-
+.theory-confirm.up { border-left-color: var(--up); }
+.theory-confirm.down { border-left-color: var(--down); }
+.theory-confirm b { color: var(--text); }
 .tally { font-size: 12.5px; color: var(--dim); margin-bottom: 10px; }
-.tally b.up { color: var(--up); }
-.tally b.down { color: var(--down); }
+.tally b { font-weight: 600; }
+.now-cell { max-width: 30rem; }
+table.theories tr.quiet td { color: var(--dim); }
+table.theories tr.real td.l b { color: var(--accent); }
 
-table.theories { min-width: 700px; font-size: 12.5px; }
-/* '지금' 칸이 가장 길다. 여기만 줄바꿈을 허용해 표가 옆으로 안 넘치게. */
-table.theories td.now-cell { white-space: normal; max-width: 300px; line-height: 1.5; }
-table.theories td.l, table.theories th.l { text-align: left; }
-table.theories td.up { color: var(--up); }
-table.theories td.down { color: var(--down); }
-table.theories td.flat { color: var(--dim); }
-table.theories tbody tr { cursor: default; }
-table.theories tbody tr:hover { background: none; }
-table.theories tr.quiet td { opacity: 0.55; }
-/* 우연으로 보기 어려운 줄만 눈에 띄게. 거의 안 켜지는 게 정상이다. */
-table.theories tr.real { background: rgba(0, 255, 102, 0.07); }
+/* ------------------------------------------------------------ 지지·저항 */
+.level {
+  display: grid;
+  grid-template-columns: 3px 3.2rem 1fr 4.5rem 1fr;
+  align-items: center; gap: 12px;
+  padding: 6px 0; font-size: 12.5px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.level-bar { height: 15px; background: var(--dim); border-radius: 1px; }
+.level.res .level-bar { background: var(--up); }
+.level.sup .level-bar { background: var(--down); }
+.level.fib .level-bar { background: var(--warn); }
+.level-kind { color: var(--dim); font-size: 11px; }
+.level.res .level-kind { color: var(--up); }
+.level.sup .level-kind { color: var(--down); }
+.level-price { color: var(--text); font-size: 13.5px; }
+.level-away { color: var(--dim); }
+.level-touch { font-family: var(--sans); font-size: 11.5px; }
+.level.now {
+  border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent);
+  margin: 5px 0; padding: 8px 0;
+}
+.level.now .level-bar { background: var(--accent); }
+.level.now .level-kind { color: var(--accent); }
+.level.now .level-price { font-size: 15px; }
+
+/* ------------------------------------------------------------ 앞으로 */
+.ahead-wrap { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+.svg-box { flex: 1 1 460px; min-width: 0; }
+.svg-box svg { display: block; width: 100%; }
+.svg-box.tall svg { height: 300px; }
+.svg-box.wide svg { height: 120px; }
+.svg-box.narrow { flex: 0 0 110px; }
+.svg-box.narrow svg { height: 120px; }
+.ahead-legend { flex: 0 0 15rem; font-size: 12.5px; }
+.ahead-row { margin: 2px 0; }
+.ahead-row.big { font-size: 15px; color: var(--text); margin-top: 8px; }
+.ahead-row.big b { font-weight: 700; }
+.ahead-money {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--line); line-height: 1.6;
+}
+.ahead-money b { font-size: 17px; }
+.ahead-warn { margin-top: 12px; color: var(--warn); font-size: 12px; }
+.rule-cost { color: var(--warn); }
+
+/* ------------------------------------------------------------ 실제 사례 */
+.examples { display: flex; gap: 22px; flex-wrap: wrap; }
+.example-col { flex: 1 1 340px; min-width: 0; }
+.example-col h4.rose { color: var(--up); }
+.example-col h4.fell { color: var(--down); }
+.example { margin-bottom: 14px; }
+.example-head {
+  display: flex; gap: 12px; align-items: baseline;
+  font-size: 11.5px; color: var(--dim); margin-bottom: 3px;
+}
+.example-head .result { margin-left: auto; font-size: 13px; }
+.example-charts { display: flex; gap: 8px; align-items: stretch; }
+
+/* ---------------------------------------------------------------- 읽는 법 */
+.note ul { margin: 0; padding-left: 17px; }
+.note li { margin: 6px 0; font-size: 12.5px; color: var(--dim); }
+.note li b { color: var(--text-2); }
+
+@media (max-width: 640px) {
+  .top { padding: 20px 16px 14px; }
+  main { padding: 0 16px 60px; }
+  .brand h1 { font-size: 19px; }
+  .brand .sub { display: none; }   /* 좁으면 부제가 두 줄로 접혀 어수선하다 */
+  .ticker-price { font-size: 21px; }
+  .row { grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+  .level { grid-template-columns: 3px 2.8rem 1fr 3.8rem; }
+  .level-touch { display: none; }
+}
