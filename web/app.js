@@ -121,12 +121,21 @@ function start(text) {
   setStale(lastAnalysis !== null);
 }
 
+/** 새 판으로 갈아탈 준비가 됐지만 받는 중이라 미뤄 둔 것. */
+let pendingSwap = null;
+
 function finish() {
   busy = false;
   for (const id of ['btn-scan', 'btn-live']) $(id).disabled = false;
   $('btn-stop').hidden = true;
   $('progress').hidden = true;
   setStale(false);
+  // 미뤄 둔 새 판 갈아타기가 있으면 **정리를 다 마친 뒤에** 한다.
+  if (pendingSwap) {
+    const swap = pendingSwap;
+    pendingSwap = null;
+    swap();
+  }
 }
 
 function showProgress(done, total) {
@@ -719,6 +728,35 @@ $('in-auto').addEventListener('change', (e) => {
 // 시도하면 콘솔만 빨개지고 얻는 게 없으므로 아예 건너뛴다.
 if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.register(new URL('./sw.js', import.meta.url)).catch(() => undefined);
+
+  // **새 판이 올라오면 알아서 갈아탄다.**
+  //
+  // 이게 없어서 오래 헤맸다. 서비스 워커는 빨리 뜨라고 캐시부터 주므로,
+  // 새 판을 밀어 넣어도 **이미 열려 있던 화면은 옛 파일 그대로**다. 그래서
+  // "고쳤는데 왜 그대로냐"와 "안 고쳐졌다"를 구분할 수가 없었다.
+  //
+  // 새 워커가 넘겨받으면(controllerchange) 지금 화면은 이미 낡은 것이다.
+  // 받는 중이 아니면 곧장 새로고침하고, 받는 중이면 끝난 뒤에 한다 —
+  // 한창 받고 있는데 새로고침하면 그건 그것대로 황당하다.
+  // **처음 심는 중인지, 갈아타는 중인지 갈라야 한다.**
+  //
+  // 처음 들어오면 워커가 없다가 심기는 순간에도 controllerchange가 난다.
+  // 그걸 갈아타기로 오해하면 **처음 온 사람이 이유 없이 새로고침을 당한다.**
+  // 화면이 한 번 깜빡이고 다시 뜨는데, 무슨 일인지 알 수가 없다.
+  // 원래 맡고 있던 워커가 있었을 때만 갈아타는 것이다.
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let swapping = false;
+  const swapNow = () => {
+    if (swapping) return;
+    swapping = true;
+    window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;
+    if (!busy) { swapNow(); return; }
+    $('job').textContent = '새 판이 준비됐습니다 — 지금 받는 것만 끝내고 넘어갑니다';
+    pendingSwap = swapNow;
+  });
 }
 
 // ============================================================ 앞으로의 모양
