@@ -71,6 +71,15 @@ self.addEventListener('fetch', (event) => {
   // 업비트는 손대지 않는다. 캐시된 시세는 틀린 시세다.
   if (url.origin !== self.location.origin) return;
 
+  // **연결 확인용 요청은 절대 캐시에서 답하지 않는다.**
+  //
+  // core/upbit.js는 업비트에 못 닿았을 때 '인터넷이 끊긴 것'과 '업비트만
+  // 막힌 것'을 가르려고 우리 쪽 파일을 하나 불러 본다. 그런데 여기서
+  // 캐시로 답해 버리면 인터넷이 끊겨 있어도 성공해서, 늘 '업비트만
+  // 막혔다'고 잘못 말하게 된다. 진단하려고 만든 요청을 진단이 못 하게
+  // 막는 셈이라, 이 갈래만 통째로 비켜 준다.
+  if (url.searchParams.has('ping')) return;
+
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const hit = await cache.match(request, { ignoreSearch: true });

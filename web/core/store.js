@@ -131,10 +131,11 @@ export class CandleStore {
   }
 
   /**
-   * 마지막 `wanted`개만 읽는다.
+   * 마지막 `wanted`개만 봉 객체로 읽는다.
    *
-   * 8년치를 받아뒀는데 30일치만 보려 할 때 420만 개를 다 읽으면 그것만으로
-   * 몇 초가 간다. 목록을 뒤에서부터 세어 **필요한 덩어리만** 읽는다.
+   * 계산에 넘길 때는 `loadTailColumns`를 쓴다 — 이쪽은 봉마다 객체를
+   * 하나씩 만들어서 8년치에는 못 쓴다. 여기 남겨 두는 이유는 읽기 쉬운
+   * 기준 구현이기 때문이고, 시험이 둘의 답이 같은지 확인한다.
    */
   async loadTail(market, timeframe, wanted) {
     if (wanted <= 0) return [];
@@ -150,6 +151,64 @@ export class CandleStore {
     const out = [];
     for (const id of picked) out.push(...unpackChunk(values.get(id)));
     return out.length > wanted ? out.slice(out.length - wanted) : out;
+  }
+
+  /**
+   * 마지막 `wanted`개를 **바로 배열 여섯 개로** 읽는다.
+   *
+   * loadTail은 봉 하나마다 객체를 하나씩 만든다. 30일치 4만 개면 아무
+   * 문제가 없지만, 8년치 420만 개면 객체만으로 수백 MB라 아이패드에서
+   * 브라우저가 죽는다. 계산에 넘길 때는 어차피 숫자 배열로 펴야 하므로,
+   * 중간에 객체를 만들지 않고 곧장 채운다.
+   *
+   * 돌려주는 것은 `{ts, open, high, low, close, volume, length}`다.
+   */
+  async loadTailColumns(market, timeframe, wanted) {
+    const empty = () => new Float64Array(0);
+    if (wanted <= 0) {
+      return {
+        ts: empty(), open: empty(), high: empty(), low: empty(),
+        close: empty(), volume: empty(), length: 0,
+      };
+    }
+    const index = await this.backend.listIndex(market, timeframe);
+    const picked = [];
+    let have = 0;
+    for (let i = index.length - 1; i >= 0 && have < wanted; i -= 1) {
+      picked.unshift(index[i]);
+      have += index[i].n;
+    }
+    const total = Math.min(have, wanted);
+    const out = {
+      ts: new Float64Array(total),
+      open: new Float64Array(total),
+      high: new Float64Array(total),
+      low: new Float64Array(total),
+      close: new Float64Array(total),
+      volume: new Float64Array(total),
+      length: total,
+    };
+    if (!picked.length) return out;
+
+    // 앞쪽 덩어리는 필요한 만큼만 잘라 쓴다. `have`가 `wanted`보다 클 때
+    // 넘치는 부분은 가장 오래된 쪽이므로 앞에서 잘라낸다.
+    let skip = have - total;
+    let at = 0;
+    for (const meta of picked) {
+      // eslint-disable-next-line no-await-in-loop
+      const values = await this.backend.readChunks(market, timeframe, [meta.index]);
+      const chunk = values.get(meta.index);
+      if (!chunk) continue;
+      const from = Math.min(skip, chunk.ts.length);
+      skip -= from;
+      const take = chunk.ts.length - from;
+      if (take <= 0) continue;
+      for (const column of ['ts', 'open', 'high', 'low', 'close', 'volume']) {
+        out[column].set(chunk[column].subarray(from, from + take), at);
+      }
+      at += take;
+    }
+    return out;
   }
 
   /** 전부 읽는다. 작은 구간에만 쓸 것. */

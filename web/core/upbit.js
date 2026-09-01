@@ -194,32 +194,63 @@ export class UpbitClient {
    *     받으려 해도 처음부터 8년을 다시 받게 된다.
    *
    * `onBatch`
-   *     페이지를 받을 때마다 부른다. 중간에 끊겨도 받은 만큼은 남기기
-   *     위한 것이다. 오래 걸리는 수집이 끝에서 끊겨 전부 날아가면
-   *     사용자는 다시 시도하지 않는다.
+   *     페이지를 받을 때마다 **그 페이지만** 넘긴다. 중간에 끊겨도 받은
+   *     만큼은 남기기 위한 것이다. 오래 걸리는 수집이 끝에서 끊겨 전부
+   *     날아가면 사용자는 다시 시도하지 않는다.
+   *
+   *     처음에는 여기에 '지금까지 모은 것 전부'를 넘겼는데, 그러면 k번째
+   *     페이지에서 200k개를 다시 저장한다. 8년치(21,000페이지)면 저장량이
+   *     제곱으로 늘어 사실상 끝나지 않는다.
+   *
+   * `retain`
+   *     거짓이면 받은 봉을 **들고 있지 않는다.** 8년치 420만 개를 메모리에
+   *     쌓으면 그것만으로 수백 MB라 아이패드에서 브라우저가 죽는다.
+   *     onBatch로 그때그때 저장하고 개수만 세면 되는 경우에 쓴다.
    */
   async collect(market, timeframe, count, {
     end = null, onProgress = null, stopAt = null, onBatch = null, shouldStop = null,
+    retain = true,
   } = {}) {
-    const collected = new Map();
+    const collected = retain ? new Map() : null;
     let cursor = end;
+    let got = 0;
+    let previousOldest = null;
     const step = { minute1: 60, minute3: 180, minute5: 300 }[timeframe];
 
-    while (collected.size < count) {
+    while (got < count) {
       if (shouldStop && shouldStop()) break;
-      const batch = await this.getCandles(market, timeframe, PAGE, cursor);
+      // 마지막 쪽에서는 **남은 만큼만** 달라고 한다. 늘 200개를 달라고 하면
+      // 300개를 원했는데 400개를 받아 저장하게 된다. 남는 봉이 해롭지는
+      // 않지만, 몇 개를 받을지 말해 놓고 다른 개수를 받는 것은 뒤에서
+      // 개수를 세는 쪽(진행률·시험)을 전부 어긋나게 만든다.
+      const asking = Math.min(PAGE, count - got);
+      // eslint-disable-next-line no-await-in-loop
+      const batch = await this.getCandles(market, timeframe, asking, cursor);
       if (!batch.length) break;
-      const before = collected.size;
-      for (const candle of batch) collected.set(candle.ts, candle);
-      if (collected.size === before) break; // 같은 페이지가 반복되면 더 과거가 없는 것
 
       const oldest = batch[0].ts;
-      if (onProgress) onProgress(collected.size, count);
-      if (onBatch) await onBatch([...collected.values()].sort((a, b) => a.ts - b.ts));
+      // 더 과거로 못 내려갔으면 업비트에 더 줄 게 없는 것이다. 들고 있지
+      // 않을 때는 개수로 알 수 없으므로 커서가 움직였는지로 본다.
+      if (previousOldest !== null && oldest >= previousOldest) break;
+      previousOldest = oldest;
+
+      if (collected) {
+        const before = collected.size;
+        for (const candle of batch) collected.set(candle.ts, candle);
+        if (collected.size === before) break;
+        got = collected.size;
+      } else {
+        got += batch.length;
+      }
+
+      if (onProgress) onProgress(got, count);
+      // eslint-disable-next-line no-await-in-loop
+      if (onBatch) await onBatch(batch);
       if (stopAt !== null && oldest <= stopAt) break; // 이미 가진 구간에 닿았다
       cursor = oldest - step;
     }
 
+    if (!collected) return [];
     const candles = [...collected.values()].sort((a, b) => a.ts - b.ts);
     return candles.length > count ? candles.slice(candles.length - count) : candles;
   }

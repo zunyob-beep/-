@@ -13,7 +13,8 @@
 입력 봉도 함께 저장한다. 양쪽에서 따로 만들면 난수기가 달라 애초에 같은
 입력이 아니게 되고, 그러면 대조가 아무 의미도 없다.
 
-    python3 tools/goldens.py
+    python3 tools/goldens.py            정답지를 다시 뽑는다
+    python3 tools/goldens.py --check    지금 파이썬이 정답지와 같은 답을 내는지만 본다
 """
 
 from __future__ import annotations
@@ -74,7 +75,9 @@ SIMILARITY = 0.6
 ALL_POINTS = 1_000_000
 
 
-def make_candles(count: int, seed: int, start_price: float = 50_000_000.0) -> list[Candle]:
+def make_candles(
+    count: int, seed: int, start_price: float = 50_000_000.0, step_minutes: int = 1
+) -> list[Candle]:
     """분석에 쓸 만한 가짜 봉. 실제 시세를 흉내만 낸다.
 
     진짜 시세로 정답지를 만들 수는 없다 — 이 환경에서는 업비트가 막혀 있고,
@@ -101,7 +104,7 @@ def make_candles(count: int, seed: int, start_price: float = 50_000_000.0) -> li
     base = datetime(2024, 3, 1, tzinfo=timezone.utc)
     return [
         Candle(
-            ts=base + timedelta(minutes=i),
+            ts=base + timedelta(minutes=i * step_minutes),
             open=float(opens[i]),
             high=float(highs[i]),
             low=float(lows[i]),
@@ -184,49 +187,66 @@ def verdict_cases(cost: float) -> list[dict]:
     ]
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
+def one_timeframe(
+    market: str, timeframe: str, bars: int, seed: int, *, start_price: float,
+    step_minutes: int, length: int, similarity: float, fee: float, slippage: float,
+) -> tuple[Series, dict]:
+    """한 봉 간격에 대해 계산을 끝까지 돌린 조각. Analysis를 짜맞출 재료다."""
+    candles = make_candles(bars, seed=seed, start_price=start_price, step_minutes=step_minutes)
+    series = Series.from_candles(market, timeframe, candles)
+    cost = round_trip_cost(fee, slippage)
+    matches = find_matches(
+        series, length, max_horizon=max(HORIZONS), similarity=similarity, top_k=100
+    )
+    return series, {
+        "candles": candle_rows(candles),
+        "matches": matches,
+        "odds": odds_for(series, length, horizons=HORIZONS, similarity=similarity,
+                         top_k=100, fee=fee, slippage=slippage),
+        "readings": read_all(series),
+        "scores": score(series, horizon=10, points=ALL_POINTS, cost=cost),
+        "levels": levels(series),
+        "fibonacci": retracements(series),
+        "projection": None if matches is None else project(series, matches, ahead=max(HORIZONS)),
+    }
 
-    candles = make_candles(BARS, seed=7)
-    series = Series.from_candles("KRW-BTC", "minute1", candles)
-    length = 20
+
+def build_full() -> dict:
+    """1분봉 하나로 깊게. 모든 갈래를 한 번씩 밟는 기본 정답지."""
+    market, timeframe, length = "KRW-BTC", "minute1", 20
     fee, slippage = 0.0005, 0.0002
     cost = round_trip_cost(fee, slippage)
 
-    matches = find_matches(
-        series, length, max_horizon=max(HORIZONS), similarity=SIMILARITY, top_k=100
+    series, part = one_timeframe(
+        market, timeframe, BARS, 7, start_price=50_000_000.0, step_minutes=1,
+        length=length, similarity=SIMILARITY, fee=fee, slippage=slippage,
     )
+    matches = part["matches"]
     if matches is None or len(matches.ends) < 20:
         raise SystemExit("닮은 구간이 모자랍니다 — 정답지로 쓸 수 없습니다.")
-    forward = project(series, matches, ahead=max(HORIZONS))
-    if forward is None:
+    if part["projection"] is None:
         raise SystemExit("예상 그림이 안 나왔습니다 — 정답지로 쓸 수 없습니다.")
 
-    readings = read_all(series)
-    scores = score(series, horizon=10, points=ALL_POINTS, cost=cost)
-    highs, lows = swings(series)
-
     analysis = Analysis(
-        market="KRW-BTC", cost=cost, similarity=SIMILARITY, length=length,
-        series={"minute1": series},
-        odds=odds_for(series, length, horizons=HORIZONS, similarity=SIMILARITY,
-                      top_k=100, fee=fee, slippage=slippage),
-        matches={"minute1": matches},
-        readings={"minute1": readings},
-        scores={"minute1": scores},
-        levels={"minute1": levels(series)},
-        fibonacci={"minute1": retracements(series)},
-        projection={"minute1": forward},
+        market=market, cost=cost, similarity=SIMILARITY, length=length,
+        series={timeframe: series},
+        odds=part["odds"],
+        matches={timeframe: matches},
+        readings={timeframe: part["readings"]},
+        scores={timeframe: part["scores"]},
+        levels={timeframe: part["levels"]},
+        fibonacci={timeframe: part["fibonacci"]},
+        projection={timeframe: part["projection"]},
         missing=("minute3", "minute5"),
         updated_at="00:00:00",
     )
-
+    highs, lows = swings(series)
     rose, fell = examples_for(series, matches, 10, cost=cost, count=3)
-    payload = {
+    return {
         "note": "tools/goldens.py가 만든 파일입니다. 손으로 고치지 마세요.",
-        "candles": candle_rows(candles),
-        "market": "KRW-BTC",
-        "timeframe": "minute1",
+        "candles": part["candles"],
+        "market": market,
+        "timeframe": timeframe,
         "length": length,
         "similarity": SIMILARITY,
         "fee": fee,
@@ -239,13 +259,13 @@ def main() -> None:
             "swingHighs": [int(v) for v in highs],
             "swingLows": [int(v) for v in lows],
         },
-        "theories": {"tally": list(tally(readings))},
+        "theories": {"tally": list(tally(part["readings"]))},
         "matches": {
             "ends": [int(v) for v in matches.ends],
             "distances": [float(v) for v in matches.distances],
             "limit": int(matches.limit),
         },
-        "examples": _examples_json(analysis, "minute1", 10),
+        "examples": _examples_json(analysis, timeframe, 10),
         "examplesRaw": {
             "rose": [{"at": e.at, "outcome": e.outcome} for e in rose],
             "fell": [{"at": e.at, "outcome": e.outcome} for e in fell],
@@ -255,13 +275,80 @@ def main() -> None:
         # 화면이 실제로 받는 것은 이 통짜 JSON이다.
         "analysis": _analysis_json(analysis),
     }
-    (OUT / "full.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    # ------------------------------------- 하한 거르기(PAA) 경로 대조
-    #
-    # 구간이 MIN_CANDIDATES(2만)보다 많아야 그 경로를 탄다. 거기서 버려지는
-    # 후보가 정말 '확실히 먼' 것들뿐인지는 전수 계산과 대조해야 알 수 있다.
-    # 종가만 있으면 되므로 봉 전체를 저장하지 않는다.
+
+#: 봉 간격 셋을 한꺼번에 볼 때 쓸 길이. 이론 성적을 추려내지 않으려면
+#: 볼 시점이 ALL_POINTS보다 적어야 하는데, 그건 어차피 만족한다.
+MANY_BARS = 900
+MANY_SIMILARITY = 0.5
+
+
+def build_many() -> dict:
+    """봉 간격 셋을 한꺼번에.
+
+    왜 따로 두는가 — full.json은 1분봉 하나뿐이라 **봉 간격끼리 비교하는
+    코드가 한 번도 안 돌아간다.** 다우의 '상호 확인'이 대표적이다. 그건
+    1·3·5분봉이 서로 같은 말을 하는지 세는 것이라, 간격이 하나면 셀 것이
+    없어서 통째로 검증 밖에 있었다.
+    """
+    market, length = "KRW-ETH", 20
+    fee, slippage = 0.0005, 0.0002
+    cost = round_trip_cost(fee, slippage)
+
+    plan = (
+        ("minute1", 1, 21, 4_100_000.0),
+        ("minute3", 3, 22, 4_100_000.0),
+        ("minute5", 5, 23, 4_100_000.0),
+    )
+    series_by: dict[str, Series] = {}
+    parts: dict[str, dict] = {}
+    candles_by: dict[str, list] = {}
+    for timeframe, step_minutes, seed, price in plan:
+        series, part = one_timeframe(
+            market, timeframe, MANY_BARS, seed, start_price=price,
+            step_minutes=step_minutes, length=length, similarity=MANY_SIMILARITY,
+            fee=fee, slippage=slippage,
+        )
+        series_by[timeframe] = series
+        parts[timeframe] = part
+        candles_by[timeframe] = part["candles"]
+
+    analysis = Analysis(
+        market=market, cost=cost, similarity=MANY_SIMILARITY, length=length,
+        series=series_by,
+        odds=[row for part in parts.values() for row in part["odds"]],
+        matches={tf: p["matches"] for tf, p in parts.items() if p["matches"] is not None},
+        readings={tf: p["readings"] for tf, p in parts.items()},
+        scores={tf: p["scores"] for tf, p in parts.items()},
+        levels={tf: p["levels"] for tf, p in parts.items()},
+        fibonacci={tf: p["fibonacci"] for tf, p in parts.items()},
+        projection={tf: p["projection"] for tf, p in parts.items() if p["projection"] is not None},
+        missing=(),
+        updated_at="00:00:00",
+    )
+    out = _analysis_json(analysis)
+    if out["theories"]["confirmation"]["says"] is None:
+        raise SystemExit("상호 확인이 안 나왔습니다 — 정답지로 쓸 수 없습니다.")
+    return {
+        "note": "tools/goldens.py가 만든 파일입니다. 손으로 고치지 마세요.",
+        "market": market,
+        "length": length,
+        "similarity": MANY_SIMILARITY,
+        "fee": fee,
+        "slippage": slippage,
+        "points": ALL_POINTS,
+        "candles": candles_by,
+        "analysis": out,
+    }
+
+
+def build_paa() -> dict:
+    """하한 거르기(PAA) 경로 대조.
+
+    구간이 MIN_CANDIDATES(2만)보다 많아야 그 경로를 탄다. 거기서 버려지는
+    후보가 정말 '확실히 먼' 것들뿐인지는 전수 계산과 대조해야 알 수 있다.
+    종가만 있으면 되므로 봉 전체를 저장하지 않는다.
+    """
     big = make_candles(MIN_CANDIDATES + 5_000, seed=11, start_price=3_100.0)
     closes = np.array([c.close for c in big])
     within = {}
@@ -275,23 +362,108 @@ def main() -> None:
             "positions": [int(v) for v in positions],
             "distances": [float(v) for v in distances],
         }
-    (OUT / "paa.json").write_text(
-        json.dumps({
-            "note": "tools/goldens.py가 만든 파일입니다. 손으로 고치지 마세요.",
-            "closes": closes.tolist(),
-            "within": within,
-        }, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    return {
+        "note": "tools/goldens.py가 만든 파일입니다. 손으로 고치지 마세요.",
+        "closes": closes.tolist(),
+        "within": within,
+    }
 
-    print(f"full.json  {(OUT / 'full.json').stat().st_size:>10,} 바이트  (봉 {BARS}개)")
-    print(f"paa.json   {(OUT / 'paa.json').stat().st_size:>10,} 바이트  (종가 {closes.size}개)")
-    print(f"닮은 과거 {len(matches.ends)}개 · 확률 {len(analysis.odds)}줄 · "
-          f"이론 성적 {len(scores)}개 · 예상 표본 {forward.samples}개")
-    print(f"판정: {_analysis_json(analysis)['verdict']['headline']}")
-    for case in payload["verdictCases"]:
+
+FILES = {"full.json": build_full, "many.json": build_many, "paa.json": build_paa}
+
+
+# --------------------------------------------------------------- 대조
+#
+# **바이트가 같기를 요구하면 안 된다.**
+#
+# 처음에는 정답지를 다시 뽑아 `git diff`로 봤는데, numpy 판이 다르면
+# (내 환경 2.4.6, CI 2.5.2) 마지막 자릿수가 달라져서 파일이 매번 바뀐다.
+# 실제로 CI가 그것 때문에 빨간불이 났다 — 계산이 갈린 게 아니라 빌드가
+# 다른 것뿐인데.
+#
+# 그래서 값으로 비교한다. 정수·참거짓·글자는 정확히 같아야 하고(계산이
+# 갈리면 여기가 먼저 움직인다 — 이론이 방향을 말한 횟수 같은 것들),
+# 소수는 여유를 둔다. 진짜로 식이 바뀌면 그 여유를 훌쩍 넘는다.
+
+#: 소수에 둘 상대 여유. numpy 판 차이는 1e-12 언저리이고, 식이 바뀌면
+#: 보통 1e-3 이상 움직인다. 그 사이면 어디를 잡아도 되지만 넉넉히 둔다.
+DRIFT = 1e-6
+
+
+def differences(fresh: object, saved: object, path: str = "") -> list[str]:
+    """값이 갈린 자리를 전부 찾아 경로와 함께 돌려준다."""
+    if isinstance(fresh, bool) or isinstance(saved, bool):
+        return [] if fresh == saved else [f"{path}: {fresh} ≠ {saved}"]
+    if isinstance(fresh, (int, float)) and isinstance(saved, (int, float)):
+        if isinstance(fresh, int) and isinstance(saved, int):
+            return [] if fresh == saved else [f"{path}: {fresh} ≠ {saved}"]
+        gap = abs(float(fresh) - float(saved))
+        allowed = DRIFT * max(1.0, abs(float(fresh)), abs(float(saved)))
+        return [] if gap <= allowed else [f"{path}: {fresh} ≠ {saved} (차이 {gap})"]
+    if isinstance(fresh, dict) and isinstance(saved, dict):
+        if fresh.keys() != saved.keys():
+            return [f"{path}: 키가 다릅니다 {sorted(fresh)} ≠ {sorted(saved)}"]
+        out = []
+        for key in fresh:
+            out += differences(fresh[key], saved[key], f"{path}.{key}" if path else str(key))
+        return out
+    if isinstance(fresh, list) and isinstance(saved, list):
+        if len(fresh) != len(saved):
+            return [f"{path}: 길이 {len(fresh)} ≠ {len(saved)}"]
+        out = []
+        for i, (a, b) in enumerate(zip(fresh, saved, strict=True)):
+            out += differences(a, b, f"{path}[{i}]")
+        return out
+    return [] if fresh == saved else [f"{path}: {fresh!r} ≠ {saved!r}"]
+
+
+def check() -> int:
+    """지금 파이썬이 커밋된 정답지와 같은 답을 내는가."""
+    problems = []
+    for name, build in FILES.items():
+        path = OUT / name
+        if not path.is_file():
+            problems.append(f"{name}: 파일이 없습니다 — python3 tools/goldens.py 를 돌리세요")
+            continue
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        found = differences(json.loads(json.dumps(build())), saved, name)
+        if found:
+            problems.append(f"{name}: {len(found)}군데가 다릅니다")
+            problems += [f"    {line}" for line in found[:10]]
+            if len(found) > 10:
+                problems.append(f"    … 그 밖에 {len(found) - 10}군데")
+        else:
+            print(f"  {name}: 같습니다")
+
+    if problems:
+        print("\n정답지와 지금 계산이 갈렸습니다:")
+        for line in problems:
+            print(line)
+        print("\n계산을 일부러 고치셨다면 python3 tools/goldens.py 로 정답지를 다시 뽑으세요.")
+        return 1
+    print("정답지가 지금 계산과 맞습니다.")
+    return 0
+
+
+def write() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    for name, build in FILES.items():
+        payload = build()
+        (OUT / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        print(f"{name:<12} {(OUT / name).stat().st_size:>10,} 바이트")
+
+    full = json.loads((OUT / "full.json").read_text(encoding="utf-8"))
+    many = json.loads((OUT / "many.json").read_text(encoding="utf-8"))
+    print(f"full: 닮은 과거 {len(full['matches']['ends'])}개 · "
+          f"확률 {len(full['analysis']['odds'])}줄 · "
+          f"판정 '{full['analysis']['verdict']['headline']}'")
+    for case in full["verdictCases"]:
         print(f"  판정 사례 {case['name']}: {case['verdict']['headline']}")
+    theories = many["analysis"]["theories"]
+    print(f"many: 봉 간격 {len([k for k in theories if k != 'confirmation'])}종 · "
+          f"예상 그림 {len(many['analysis']['projection'])}개")
+    print(f"  상호 확인: {theories['confirmation']['says']} — {theories['confirmation']['detail']}")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(check() if "--check" in sys.argv else (write() or 0))

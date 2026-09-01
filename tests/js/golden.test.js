@@ -160,6 +160,42 @@ test('화면에 넘기는 결과 전체가 같다', () => {
   });
 });
 
+test('봉 간격 셋을 한꺼번에 봐도 같다', () => {
+  // full.json은 1분봉 하나뿐이라 **봉 간격끼리 비교하는 코드가 한 번도
+  // 안 돌아간다.** 다우의 '상호 확인'이 그렇다 — 1·3·5분봉이 서로 같은
+  // 말을 하는지 세는 것이라, 간격이 하나면 셀 것이 없어 검증 밖에 있었다.
+  const many = load('many.json');
+  const bundle = {};
+  for (const [timeframe, candles] of Object.entries(many.candles)) {
+    bundle[timeframe] = Series.fromCandles(many.market, timeframe, candles);
+  }
+  assert.equal(Object.keys(bundle).length, 3, '봉 간격 셋이어야 의미가 있습니다');
+
+  const analysis = analyse(many.market, bundle, {
+    similarity: many.similarity,
+    fee: many.fee,
+    slippage: many.slippage,
+    length: many.length,
+    points: many.points,
+    updatedAt: '00:00:00',
+  });
+  const got = analysisJson(analysis);
+
+  // 이 정답지가 실제로 상호 확인을 거쳤는지부터 확인한다. 안 거쳤으면
+  // 통과해도 아무것도 검증하지 않은 것이다.
+  assert.ok(
+    many.analysis.theories.confirmation.detail.length > 3,
+    '상호 확인이 계산되지 않은 정답지입니다',
+  );
+  same(got, many.analysis, {
+    path: '',
+    absolute: (path) => {
+      if (/^projection\.[^.]+\.spread$/.test(path)) return 2 * ROUNDED_6;
+      return /^projection\./.test(path) ? ROUNDED_6 : null;
+    },
+  });
+});
+
 test('사례 목록도 같다', () => {
   const analysis = analyse(full.market, { minute1: series }, {
     similarity: full.similarity,

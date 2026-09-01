@@ -37,20 +37,27 @@ export async function update(store, market, timeframe, wanted, options = {}) {
   const have = await store.count(market, timeframe);
   const span = await store.span(market, timeframe);
 
+  // 받는 족족 저장한다. 받은 것을 다 모아 뒀다가 마지막에 한 번에 넣으면
+  // (1) 8년치 420만 개가 메모리에 쌓여 아이패드에서 브라우저가 죽고
+  // (2) 중간에 끊기면 그때까지 받은 게 전부 날아간다.
+  //
+  // **새로 늘어난 개수만 센다.** 받은 개수를 세면 꼬리를 다시 받은 것까지
+  // 세어서, "300개 받았다"고 해 놓고 캐시는 그대로인 일이 생긴다.
+  let saved = 0;
   const save = async (candles) => {
-    if (candles.length) await store.put(market, timeframe, step, candles);
+    if (!candles.length) return;
+    saved += await store.put(market, timeframe, step, candles);
   };
 
   // 1) 아무것도 없다 — 처음부터
   if (!span || have === 0) {
-    const fresh = await client.collect(market, timeframe, wanted, {
-      onProgress, shouldStop, onBatch: null,
+    await client.collect(market, timeframe, wanted, {
+      onProgress, shouldStop, onBatch: save, retain: false,
     });
-    await save(fresh);
-    return fresh.length;
+    return saved;
   }
 
-  const [firstTs, lastTs] = span;
+  const [, lastTs] = span;
 
   // 2) 뒤쪽(새로 생긴 봉)을 먼저 채운다. 이게 매번 일어나는 일이다.
   //
@@ -62,38 +69,48 @@ export async function update(store, market, timeframe, wanted, options = {}) {
   const missing = Math.min(
     wanted, Math.max(0, Math.ceil((now - lastTs) / step)) + REFRESH_TAIL,
   );
-  let got = 0;
   if (missing > 0) {
-    const tail = await client.collect(market, timeframe, missing, {
-      stopAt: lastTs - step * REFRESH_TAIL, onProgress, shouldStop,
+    await client.collect(market, timeframe, missing, {
+      stopAt: lastTs - step * REFRESH_TAIL,
+      onProgress,
+      shouldStop,
+      onBatch: save,
+      retain: false,
     });
-    await save(tail);
-    got += tail.length;
   }
 
   // 3) 더 과거가 필요하면 가진 것보다 **아래로만** 내려간다.
+  //
+  // 여기서 기준을 **다시 읽어야 한다.** 2번이 방금 앞쪽으로 봉을 붙였으므로
+  // 처음에 읽어둔 firstTs는 이미 낡았다. 낡은 값으로 내려가면 2번이 방금
+  // 받은 구간을 한 쪽 더 받고, 그 중복까지 개수로 세는 바람에 목표치를
+  // 못 채우고 멈춘다 — 실제로 500개를 요청했는데 400개에서 끝났다.
+  const filled = await store.span(market, timeframe);
   const total = await store.count(market, timeframe);
-  if (total < wanted) {
-    const older = await client.collect(market, timeframe, wanted - total, {
-      end: firstTs - step,
-      onProgress: onProgress
-        ? (done, want) => onProgress(total + done, wanted)
-        : null,
+  if (filled && total < wanted) {
+    await client.collect(market, timeframe, wanted - total, {
+      end: filled[0] - step,
+      onProgress: onProgress ? (done) => onProgress(total + done, wanted) : null,
       shouldStop,
-      // 오래 걸리는 수집이다. 페이지마다 저장해 두면 중간에 끊겨도
-      // 받은 만큼은 남는다.
-      onBatch: async (batch) => { await save(batch); },
+      onBatch: save,
+      retain: false,
     });
-    await save(older);
-    got += older.length;
   }
-  return got;
+  return saved;
 }
 
-/** 캐시에서 읽어 계산에 쓸 모양으로 만든다. */
+/**
+ * 캐시에서 읽어 계산에 쓸 모양으로 만든다.
+ *
+ * 봉 하나마다 객체를 만들지 않는다 — 8년치면 그것만으로 브라우저가 죽는다.
+ * 저장된 배열을 곧장 잘라 붙인다.
+ */
 export async function loadSeries(store, market, timeframe, wanted) {
-  const candles = await store.loadTail(market, timeframe, wanted);
-  return Series.fromCandles(market, timeframe, candles);
+  const columns = await store.loadTailColumns(market, timeframe, wanted);
+  return new Series(
+    market, timeframe,
+    columns.ts, columns.open, columns.high, columns.low, columns.close, columns.volume,
+  );
 }
 
 /** 화면 맨 위 요약에 쓸 정보. 계산 없이 캐시 상태만. */

@@ -20,13 +20,36 @@ export const DEFAULT_COUNT = { minute1: 43200, minute3: 14400, minute5: 8640 };
 /** 1분봉 개수를 기준으로 각 간격이 몇 분의 1인지. */
 export const RATIO = { minute1: 1, minute3: 3, minute5: 5 };
 
-/** 얼마나 과거까지 볼지 — 화면의 선택지. */
+/**
+ * 브라우저에서 한 번에 다룰 1분봉 개수의 **상한**.
+ *
+ * 왜 두는가 — 파이썬 판에는 8년(420만 봉) 선택지가 있다. 그건 PC에서
+ * 도니까 되는 것이고, 브라우저에서 같은 걸 하면 이렇게 된다.
+ *
+ *   · 봉 하나에 숫자 여섯 개 × 8바이트 = 420만 봉이면 배열만 202MB
+ *   · 3분봉·5분봉까지 합치면 270MB, 여기에 닮은 과거를 찾을 때 쓰는
+ *     누적합 배열이 67MB 더 붙는다
+ *   · 아이패드 사파리는 그 전에 탭을 죽인다
+ *
+ * 죽는 단추를 화면에 두는 것보다 없는 게 낫다. 1년(52만 봉)이면 배열이
+ * 다 합쳐 40MB 남짓이라 여유가 있다. 더 긴 과거가 필요하면 파이썬 판에
+ * 그대로 있고, README에 그렇게 적어 두었다.
+ */
+export const MAX_BARS = 525600;
+
+/** 얼마나 과거까지 볼지 — 화면의 선택지. MAX_BARS를 넘는 것은 두지 않는다. */
 export const PERIODS = [
   { label: '30일', count: 43200 },
   { label: '90일', count: 129600 },
   { label: '1년', count: 525600 },
-  { label: '8년', count: 4204800 },
-];
+].filter((p) => p.count <= MAX_BARS);
+
+/** 화면이 보낸 값이 무엇이든 상한 안으로 눌러 준다. */
+export function withinLimit(count) {
+  const asked = Number(count);
+  if (!Number.isFinite(asked) || asked <= 0) return PERIODS[0].count;
+  return Math.min(Math.floor(asked), MAX_BARS);
+}
 
 /**
  * 예상 앞에 붙일 **실제 봉** 개수. 지나온 길이 없으면 그림이 허공에서
@@ -329,7 +352,21 @@ export function examplesJson(analysis, timeframe, horizon, count = 3) {
 
   const matches = analysis.matches[timeframe];
   if (!matches) {
-    return { timeframe, rose: [], fell: [], query: [], horizon };
+    // 칸을 다 채워 돌려준다. 예전 파이썬 판은 여기서 절반만 채웠는데,
+    // 그러면 화면이 "undefined · 직전 undefined개 · 왕복 비용 NaN%"를
+    // 그대로 찍는다. 지금은 닿을 수 없는 갈래지만, 닿았을 때 화면이
+    // 깨져 보이면 어디가 문제인지 알아볼 수가 없다.
+    return {
+      timeframe,
+      timeframeLabel: timeframeLabel(timeframe),
+      length: analysis.length,
+      horizon,
+      cost: analysis.cost,
+      query: [],
+      queryAt: series.length ? series.kstAt(series.length - 1) : '',
+      rose: [],
+      fell: [],
+    };
   }
   const { rose, fell } = examplesFor(series, matches, horizon, { cost: analysis.cost, count });
   const pack = (example) => ({

@@ -6,7 +6,7 @@
 // 생기지 않는다.
 
 import { MARKETS, marketLabel } from './core/models.js';
-import { PERIODS } from './core/analysis.js';
+import { MAX_BARS, PERIODS } from './core/analysis.js';
 import { UpbitClient } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
@@ -28,11 +28,26 @@ let theoryPick = null;
 // 있으므로(core/data.js의 onBatch) 잃는 게 없다.
 let worker = null;
 
+/** 워커가 지금 결과를 들고 있는가. 멈추기를 누르면 워커째 사라진다. */
+let workerHasResult = false;
+
 function spawn() {
-  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  // 모듈 워커를 못 만드는 브라우저가 있다(사파리 15 미만). 그때 그냥
+  // 터지면 화면이 아무 말도 없이 멈춘 것처럼 보이므로, 무엇 때문인지
+  // 적어 준다 — 고칠 수 있는 문제이기 때문이다(브라우저를 올리면 된다).
+  try {
+    worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  } catch {
+    worker = null;
+    finish();
+    showError('이 브라우저에서는 계산을 시작할 수 없습니다. '
+      + '브라우저를 최신으로 올리거나 다른 브라우저에서 열어 주세요.');
+    return null;
+  }
   worker.onmessage = (event) => handle(event.data ?? {});
   worker.onerror = (event) => {
     event.preventDefault();
+    workerHasResult = false;
     finish();
     showError(`계산이 실패했습니다: ${event.message || '알 수 없는 오류'}`);
   };
@@ -41,6 +56,7 @@ function spawn() {
 
 function send(message) {
   if (!worker) spawn();
+  if (!worker) return;
   worker.postMessage(message);
 }
 
@@ -68,6 +84,7 @@ function handle(message) {
         ? '받아둔 시세로 계산했습니다 (새 시세는 못 받았습니다)'
         : '계산을 마쳤습니다';
       lastAnalysis = message.analysis;
+      workerHasResult = true;
       selected = null;
       render(message.analysis);
       break;
@@ -75,6 +92,7 @@ function handle(message) {
       drawExamples(message.examples, lastAnalysis);
       break;
     case 'error':
+      workerHasResult = false;
       finish();
       reportWorkerError(message);
       break;
@@ -188,6 +206,7 @@ async function pickCoin(code) {
   // 종목마다 시세도 결과도 따로다. 남아 있는 표를 그대로 두면
   // 비트코인 확률을 솔라나 것으로 읽게 된다.
   lastAnalysis = null;
+  workerHasResult = false;
   selected = null;
   aheadPick = null;
   theoryPick = null;
@@ -434,6 +453,19 @@ function markSelected() {
 function select(timeframe, horizon) {
   selected = { timeframe, horizon };
   markSelected();
+  // 멈추기를 누르면 워커를 통째로 끝낸다. 그때 표는 그대로 남아 있지만
+  // 사례를 그릴 재료(찾아둔 과거 구간)는 워커와 함께 사라졌다. 그냥
+  // 아무 일도 안 일어나면 사용자는 눌러도 반응이 없다고 여긴다.
+  if (!workerHasResult) {
+    $('examples-panel').hidden = false;
+    $('examples-title').textContent = '실제 사례';
+    $('examples-note').textContent = '';
+    for (const id of ['rose-list', 'fell-list']) {
+      $(id).innerHTML = '<p class="footnote">멈춘 뒤라 사례를 다시 그리려면 '
+        + '<b>받아둔 시세로 다시 계산</b>을 눌러 주세요.</p>';
+    }
+    return;
+  }
   send({ type: 'examples', timeframe, horizon });
 }
 
@@ -520,7 +552,7 @@ function settings(fresh) {
     type: 'run',
     market,
     fresh,
-    count: parseInt($('in-period').value, 10) || 43200,
+    count: Math.min(parseInt($('in-period').value, 10) || PERIODS[0].count, MAX_BARS),
     length: parseInt($('in-length').value, 10),
     similarity: parseFloat($('in-similarity').value),
     fee: parseFloat($('in-fee').value),
@@ -543,6 +575,7 @@ $('btn-stop').addEventListener('click', () => {
   // 워커를 끝낸다. 받던 중이었다면 그때까지 받은 것은 이미 저장돼 있다.
   if (worker) worker.terminate();
   worker = null;
+  workerHasResult = false;
   finish();
   $('job').textContent = '멈췄습니다';
   send({ type: 'summary', market });

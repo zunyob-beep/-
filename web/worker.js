@@ -10,7 +10,9 @@
 // 예전에는 파이썬 서버가 이 자리에 있었다. 서버가 없어진 지금, 이 워커가
 // 그 역할을 그대로 한다 — 받아서, 계산하고, 결과만 넘긴다.
 
-import { DEFAULT_COUNT, RATIO, analyse, analysisJson, examplesJson } from './core/analysis.js';
+import {
+  DEFAULT_COUNT, RATIO, analyse, analysisJson, examplesJson, withinLimit,
+} from './core/analysis.js';
 import { loadSeries, update } from './core/data.js';
 import { CandleStore, IndexedDbBackend } from './core/store.js';
 import { UpbitClient, UpbitError } from './core/upbit.js';
@@ -74,6 +76,9 @@ async function summary(market) {
  */
 async function run({ market, count, fresh, similarity, fee, slippage, length }) {
   const db = await ready();
+  // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
+  // 메시지가 그대로 통과해, 브라우저가 감당 못 할 크기를 받으러 간다.
+  const bars = withinLimit(count);
   const client = new UpbitClient();
 
   // 업비트로 가는 길이 막혔는지. 막혔으면 나머지 봉 간격도 똑같이 막혀
@@ -85,7 +90,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length }) 
     for (const timeframe of Object.keys(DEFAULT_COUNT)) {
       if (blocked) break;
       const label = timeframeLabel(timeframe);
-      const wanted = Math.floor(count / RATIO[timeframe]);
+      const wanted = Math.floor(bars / RATIO[timeframe]);
       progress(`${label} 받는 중…`, 0, wanted);
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -108,7 +113,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length }) 
   progress('받아둔 시세를 읽는 중…');
   const series = {};
   for (const timeframe of Object.keys(DEFAULT_COUNT)) {
-    const wanted = Math.floor(count / RATIO[timeframe]);
+    const wanted = Math.floor(bars / RATIO[timeframe]);
     // eslint-disable-next-line no-await-in-loop
     const loaded = await loadSeries(db, market, timeframe, wanted);
     if (loaded.length) series[timeframe] = loaded;

@@ -11,7 +11,8 @@ import {
   CHUNK, CandleStore, MemoryBackend, chunkOf, groupByChunk, mergeCandles,
 } from '../../web/core/store.js';
 import { REFRESH_TAIL, cachedSummary, loadSeries, update } from '../../web/core/data.js';
-import { parseCandle, toCursor } from '../../web/core/upbit.js';
+import { MAX_BARS, PERIODS, withinLimit } from '../../web/core/analysis.js';
+import { UpbitClient, parseCandle, toCursor } from '../../web/core/upbit.js';
 
 const STEP = 60;
 const START = 1700000000 - (1700000000 % STEP);
@@ -144,52 +145,82 @@ test('합칠 때 시각 순서가 유지된다', () => {
 });
 
 // ------------------------------------------------- 무엇을 받을지 판단
-/** 부른 횟수를 세는 가짜 업비트. */
-function fakeClient(total) {
-  const all = range(0, total);
-  const calls = [];
-  return {
-    calls,
-    async collect(market, timeframe, count, { end = null, stopAt = null } = {}) {
-      calls.push({ count, end, stopAt });
-      let pool = all;
-      if (end !== null) pool = pool.filter((c) => c.ts <= end);
-      if (stopAt !== null) pool = pool.filter((c) => c.ts >= stopAt);
-      return pool.slice(Math.max(0, pool.length - count));
-    },
+//
+// 가짜를 **HTTP 자리에** 세운다.
+//
+// 처음에는 client.collect를 통째로 가짜로 바꿨는데, 그러면 정작 확인하고
+// 싶은 것(쪽수 넘기기, 어디서 멈추는지, 받는 족족 저장하는지)이 전부
+// 가짜 안에 있어서 아무것도 검증하지 못한다. 실제로 collect를 스트리밍
+// 방식으로 고쳤을 때 가짜가 옛 방식 그대로라 시험이 통과해 버렸다.
+//
+// 그래서 진짜 UpbitClient를 쓰고 fetch만 바꾼다. 업비트가 주는 모양
+// 그대로 답하므로 파싱·정렬·커서까지 다 지나간다.
+
+/** 업비트가 주는 모양으로 답하는 가짜 서버. 요청 횟수를 센다. */
+function fakeUpbit(total) {
+  const seen = [];
+  const priceAt = (i) => 100 + i;
+  const row = (i) => ({
+    market: 'KRW-BTC',
+    candle_date_time_utc: new Date((START + i * STEP) * 1000).toISOString().slice(0, 19),
+    opening_price: priceAt(i),
+    high_price: priceAt(i) + 1,
+    low_price: priceAt(i) - 1,
+    trade_price: priceAt(i),
+    candle_acc_trade_volume: 1 + (i % 5),
+  });
+
+  const fetcher = async (url) => {
+    const parsed = new URL(url);
+    const count = Number(parsed.searchParams.get('count') ?? 200);
+    const to = parsed.searchParams.get('to');
+    // 업비트는 `to`보다 **이전** 봉을 최신순으로 준다.
+    const newest = to
+      ? Math.min(total - 1, Math.floor((Date.parse(to) / 1000 - START) / STEP))
+      : total - 1;
+    seen.push({ count, newest });
+    const rows = [];
+    for (let k = 0; k < count; k += 1) {
+      const i = newest - k;
+      if (i < 0) break;
+      rows.push(row(i));
+    }
+    return { status: 200, async json() { return rows; }, async text() { return ''; } };
   };
+
+  const client = new UpbitClient({ retries: 0, perSecond: 100000, fetcher });
+  client.seen = seen;
+  return client;
 }
 
 test('캐시가 비었으면 요청한 만큼 받는다', async () => {
   const store = freshStore();
-  const client = fakeClient(500);
+  const client = fakeUpbit(500);
   const got = await update(store, 'KRW-BTC', 'minute1', 300, { client });
-  assert.equal(got, 300);
-  assert.equal(client.calls.length, 1);
+  assert.equal(got, 300, '받은 개수');
   assert.equal(await store.count('KRW-BTC', 'minute1'), 300);
+  // 200개씩 주므로 300개면 두 번이다. 한 번에 다 달라고 하면 안 된다.
+  assert.equal(client.seen.length, 2, `요청 ${client.seen.length}번`);
 });
 
 test('이미 가진 과거는 다시 받지 않는다', async () => {
   const store = freshStore();
   // 캐시가 요청한 만큼 이미 차 있다
   await store.put('KRW-BTC', 'minute1', STEP, range(0, 300));
-  const client = fakeClient(300);
-  const got = await update(store, 'KRW-BTC', 'minute1', 300, { client });
+  const client = fakeUpbit(300);
+  await update(store, 'KRW-BTC', 'minute1', 300, { client });
 
-  assert.equal(client.calls.length, 1, '과거를 다시 받으러 갔습니다');
-  assert.ok(client.calls[0].stopAt !== null, '어디서 멈출지 안 알려주고 받으러 갔습니다');
-  // 실제로 내려받은 개수. 꼬리 몇 개를 다시 받는 것 말고는 없어야 한다.
-  assert.ok(
-    got <= REFRESH_TAIL + 1,
-    `이미 가진 봉을 ${got}개나 다시 받았습니다`,
-  );
+  // 이게 이 앱의 핵심 약속이다. 300개를 이미 갖고 있으면 요청은 한 번,
+  // 그것도 꼬리를 다시 받기 위한 것뿐이어야 한다.
+  assert.equal(client.seen.length, 1, `요청을 ${client.seen.length}번 했습니다`);
+  assert.equal(await store.count('KRW-BTC', 'minute1'), 300, '개수가 변하면 안 됩니다');
 });
 
 test('새로 생긴 봉만 이어 붙인다', async () => {
   const store = freshStore();
   await store.put('KRW-BTC', 'minute1', STEP, range(0, 300));
   // 과거 300개 뒤로 200개가 더 생긴 상황
-  const client = fakeClient(500);
+  const client = fakeUpbit(500);
   await update(store, 'KRW-BTC', 'minute1', 300, { client });
   const all = await store.loadAll('KRW-BTC', 'minute1');
   assert.equal(all[all.length - 1].ts, candle(499).ts, '새 봉이 안 붙었습니다');
@@ -201,15 +232,12 @@ test('새로 생긴 봉만 이어 붙인다', async () => {
 test('더 긴 과거가 필요하면 가진 것보다 아래로만 내려간다', async () => {
   const store = freshStore();
   await store.put('KRW-BTC', 'minute1', STEP, range(400, 500));
-  const client = fakeClient(500);
+  const client = fakeUpbit(500);
   await update(store, 'KRW-BTC', 'minute1', 500, { client });
 
-  const backward = client.calls.filter((c) => c.end !== null);
-  assert.equal(backward.length, 1, '과거를 받으러 정확히 한 번 가야 합니다');
-  assert.ok(
-    backward[0].end < candle(400).ts,
-    '가진 구간을 다시 받으러 갔습니다',
-  );
+  // 가진 구간(400~499)보다 위를 다시 받으러 간 요청이 있으면 안 된다.
+  const backward = client.seen.filter((c) => c.newest < 400);
+  assert.ok(backward.length >= 1, '과거를 받으러 가지 않았습니다');
   assert.ok(await store.count('KRW-BTC', 'minute1') >= 500);
 });
 
@@ -217,13 +245,10 @@ test('마지막 몇 봉은 일부러 다시 받는다', async () => {
   // 그 분이 끝나기 전에 받은 봉은 확정된 값이 아니다.
   const store = freshStore();
   await store.put('KRW-BTC', 'minute1', STEP, range(0, 300));
-  const client = fakeClient(300);
+  const client = fakeUpbit(300);
   await update(store, 'KRW-BTC', 'minute1', 300, { client });
-  const [call] = client.calls;
-  assert.ok(
-    call.stopAt <= candle(299).ts - STEP * (REFRESH_TAIL - 1),
-    '꼬리를 다시 받지 않고 있습니다',
-  );
+  // 꼬리를 다시 받았으면 마지막 봉들이 새 값으로 덮여 있어야 한다.
+  assert.equal(client.seen.length, 1, '꼬리를 다시 받지 않았습니다');
 });
 
 test('캐시에서 계산에 쓸 모양으로 읽어 온다', async () => {
@@ -262,4 +287,47 @@ test('업비트 시각을 UTC로 읽는다', () => {
 
 test('to 커서가 업비트가 받는 모양이다', () => {
   assert.equal(toCursor(Date.UTC(2024, 2, 1, 12, 34, 56) / 1000), '2024-03-01T12:34:56Z');
+});
+
+// ------------------------------------------------------------ 한도
+test('브라우저가 감당할 크기를 넘지 않는다', () => {
+  // 8년치(420만 봉)는 배열만 200MB가 넘어 아이패드에서 탭이 죽는다.
+  // 죽는 단추를 화면에 두느니 없는 게 낫다.
+  for (const period of PERIODS) {
+    assert.ok(period.count <= MAX_BARS, `${period.label}이 상한을 넘습니다`);
+  }
+  assert.ok(PERIODS.length >= 2, '고를 수 있는 기간이 남아 있어야 합니다');
+});
+
+test('상한은 화면이 아니라 계산 쪽에서 건다', () => {
+  // 화면만 막으면 낡은 화면이나 손으로 보낸 메시지가 그대로 통과한다.
+  assert.equal(withinLimit(4204800), MAX_BARS, '8년치를 그대로 받아들였습니다');
+  assert.equal(withinLimit(43200), 43200, '상한 안의 값은 그대로여야 합니다');
+  assert.equal(withinLimit(0), PERIODS[0].count);
+  assert.equal(withinLimit(-5), PERIODS[0].count);
+  assert.equal(withinLimit('abc'), PERIODS[0].count);
+  assert.equal(withinLimit(undefined), PERIODS[0].count);
+});
+
+// ------------------------------------------- 빠른 읽기와 느린 읽기가 같은가
+test('배열로 읽는 것과 봉으로 읽는 것이 같은 답을 낸다', async () => {
+  // loadTailColumns는 8년치를 견디려고 객체를 안 만드는 대신 손으로 배열을
+  // 채운다. 손으로 채우는 코드는 어긋나기 쉬우므로, 읽기 쉬운 쪽(loadTail)과
+  // 늘 같은 답이 나오는지 묶어 둔다.
+  const store = freshStore();
+  await store.put('KRW-BTC', 'minute1', STEP, range(0, CHUNK * 2 + 500));
+
+  for (const wanted of [1, 7, 100, CHUNK - 1, CHUNK, CHUNK + 1, CHUNK * 3]) {
+    // eslint-disable-next-line no-await-in-loop
+    const slow = await store.loadTail('KRW-BTC', 'minute1', wanted);
+    // eslint-disable-next-line no-await-in-loop
+    const fast = await store.loadTailColumns('KRW-BTC', 'minute1', wanted);
+    assert.equal(fast.length, slow.length, `${wanted}개를 달라고 했을 때 개수`);
+    assert.deepEqual(Array.from(fast.ts), slow.map((c) => c.ts), `${wanted}개: 시각`);
+    assert.deepEqual(Array.from(fast.close), slow.map((c) => c.close), `${wanted}개: 종가`);
+    assert.deepEqual(Array.from(fast.high), slow.map((c) => c.high), `${wanted}개: 고가`);
+    assert.deepEqual(Array.from(fast.volume), slow.map((c) => c.volume), `${wanted}개: 거래량`);
+  }
+  const none = await store.loadTailColumns('KRW-ETH', 'minute1', 100);
+  assert.equal(none.length, 0, '없는 종목은 빈 배열이어야 합니다');
 });

@@ -67,12 +67,14 @@ jobs:
         # 정답지(tests/js/goldens)는 파이썬이 만든다. 파이썬 계산을 고치고
         # 정답지를 다시 안 뽑으면, 자바스크립트는 **옛날 파이썬**과 대조하며
         # 계속 통과한다. 그 상태로 몇 주가 지나면 어디서 갈렸는지 못 찾는다.
+        #
+        # 값으로 비교한다. 처음에는 다시 뽑아 git diff로 봤는데, numpy 판이
+        # 다르면(여기 2.5.2, 내 환경 2.4.6) 마지막 자릿수가 달라져 매번
+        # 빨간불이 났다 — 계산이 갈린 게 아니라 빌드가 다른 것뿐인데.
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          python3 tools/goldens.py
-          git diff --exit-code --stat tests/js/goldens \
-            || (echo "::error::정답지가 낡았습니다. python3 tools/goldens.py 를 돌리고 커밋하세요." && exit 1)
+          python3 tools/goldens.py --check
 
   lint:
     name: 린트
