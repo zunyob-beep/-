@@ -81,7 +81,9 @@ function handle(message) {
       if (!message.stale) finish();
       // 막혔으면 **묻지 말고 바로 알아본다.** 사용자가 진단 단추를 눌러
       // 결과를 옮겨 적는 왕복 자체가 비용이다. 한 번만 돈다.
-      if (!diagRan && ['stalled', 'blocked', 'empty'].includes(message.kind)) runDiagnosis();
+      if (!diagRan && ['stalled', 'blocked', 'empty', 'throttled'].includes(message.kind)) {
+        runDiagnosis();
+      }
       break;
     case 'done':
       finish();
@@ -179,6 +181,13 @@ function setBlocked(kind) {
       <b>얼마나 과거까지</b>를 줄이면 덜 생깁니다.</span>`,
     server: `<b>업비트 쪽에서 오류가 왔습니다.</b>
       우리가 고칠 수 있는 문제가 아닙니다. 잠시 뒤에 다시 눌러 주세요.`,
+    throttled: `<b>업비트가 지금 우리 요청을 막고 있습니다.</b>
+      업비트까지는 <b>갔고 답도 왔습니다</b>. 다만 그 답에 브라우저가 요구하는
+      허용 표시가 없어서 읽을 수가 없습니다 — 거절당했을 때 그렇습니다.
+      <span class="dim">요청이 잦아서 잠시 막힌 것일 가능성이 큽니다.
+      <b>10분쯤 뒤에 다시</b> 눌러 주세요. 받아둔 만큼은 그대로 있고, 다시 누르면
+      이어서 받습니다. 휴대폰 데이터(5G)는 여러 사람이 한 주소를 나눠 쓰기 때문에
+      더 자주 걸립니다 — <b>와이파이에서 해 보시면</b> 달라질 수 있습니다.</span>`,
     empty: `<b>업비트가 답은 했는데 과거 봉을 주지 않았습니다.</b>
       길은 뚫려 있고 지금 시세도 받아집니다. 과거를 달라는 요청에만
       빈 답이 옵니다 — 보내는 방법을 아홉 가지로 바꿔 가며 다 시도했습니다.
@@ -191,7 +200,8 @@ function setBlocked(kind) {
 }
 
 function reportWorkerError(message) {
-  if (['offline', 'blocked', 'stalled', 'rate', 'server', 'empty'].includes(message.kind)) {
+  if (['offline', 'blocked', 'stalled', 'rate', 'server', 'empty', 'throttled']
+    .includes(message.kind)) {
     setBlocked(message.kind);
     showError('');
     return;
@@ -253,9 +263,8 @@ function showPeriodNote() {
   // 처음 받을 때 얼마나 걸릴지 미리 말해 준다. 4년치는 1만 6천 번을
   // 받아야 해서 한 시간 가까이 걸린다 — 눌러 놓고 기다리다 포기하지 않도록.
   const count = parseInt($('in-period').value, 10) || 0;
-  // 1·3·5분봉을 다 받는다. 3분봉은 개수가 1/3, 5분봉은 1/5다.
-  const requests = Math.ceil(count / PAGE) + Math.ceil(count / 3 / PAGE)
-    + Math.ceil(count / 5 / PAGE);
+  // **1분봉만 받는다.** 3·5분봉은 그걸 묶어서 만드므로 요청이 안 든다.
+  const requests = Math.ceil(count / PAGE);
   const minutes = requests / PER_SECOND / 60;
   const guess = minutes < 1
     ? '1분 안'
@@ -354,7 +363,9 @@ function renderCached(cached) {
     <p class="keep"><b>한 번 받은 과거는 다시 받지 않습니다.</b>
       지나간 봉은 변하지 않으니 받아 둘 필요도 한 번뿐입니다. 이 기기에 저장돼 있어
       앱을 껐다 켜도, 중간에 끊겨도 그대로 남습니다 —
-      <b>다시 누르면 멈춘 자리에서 이어서</b> 받습니다.</p>
+      <b>다시 누르면 멈춘 자리에서 이어서</b> 받습니다.
+      <span class="dim">받는 건 1분봉 하나뿐입니다. 3분봉·5분봉은 그걸 묶어서
+      만들기 때문에 따로 받지 않습니다.</span></p>
     <div class="table-wrap"><table class="cached">
       <thead><tr><th>봉</th><th>개수</th><th>기간</th><th>언제부터 언제까지 (UTC)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
@@ -910,8 +921,27 @@ function conclude(done) {
   const withTo = done.filter((r) => r.label.includes('+ to'));
   const nocors = done.find((r) => r.label.includes('no-cors'));
 
+  // **no-cors 결과를 먼저 본다.** 이게 가장 강한 증거다.
+  //
+  // 처음에는 이 갈래를 맨 아래에 뒀는데, 그래서 실제로 틀린 말을 했다 —
+  // no-cors가 124ms 만에 성공했는데도 화면에는 "업비트에 아예 못 닿고
+  // 있습니다"라고 떴다. 닿았는데 못 닿았다고 한 것이다.
+  //
+  // no-cors가 되면 요청은 업비트까지 갔고 답도 왔다. 그런데 보통 요청이
+  // 전부 실패한다면, 그 답에 브라우저가 요구하는 허용 표시(CORS)가 없다는
+  // 뜻이다. 정상 응답에는 붙고 **거절 응답에는 안 붙는다** — 즉 지금
+  // 업비트가 우리 요청을 거절하고 있다.
+  if (nocors?.ok && !okOf(plain).length) {
+    return ['업비트가 지금 우리 요청을 막고 있습니다.',
+      '업비트까지는 갔고 답도 왔습니다(no-cors로는 됨). 다만 그 답에 브라우저가 '
+      + '요구하는 허용 표시가 없습니다 — 거절 응답일 때 그렇습니다. '
+      + '<b>요청이 잦아서 잠시 막힌 것</b>일 가능성이 큽니다. 10분쯤 뒤에 다시 눌러 주세요. '
+      + '휴대폰 데이터(5G)는 여러 사람이 한 주소를 나눠 쓰기 때문에 더 자주 걸립니다 — '
+      + '<b>와이파이에서 해 보시면</b> 달라질 수 있습니다.'];
+  }
   if (!okOf(plain).length) {
     return ['업비트에 아예 못 닿고 있습니다.', '과거뿐 아니라 지금 시세도 못 받습니다. '
+      + '요청이 업비트까지 가지도 못했습니다(no-cors도 실패). '
       + '망(회사·학교 와이파이, 일부 VPN)이 막고 있을 수 있습니다.'];
   }
   if (okOf(withTo).length === withTo.length) {

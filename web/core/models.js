@@ -172,3 +172,77 @@ export class Series {
     return found;
   }
 }
+
+/**
+ * 1분봉을 묶어 3분봉·5분봉을 만든다.
+ *
+ * **왜 이걸 하는가 — 요청 수를 줄이려고.**
+ *
+ * 지금까지는 1·3·5분봉을 각각 따로 받았다. 30일치면 216 + 72 + 43 = 331번을
+ * 부른다. 그런데 업비트의 3분봉은 1분봉 세 개를 묶은 것과 **정확히 같다.**
+ * 이미 받은 걸로 만들 수 있는 것을 다시 받고 있었던 셈이다.
+ *
+ * 1분봉만 받고 나머지를 여기서 만들면 216번으로 끝난다 — 35% 적다. 그리고
+ * 업비트가 우리를 막는 이유가 요청이 잦아서이므로, 이게 가장 큰 지렛대다.
+ *
+ * 묶는 방법은 봉의 정의 그대로다. 시가는 첫 봉의 시가, 종가는 마지막 봉의
+ * 종가, 고가·저가는 그 구간의 최고·최저, 거래량은 합.
+ *
+ * 경계는 시각으로 자른다(업비트와 같다 — 3분봉은 :00, :03, :06…에서 시작).
+ * **맨 앞의 잘린 묶음은 버린다.** 1분봉이 구간 중간부터 시작했다면 그
+ * 묶음에는 앞 몇 분이 빠져 있어서 시가와 고·저가가 틀리기 때문이다.
+ * 맨 뒤는 남긴다 — 지금 만들어지는 중인 봉이고, 업비트가 주는 것도 그렇다.
+ */
+export function aggregate(series, factor) {
+  const span = 60 * factor;
+  const n = series.length;
+  if (!n || factor <= 1) return series;
+
+  // 앞의 잘린 묶음을 건너뛴다.
+  let from = 0;
+  while (from < n && series.ts[from] % span !== 0) from += 1;
+  const usable = n - from;
+  if (usable <= 0) {
+    return new Series(series.market, `minute${factor}`, ...Array.from(
+      { length: 6 }, () => new Float64Array(0),
+    ));
+  }
+
+  const groups = Math.ceil(usable / factor);
+  const cols = {
+    ts: new Float64Array(groups),
+    open: new Float64Array(groups),
+    high: new Float64Array(groups),
+    low: new Float64Array(groups),
+    close: new Float64Array(groups),
+    volume: new Float64Array(groups),
+  };
+
+  let g = -1;
+  let bucket = null;
+  for (let i = from; i < n; i += 1) {
+    const at = Math.floor(series.ts[i] / span) * span;
+    if (at !== bucket) {
+      g += 1;
+      bucket = at;
+      cols.ts[g] = at;
+      cols.open[g] = series.open[i];
+      cols.high[g] = series.high[i];
+      cols.low[g] = series.low[i];
+      cols.volume[g] = 0;
+    }
+    if (series.high[i] > cols.high[g]) cols.high[g] = series.high[i];
+    if (series.low[i] < cols.low[g]) cols.low[g] = series.low[i];
+    cols.close[g] = series.close[i];
+    cols.volume[g] += series.volume[i];
+  }
+
+  // 봉이 끊긴 구간이 있으면 묶음 수가 예상보다 적다. 남는 자리를 잘라낸다.
+  const made = g + 1;
+  const cut = (a) => (made === groups ? a : a.subarray(0, made));
+  return new Series(
+    series.market, `minute${factor}`,
+    cut(cols.ts), cut(cols.open), cut(cols.high), cut(cols.low),
+    cut(cols.close), cut(cols.volume),
+  );
+}
