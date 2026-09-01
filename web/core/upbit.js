@@ -253,6 +253,8 @@ export class UpbitClient {
     this.climbWait = 0;
     /** 마지막 진단 결과. 실패마다 다시 물어보지 않으려고 잠깐 들고 있는다. */
     this.lastDiagnosis = null;
+    /** 막혀 있다고 확인된 시각. 이 뒤 얼마 동안은 굳이 두드리지 않는다. */
+    this.blockedAt = 0;
   }
 
   /** 더듬어 볼 조합. 표기 3가지 × 개수 3가지 = 9가지. */
@@ -288,7 +290,7 @@ export class UpbitClient {
    * `toSeconds`를 따로 받는 이유 — 표기를 바꿔 가며 다시 시도해야 하기
    * 때문이다. URL을 미리 만들어 두면 표기를 못 바꾼다.
    */
-  async get(path, params = {}, toSeconds = null) {
+  async get(path, params = {}, toSeconds = null, { retries = this.retries } = {}) {
     const wantsTo = toSeconds !== null;
     let last = null;
     let attempt = 0;   // 지연을 넣고 다시 해 본 횟수
@@ -342,7 +344,7 @@ export class UpbitClient {
             `업비트가 답은 했는데 봉을 하나도 주지 않았습니다 (${this.toStrategy}).`, 'empty',
           );
           if (this.planAt < this.toPlan.length - 1) { this.planAt += 1; continue; }
-          if (attempt >= this.retries) throw last;
+          if (attempt >= retries) throw last;
           await sleep(Math.min(2 ** attempt, 16) * 1000);
           attempt += 1;
           continue;
@@ -433,7 +435,7 @@ export class UpbitClient {
         }
       }
 
-      if (attempt >= this.retries) throw last;
+      if (attempt >= retries) throw last;
       await sleep(Math.min(2 ** attempt, 16) * 1000);
       attempt += 1;
     }
@@ -457,8 +459,11 @@ export class UpbitClient {
     if (this.lastDiagnosis && now - this.lastDiagnosis.at < DIAGNOSIS_TTL) {
       return this.lastDiagnosis.error;
     }
-    const remember = (error) => {
+    const remember = (error, blocked = false) => {
       this.lastDiagnosis = { at: Date.now(), error };
+      // 막혀 있다고 확인되면 그 시각을 남긴다. 그동안은 급하지 않은 요청
+      // (맨 위 시세 같은 것)을 아예 보내지 않는다 — 두드릴수록 나빠진다.
+      if (blocked) this.blockedAt = Date.now();
       return error;
     };
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -498,7 +503,7 @@ export class UpbitClient {
         + '브라우저가 그 답을 읽을 수 없습니다 — 거절당했을 때 그렇습니다. '
         + '요청이 잦아서 잠시 막힌 것일 수 있으니 10분쯤 뒤에 다시 눌러 주세요.',
         'throttled',
-      ));
+      ), true);
     }
 
     if (this.succeeded > 0) {
@@ -513,6 +518,16 @@ export class UpbitClient {
       '인터넷은 되는데 업비트에 닿지 못했습니다. 업비트가 잠깐 막혔거나 점검 중일 수 있습니다.',
       'blocked',
     ));
+  }
+
+  /**
+   * 지금 막혀 있다고 알고 있는가.
+   *
+   * 급하지 않은 요청은 이 동안 아예 보내지 않는다. 맨 위 시세 하나 때문에
+   * 막힌 업비트를 20초마다 두드리면 회복만 늦어진다.
+   */
+  knownBlocked(within = THROTTLE_PAUSE) {
+    return this.blockedAt > 0 && Date.now() - this.blockedAt < within;
   }
 
   /** 가장 평범한 요청(to도 없고 개수도 1개)이 되는가. */
@@ -558,7 +573,10 @@ export class UpbitClient {
    */
   async getTicker(markets) {
     const list = Array.isArray(markets) ? markets : [markets];
-    const rows = (await this.get('/v1/ticker', { markets: list.join(',') })) ?? [];
+    // **재시도하지 않는다.** 맨 위 숫자는 장식이라, 그것 하나 때문에 막혀
+    // 있는 업비트를 다섯 번 더 두드릴 이유가 없다. 그건 회복을 늦출 뿐이다.
+    const rows = (await this.get('/v1/ticker', { markets: list.join(',') }, null, { retries: 0 }))
+      ?? [];
     if (!rows.length) throw new UpbitError('현재가를 받지 못했습니다', 'unknown');
     return rows.map((row) => ({
       market: String(row.market),

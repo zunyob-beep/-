@@ -197,6 +197,32 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
 onmessage = async (event) => {
   const message = event.data ?? {};
   try {
+    // 맨 위 시세도 **여기를 거친다.**
+    //
+    // 예전에는 화면 쪽에 UpbitClient가 따로 있었다. 그러면 속도 제한기가
+    // 둘이 되어 서로를 모른다 — "초당 3회"가 사실이 아니게 된다. 게다가
+    // 5초마다 부르고 있어서, 아무것도 안 하고 앱만 켜 둬도 시간당 720번이
+    // 나갔다. **막혀 있는 동안에도 계속 두드려서 회복을 방해했다.**
+    //
+    // 업비트로 나가는 길을 하나로 모으면, 내려받기와 시세가 같은 줄을 서고
+    // 막힌 것도 한 곳에서 안다.
+    if (message.type === 'ticker') {
+      await ready();
+      // 막혀 있는 걸 이미 안다면 두드리지 않는다. 맨 위 숫자 하나 때문에
+      // 회복을 늦출 이유가 없다.
+      if (client.knownBlocked()) {
+        say({ type: 'ticker', market: message.market, rows: [] });
+        return;
+      }
+      try {
+        const rows = await client.getTicker(message.market);
+        say({ type: 'ticker', market: message.market, rows });
+      } catch {
+        // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다.
+        say({ type: 'ticker', market: message.market, rows: [] });
+      }
+      return;
+    }
     if (message.type === 'summary') {
       say({ type: 'summary', market: message.market, cached: await summary(message.market) });
       return;

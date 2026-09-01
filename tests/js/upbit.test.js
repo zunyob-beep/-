@@ -577,3 +577,35 @@ test('느려진 뒤에 통하면 표기가 아니라 속도가 문제였던 것�
   assert.equal(client.toFormat, 0, `표기 ${client.toFormat}에 정착했습니다`);
   assert.ok(client.toProven, '통하는 표기를 찾았다고 기록해야 합니다');
 });
+
+// ------------------------------------------------- 나가는 길은 하나여야 한다
+//
+// 계속 막힌 이유를 찾다가 나온 것이다. UpbitClient가 **두 개**였다 — 화면에
+// 하나(맨 위 시세용), 워커에 하나(내려받기용). 각자 자기 속도 제한기를 갖고
+// 서로를 몰랐다. 그래서 "초당 3회"는 사실이 아니었다.
+//
+// 게다가 시세를 5초마다 불렀다. 아무것도 안 하고 앱만 켜 둬도 **시간당
+// 720번**이 나갔고, 막혀 있는 동안에도 계속 두드려서 회복을 방해했다.
+
+test('업비트로 나가는 길은 워커 하나뿐이다', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
+  assert.ok(
+    !/new UpbitClient/.test(app),
+    '화면 쪽에 UpbitClient가 또 있습니다 — 속도 제한기가 둘이 되면 초당 회수를 못 지킵니다',
+  );
+
+  const worker = await readFile(new URL('../../web/worker.js', import.meta.url), 'utf8');
+  const made = worker.match(/new UpbitClient/g) ?? [];
+  assert.equal(made.length, 1, `워커가 UpbitClient를 ${made.length}개 만듭니다`);
+});
+
+test('맨 위 시세를 너무 자주 묻지 않는다', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
+  const every = app.match(/setInterval\(refreshTicker,\s*(\d+)\)/);
+  assert.ok(every, 'refreshTicker 주기를 못 찾았습니다');
+  const ms = Number(every[1]);
+  // 5초였을 때 시간당 720번이 나갔다. 맨 위 숫자에 그 해상도는 필요 없다.
+  assert.ok(ms >= 15000, `${ms / 1000}초마다 묻습니다 — 시간당 ${3600000 / ms}번입니다`);
+});
