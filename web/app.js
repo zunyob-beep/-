@@ -7,7 +7,9 @@
 
 import { MARKETS, marketLabel } from './core/models.js';
 import { MAX_BARS, PERIODS } from './core/analysis.js';
-import { PAGE, PER_SECOND, UpbitClient } from './core/upbit.js';
+import {
+  API_BASE, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS, UpbitClient,
+} from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
@@ -612,6 +614,7 @@ const runLive = () => run(true);
 
 $('btn-scan').addEventListener('click', () => run(false));
 $('btn-live').addEventListener('click', () => runLive());
+$('btn-diag').addEventListener('click', () => { runDiagnosis(); });
 
 $('btn-stop').addEventListener('click', () => {
   // 워커를 끝낸다. 받던 중이었다면 그때까지 받은 것은 이미 저장돼 있다.
@@ -799,6 +802,130 @@ function renderLevels(analysis) {
   const above = mixed.filter(([l]) => !now || l.price > now).map(([l, k]) => line(l, k));
   const below = mixed.filter(([l]) => now && l.price <= now).map(([l, k]) => line(l, k));
   $('levels-body').innerHTML = above.join('') + here + below.join('');
+}
+
+// ============================================================ 연결 진단
+//
+// 세 번 고쳤는데 세 번 다 같은 자리에서 멈췄다. 받은 개수가 201 → 263 → 297로
+// 늘긴 했지만, 늘어난 만큼이 정확히 '그 사이 흐른 시간'이었다. 즉 `to`가 붙은
+// 과거 요청은 **한 번도** 성공한 적이 없다.
+//
+// 문제는 브라우저가 실패 이유를 안 알려준다는 것이다. CORS로 막힌 것, 서버가
+// 400을 준 것, 인터넷이 끊긴 것이 전부 똑같이 `TypeError`로 온다. 그래서
+// 여기까지는 추측으로 고쳤고, 세 번 다 틀렸다.
+//
+// **추측을 그만두고 실제로 물어본다.** 아래는 사용자 기기에서 도는 작은
+// 실험이다. 한 번에 하나씩, 넉넉히 벌려서(속도를 원인에서 지운다) 보내고
+// 무엇이 되고 무엇이 안 되는지 그대로 적는다.
+//
+// 결정적인 것은 마지막의 `no-cors`다.
+//   · no-cors가 되는데 보통 요청이 안 된다 → 업비트는 **답했고**, 그 답에
+//     CORS 헤더가 없었던 것이다 (십중팔구 오류 응답)
+//   · no-cors도 안 된다 → 요청이 업비트에 **닿지도 못한** 것이다
+// 이 둘은 고치는 방법이 완전히 다르다.
+
+const DIAG_GAP = 1200;   // 넉넉히 벌린다. 속도를 원인 후보에서 지우기 위해서다.
+
+/** 한 번 물어보고, 무슨 일이 있었는지 그대로 적는다. */
+async function probe(label, url, init = {}) {
+  const started = Date.now();
+  try {
+    const response = await fetch(url, { cache: 'no-store', ...init });
+    const took = Date.now() - started;
+    if (init.mode === 'no-cors') {
+      // 내용은 못 읽는다(불투명 응답). 하지만 **닿았다는 것**은 알 수 있다.
+      return { label, ok: true, note: `닿았습니다 (내용은 못 읽음, ${took}ms)` };
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      return { label, ok: false, note: `HTTP ${response.status} — ${body.slice(0, 120)}` };
+    }
+    const rows = await response.json();
+    return {
+      label,
+      ok: true,
+      note: `${Array.isArray(rows) ? rows.length : '?'}개 받음 (${took}ms)`,
+    };
+  } catch (error) {
+    // 여기가 아무것도 안 알려주는 자리다. 그래도 이름과 문구는 브라우저마다
+    // 달라서(크롬 "Failed to fetch", 사파리 "Load failed") 단서가 된다.
+    return {
+      label,
+      ok: false,
+      note: `${error?.name ?? '오류'}: ${error?.message ?? error}`,
+    };
+  }
+}
+
+async function runDiagnosis() {
+  const box = $('diag');
+  const button = $('btn-diag');
+  button.disabled = true;
+  box.hidden = false;
+
+  const path = ENDPOINTS.minute1;
+  const at = Math.floor(Date.now() / 1000 / 60) * 60 - 3 * 3600;   // 3시간 전, 분 단위
+  const candles = (extra) => {
+    const url = new URL(API_BASE + path);
+    url.searchParams.set('market', market);
+    for (const [k, v] of Object.entries(extra)) url.searchParams.set(k, v);
+    return url.toString();
+  };
+  const withTo = candles({ count: 200, to: TO_FORMATS[0](at) });
+
+  const plan = [
+    ['현재가 (to 없음)', `${API_BASE}/v1/ticker?markets=${market}`, {}],
+    ['봉 1개 (to 없음)', candles({ count: 1 }), {}],
+    ['봉 200개 (to 없음)', candles({ count: 200 }), {}],
+    ['봉 200개 + to (…00Z)', withTo, {}],
+    ['봉 200개 + to (빈칸)', candles({ count: 200, to: TO_FORMATS[1](at) }), {}],
+    ['봉 200개 + to (+00:00)', candles({ count: 200, to: TO_FORMATS[2](at) }), {}],
+    ['봉 1개 + to', candles({ count: 1, to: TO_FORMATS[0](at) }), {}],
+    ['같은 주소를 no-cors로', withTo, { mode: 'no-cors' }],
+  ];
+
+  const done = [];
+  const draw = (running) => {
+    const rows = done.map((r) => `<tr>
+      <th>${r.label}</th>
+      <!-- 여기서 색은 상승·하락이 아니라 잘됨·안됨이다. up(빨강)을 쓰면
+           다 됐는데도 온통 빨개서 실패한 것처럼 읽힌다. -->
+      <td class="${r.ok ? 'pos' : 'neg'}">${r.ok ? '됨' : '안 됨'}</td>
+      <td class="dim">${r.note}</td></tr>`).join('');
+    box.innerHTML = `<div class="section-title">업비트 연결 진단
+        <span class="hint">한 번에 하나씩, ${DIAG_GAP}ms씩 벌려서 물어봅니다</span></div>
+      <div class="table-wrap"><table class="cached"><tbody>${rows}</tbody></table></div>
+      ${running
+    ? '<p class="note-line dim">물어보는 중…</p>'
+    : `<p class="note-line"><button type="button" id="btn-diag-copy" class="linky">결과
+         복사하기</button> <span class="dim">복사해서 그대로 보내 주시면 됩니다.</span></p>`}`;
+  };
+  draw(true);
+
+  for (const [label, url, init] of plan) {
+    // eslint-disable-next-line no-await-in-loop
+    done.push(await probe(label, url, init));
+    draw(true);
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => { setTimeout(r, DIAG_GAP); });
+  }
+  draw(false);
+  button.disabled = false;
+
+  $('btn-diag-copy').addEventListener('click', async () => {
+    const text = [
+      `기시감 연결 진단 (${new Date().toISOString()})`,
+      navigator.userAgent,
+      ...done.map((r) => `${r.ok ? '됨  ' : '안 됨'} | ${r.label} | ${r.note}`),
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      $('btn-diag-copy').textContent = '복사했습니다';
+    } catch {
+      // 클립보드를 막아둔 경우가 있다. 그때는 골라서 복사하실 수 있게 편다.
+      box.insertAdjacentHTML('beforeend', `<pre class="diag-text">${text}</pre>`);
+    }
+  });
 }
 
 // ============================================================ 차트 이론

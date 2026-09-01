@@ -82,6 +82,7 @@
           <input id="in-auto" type="checkbox">
           <span>1분마다 자동 갱신</span>
         </label>
+        <button type="button" id="btn-diag" class="linky">업비트 연결 진단</button>
         <span id="job" class="job"></span>
       </div>
       <div id="progress" class="progress" hidden><div id="progress-bar"></div></div>
@@ -110,6 +111,9 @@
       <span class="dim">계산은 전부 이 기기 안에서 일어납니다. 받아둔 시세도 여기에만
       저장되고, 어디로도 보내지 않습니다.</span>
     </section>
+
+    <!-- 연결 진단 -->
+    <section id="diag" class="panel" hidden></section>
 
     <!-- 데이터 범위 -->
     <section id="coverage" class="panel coverage" hidden></section>
