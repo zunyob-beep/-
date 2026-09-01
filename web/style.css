@@ -421,6 +421,13 @@ table.theories td.down { color: var(--down); }
 table.theories tr.quiet td { opacity: 0.6; }
 table.theories tr.real td.l b { color: var(--accent); }
 
+/* "다시 받지 않는다"는 약속. 이걸 못 믿으면 다시 누르기가 겁난다. */
+.keep {
+  margin: 0 0 14px; padding: 10px 12px; font-size: 12.5px; line-height: 1.75;
+  color: var(--text-2); background: var(--raised); border-left: 2px solid var(--accent);
+}
+.keep b { color: var(--text); }
+
 /* 진단이 스스로 내린 결론. 표보다 이게 먼저 읽혀야 한다. */
 .diag-said {
   margin: 0 0 14px; padding: 10px 12px; font-size: 13px; line-height: 1.75;
