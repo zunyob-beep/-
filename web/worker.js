@@ -24,8 +24,20 @@ const NETWORK = ['offline', 'blocked', 'stalled', 'rate', 'server'];
 let store = null;
 let analysis = null;   // 마지막으로 끝낸 계산. 사례를 볼 때마다 다시 찾지 않으려고 들고 있는다.
 
+/**
+ * 업비트로 가는 길은 **하나만 둔다.**
+ *
+ * 누를 때마다 새로 만들면 그때까지 배운 것을 전부 버린다 — 통하는 `to` 표기도,
+ * 막혀서 낮춰 둔 속도도. 그러면 막혔을 때 다시 눌러도 똑같은 속도로 똑같이
+ * 막힌다. 실제로 두 번 연속 같은 자리에서 멈췄다.
+ *
+ * 하나를 계속 쓰면 배운 것이 남아, 다시 누를 때마다 조금씩 더 잘 받는다.
+ */
+let client = null;
+
 async function ready() {
   if (!store) store = new CandleStore(await IndexedDbBackend.open());
+  if (!client) client = new UpbitClient();
   return store;
 }
 
@@ -79,7 +91,6 @@ async function run({ market, count, fresh, similarity, fee, slippage, length }) 
   // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
   // 메시지가 그대로 통과해, 브라우저가 감당 못 할 크기를 받으러 간다.
   const bars = withinLimit(count);
-  const client = new UpbitClient();
 
   // 업비트로 가는 길이 막혔는지. 막혔으면 나머지 봉 간격도 똑같이 막혀
   // 있으므로 더 시도하지 않는다 — 간격마다 재시도를 다 기다리면 아무

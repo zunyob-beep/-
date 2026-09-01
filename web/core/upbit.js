@@ -58,38 +58,71 @@ export class UpbitError extends Error {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/** `to` 표기를 처음부터 다시 훑어보는 횟수. */
+export const TO_SWEEPS = 1;
+
+/** 표기를 다시 훑기 전에 쉬는 시간. 한도에 걸린 것이라면 이 사이에 풀린다. */
+export const SWEEP_PAUSE = 2000;
+
+/** 아무리 느려져도 이보다 느려지지는 않는다 (초당 회수). */
+export const SLOWEST = 0.5;
+
 /**
- * 초당 N회 토큰 버킷.
+ * 요청을 **고르게 벌려서** 내보낸다.
  *
- * 1분봉 한 달치를 받으려면 200개씩 200번 넘게 요청해야 한다. 한도를
- * 넘기면 429가 오고, 그러면 수집이 중간에 끊긴다.
+ * 처음에는 '지난 1초에 N번 미만이면 통과'로 만들었다. 그건 초당 회수는
+ * 지키지만 **간격은 안 지킨다** — 창이 비어 있으면 5개가 한꺼번에 나가고
+ * 남은 시간을 쉰다. 평균은 초당 5회지만 순간 속도는 초당 100회다.
+ *
+ * 아이패드에서 실제로 이것 때문에 막혔다. 맨 위 시세와 첫 쪽은 받아지는데
+ * 그 뒤가 전부 실패했다. 한꺼번에 나간 쪽이 통째로 걸린 것이다. 그리고
+ * 브라우저는 그걸 `to` 표기 문제와 구별할 수 없게 알려준다(아래 참고).
+ *
+ * 이제 **다음 요청 시각을 미리 잡아 둔다.** 기다리기 전에 잡으므로, 여러
+ * 곳에서 동시에 불러도 서로 겹치지 않고 줄을 선다.
  */
 export class RateLimiter {
-  constructor(perSecond = 8) {
-    this.perSecond = Math.max(1, perSecond);
-    this.hits = [];
+  constructor(perSecond = PER_SECOND) {
+    this.perSecond = Math.max(SLOWEST, perSecond);
+    this.next = 0;
+  }
+
+  /** 요청 사이 최소 간격(밀리초). */
+  get gap() {
+    return 1000 / this.perSecond;
   }
 
   async acquire() {
-    for (;;) {
-      const now = Date.now();
-      while (this.hits.length && now - this.hits[0] >= 1000) this.hits.shift();
-      if (this.hits.length < this.perSecond) {
-        this.hits.push(now);
-        return;
-      }
-      const wait = 1000 - (now - this.hits[0]);
-      await new Promise((resolve) => { setTimeout(resolve, Math.max(wait, 10)); });
-    }
+    const now = Date.now();
+    const at = Math.max(now, this.next);
+    // **기다리기 전에** 자리를 잡는다. 기다린 뒤에 잡으면 동시에 들어온
+    // 요청들이 같은 자리를 잡고 함께 나간다 — 고치려던 그 문제가 된다.
+    this.next = at + this.gap;
+    if (at > now) await sleep(at - now);
+  }
+
+  /**
+   * 스스로 느려진다.
+   *
+   * 막힌 이유를 브라우저가 안 알려주므로, 막혔으면 일단 느려지고 본다.
+   * 한 번 느려지면 그 상태로 남는다 — 다시 빨라져 봐야 또 막힌다.
+   */
+  slowDown() {
+    this.perSecond = Math.max(SLOWEST, this.perSecond / 2);
+    return this.perSecond;
   }
 }
 
-const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-
 export class UpbitClient {
-  constructor({ base = API_BASE, retries = 4, perSecond = PER_SECOND, fetcher = null } = {}) {
+  constructor({
+    base = API_BASE, retries = 4, perSecond = PER_SECOND, fetcher = null,
+    sweepPause = SWEEP_PAUSE,
+  } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
+    this.sweepPause = sweepPause;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
@@ -106,65 +139,85 @@ export class UpbitClient {
    * 때문이다. URL을 미리 만들어 두면 표기를 못 바꾼다.
    */
   async get(path, params = {}, toSeconds = null) {
+    const wantsTo = toSeconds !== null;
     let last = null;
-    for (let attempt = 0; attempt <= this.retries; attempt += 1) {
+    let attempt = 0;   // 지연을 넣고 다시 해 본 횟수
+    let sweeps = 0;    // to 표기를 처음부터 다시 훑은 횟수
+
+    for (;;) {
       const url = new URL(this.base + path);
       for (const [key, value] of Object.entries(params)) {
         if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
       }
-      if (toSeconds !== null) url.searchParams.set('to', TO_FORMATS[this.toFormat](toSeconds));
-
-      // 표기를 아직 못 정했는데 to가 붙은 요청이 막혔다면, 재시도로
-      // 시간을 쓰기 전에 다른 표기부터 한 번씩 넣어 본다.
-      const canTryAnotherFormat = () => toSeconds !== null && !this.toProven
-        && this.toFormat < TO_FORMATS.length - 1;
+      if (wantsTo) url.searchParams.set('to', TO_FORMATS[this.toFormat](toSeconds));
 
       await this.limiter.acquire();
-      let response;
+      let response = null;
+      let threw = false;
       try {
         // 헤더를 하나도 붙이지 않는다. 붙이면 브라우저가 먼저 OPTIONS를
         // 보내는데(사전 요청), 그건 실패할 구멍을 하나 더 만드는 것이다.
         response = await this.fetch(url.toString(), { cache: 'no-store' });
       } catch {
-        last = await this.diagnose();
-        if (last.kind === 'offline') throw last;   // 재시도해도 소용없다
-        if (canTryAnotherFormat()) { this.toFormat += 1; attempt -= 1; continue; }
-        if (attempt >= this.retries) throw last;
-        await sleep(Math.min(2 ** attempt, 16) * 1000);
-        continue;
+        threw = true;
       }
 
-      if (response.status === 429) {
-        last = new UpbitError('업비트 요청 한도를 넘었습니다. 잠시 뒤 다시 시도합니다.', 'rate');
-        if (attempt >= this.retries) throw last;
-        await sleep(Math.min(2 ** attempt, 16) * 1000);
-        continue;
+      if (!threw && response.status < 400) {
+        try {
+          const payload = await response.json();
+          this.succeeded += 1;
+          // 이 표기로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
+          if (wantsTo) this.toProven = true;
+          return payload;
+        } catch {
+          throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
+        }
       }
-      if (response.status >= 500) {
+
+      if (threw) {
+        last = await this.diagnose();
+        if (last.kind === 'offline') throw last;   // 재시도해도 소용없다
+        // **여기가 핵심이다.** 브라우저는 한도 초과 응답(429)에 CORS 헤더가
+        // 없으면 상태 코드를 안 보여주고 그냥 예외를 던진다. 그래서 '막혔다'와
+        // '너무 빨랐다'가 이 자리에서 똑같이 생겼다. 구분할 수 없으니 **일단
+        // 느려지고 본다.** 느려져서 손해 보는 경우는 조금 오래 걸리는 것뿐이고,
+        // 안 느려져서 손해 보는 경우는 아예 못 받는 것이다.
+        this.limiter.slowDown();
+      } else if (response.status === 429) {
+        last = new UpbitError('업비트 요청 한도를 넘었습니다. 속도를 낮춰 다시 받습니다.', 'rate');
+        this.limiter.slowDown();
+      } else if (response.status >= 500) {
         last = new UpbitError(`업비트 서버 오류 ${response.status}`, 'server');
-        if (attempt >= this.retries) throw last;
-        await sleep(Math.min(2 ** attempt, 16) * 1000);
-        continue;
-      }
-      if (response.status >= 400) {
+      } else {
         const body = await response.text().catch(() => '');
         last = new UpbitError(
           `업비트가 요청을 거부했습니다 (${response.status}): ${body.slice(0, 200)}`, 'refused',
         );
-        if (canTryAnotherFormat()) { this.toFormat += 1; attempt -= 1; continue; }
-        throw last;
       }
-      try {
-        const payload = await response.json();
-        this.succeeded += 1;
-        // 이 표기로 실제로 받아 봤다. 이제부터는 이것만 쓴다.
-        if (toSeconds !== null) this.toProven = true;
-        return payload;
-      } catch {
-        throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
+
+      // to 표기를 아직 못 정했으면 다음 표기를 넣어 본다. 서버가 죽은
+      // 것(5xx)은 표기와 무관하므로 그때는 훑지 않는다.
+      if (wantsTo && !this.toProven && last.kind !== 'server') {
+        if (this.toFormat < TO_FORMATS.length - 1) {
+          this.toFormat += 1;
+          continue;
+        }
+        // 세 표기가 다 안 통했다. 여기서 '표기 문제'라고 결론 내리면 안 된다 —
+        // 너무 빨라서 셋 다 막힌 것일 수도 있다. 느려진 채로 한 번 더 훑어
+        // 본다. 이걸로 통하면 표기가 아니라 속도가 문제였던 것이다.
+        if (sweeps < TO_SWEEPS) {
+          sweeps += 1;
+          this.toFormat = 0;
+          this.limiter.slowDown();
+          await sleep(this.sweepPause);
+          continue;
+        }
       }
+
+      if (attempt >= this.retries) throw last;
+      await sleep(Math.min(2 ** attempt, 16) * 1000);
+      attempt += 1;
     }
-    throw last ?? new UpbitError(`GET ${path} 실패`, 'unknown');
   }
 
   /**
@@ -186,7 +239,10 @@ export class UpbitClient {
     }
     if (this.succeeded > 0) {
       return new UpbitError(
-        `업비트에서 ${this.succeeded}번은 받았는데 그 뒤로 막혔습니다.`, 'stalled',
+        `업비트에서 ${this.succeeded}번은 받았는데 그 뒤로 막혔습니다. `
+        + '너무 자주 부른 것으로 보고 속도를 낮췄습니다. '
+        + '받은 만큼은 저장돼 있으니 다시 누르면 이어서 받습니다.',
+        'stalled',
       );
     }
     try {
