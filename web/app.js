@@ -82,11 +82,10 @@ function handle(message) {
       // '지금'이 아니다. 그 사실이 결과보다 먼저 보여야 한다.
       setBlocked(message.kind);
       if (!message.stale) finish();
-      // 막혔으면 **묻지 말고 바로 알아본다.** 사용자가 진단 단추를 눌러
-      // 결과를 옮겨 적는 왕복 자체가 비용이다. 한 번만 돈다.
-      if (!diagRan && ['stalled', 'blocked', 'empty', 'throttled'].includes(message.kind)) {
-        runDiagnosis();
-      }
+      // 예전에는 여기서 진단을 자동으로 돌렸다. 무엇 때문에 막히는지 몰랐을
+      // 때는 그게 유일한 단서였다. 지금은 클라이언트가 이미 정확히 가르므로
+      // (막힘 / 못 닿음 / 끊김), 여덟 번을 더 두드릴 이유가 없다 —
+      // 하필 두드리면 안 되는 때가 바로 막혀 있을 때다. 단추는 남는다.
       break;
     case 'done':
       finish();
@@ -173,10 +172,9 @@ function setBlocked(kind) {
       이미 받아둔 시세로는 <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.</span>`,
     stalled: `<b>받다가 중간에 막혔습니다.</b>
       업비트에서 <b>받기는 받았는데</b> 그 뒤로 더 못 받고 있습니다 — 길이 막힌 게
-      아니라 받는 도중에 걸린 것입니다. 너무 자주 부른 것으로 보고
-      <b>받는 속도를 낮췄습니다.</b>
+      아니라 받는 도중에 걸린 것입니다.
       <span class="dim">받은 만큼은 이미 저장돼 있습니다. <b>지금 시세로 판단받기</b>를
-      다시 누르면 낮춘 속도로 <b>이어서</b> 받습니다 (처음부터 다시 받지 않습니다).
+      다시 누르면 <b>이어서</b> 받습니다 (처음부터 다시 받지 않습니다).
       몇 번 나눠 누르셔도 됩니다 — 누를 때마다 그만큼씩 쌓입니다.</span>`,
     rate: `<b>업비트 요청 한도를 넘었습니다.</b>
       잠시 뒤에 다시 눌러 주세요.
@@ -977,13 +975,10 @@ function conclude(done) {
     + '안 되는 것으로 보아, 중간에서 그 요청만 끊고 있을 수 있습니다.'];
 }
 
-let diagRan = false;
-
 async function runDiagnosis() {
   const box = $('diag');
   const button = $('btn-diag');
   button.disabled = true;
-  diagRan = true;
   box.hidden = false;
 
   const path = ENDPOINTS.minute1;

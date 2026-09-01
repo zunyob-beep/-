@@ -32,7 +32,9 @@ export const PAGE = 200;
 /**
  * **초당 요청 수. 이 앱이 업비트에 보내는 전부가 여기에 들어간다.**
  *
- * 업비트 시세 API의 공개 한도는 초당 10회다. 8로 두면 2회가 여유로 남는다.
+ * 업비트 시세 API의 공개 한도는 초당 10회다. 5로 두면 절반을 여유로 남긴다.
+ * 남의 몫까지 다 쓸 이유가 없다 — 휴대폰 데이터에서는 한 주소를 여러 사람이
+ * 나눠 쓰기 때문에, 우리가 아낀 만큼이 실제로 덜 막히는 쪽으로 돌아온다.
  * 봉을 받는 것도, 맨 위 시세도, 확인 요청도 전부 이 예산을 나눠 쓴다 —
  * 시세는 20초에 한 번이라 사실상 봉 받기가 거의 다 쓴다.
  *
@@ -42,7 +44,7 @@ export const PAGE = 200;
  *
  * **막히면 여기만 낮추면 된다.** 다른 곳을 고칠 필요가 없다.
  */
-export const PER_SECOND = 8;
+export const PER_SECOND = 5;
 
 /**
  * `to`(어느 시점 이전을 달라)를 적는 방법.
@@ -228,6 +230,11 @@ export class UpbitClient {
     if (this.lastDiagnosis && now - this.lastDiagnosis.at < DIAGNOSIS_TTL) {
       return this.lastDiagnosis.error;
     }
+    // **막힌 걸 이미 알면 다시 물어보지 않는다.**
+    //
+    // 진단 한 번에 업비트로 두 번 나간다(평범한 요청 + no-cors). 몇 분짜리
+    // 차단 동안 5초마다 그걸 반복하면, 확인하려다 풀릴 틈을 없앤다.
+    if (this.knownBlocked() && this.lastDiagnosis) return this.lastDiagnosis.error;
     const remember = (error, blocked = false) => {
       this.lastDiagnosis = { at: Date.now(), error };
       if (blocked) this.blockedAt = Date.now();
