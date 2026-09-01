@@ -238,20 +238,19 @@ function renderPeriods() {
 }
 
 function showPeriodNote() {
-  // 처음 받을 때 얼마나 걸릴지 미리 말해 준다. 8년치는 200개씩 2만 번을
-  // 받아야 해서 아주 오래 걸린다 — 눌러 놓고 기다리다 포기하지 않도록.
+  // 처음 받을 때 얼마나 걸릴지 미리 말해 준다. 4년치는 1만 6천 번을
+  // 받아야 해서 한 시간 가까이 걸린다 — 눌러 놓고 기다리다 포기하지 않도록.
   const count = parseInt($('in-period').value, 10) || 0;
   // 1·3·5분봉을 다 받는다. 3분봉은 개수가 1/3, 5분봉은 1/5다.
   const requests = Math.ceil(count / PAGE) + Math.ceil(count / 3 / PAGE)
     + Math.ceil(count / 5 / PAGE);
   const minutes = requests / PER_SECOND / 60;
   const guess = minutes < 1
-    ? '처음 1분 안'
+    ? '1분 안'
     : minutes < 60
-      ? `처음 약 ${Math.round(minutes)}분`
-      : `처음 약 ${(minutes / 60).toFixed(1)}시간`;
-  // 짧게 적는다. 길면 이 칸만 넓어져 줄이 어긋나 보인다.
-  $('period-note').textContent = guess;
+      ? `약 ${Math.round(minutes)}분`
+      : `약 ${(minutes / 60).toFixed(1)}시간`;
+  $('period-note').textContent = `(처음 받을 때 소요시간 ${guess})`;
 }
 
 // ------------------------------------------------------------ 돈으로 보기
@@ -301,27 +300,52 @@ async function refreshTicker() {
 }
 
 // ---------------------------------------------------------------- 렌더
+/** ISO 시각을 "2026-08-04 15:32"로. 초와 T는 읽는 데 방해만 된다. */
+function when(iso) {
+  return iso ? iso.replace('T', ' ').slice(0, 16) : '';
+}
+
+/** 며칠치인지. 개수만 보면 그게 긴 건지 짧은 건지 감이 안 온다. */
+function howLong(fromIso, toIso) {
+  if (!fromIso || !toIso) return '';
+  const days = (Date.parse(toIso) - Date.parse(fromIso)) / 86400000;
+  if (days < 1) return `${Math.round(days * 24)}시간치`;
+  if (days < 400) return `${Math.round(days)}일치`;
+  return `${(days / 365.25).toFixed(1)}년치`;
+}
+
 function renderCached(cached) {
   const box = $('coverage');
   box.hidden = false;
   const any = cached.some((c) => c.count > 0);
   if (!any) {
-    box.innerHTML = `아직 받아둔 시세가 없습니다. <b>지금 시세로 판단받기</b>를 누르면
-                     업비트에서 받아옵니다 (처음 한 번은 몇 분 걸립니다).`;
+    box.innerHTML = `<div class="section-title">받아둔 시세</div>
+      <p class="note-line">아직 받아둔 시세가 없습니다. <b>지금 시세로 판단받기</b>를 누르면
+      업비트에서 받아옵니다.</p>`;
     return;
   }
-  const when = (iso) => (iso ? iso.replace('T', ' ').slice(0, 16) : '');
   const rows = cached.map((c) => {
-    const span = c.from && c.to
-      ? `<span class="dim">${when(c.from)} ~ ${when(c.to)}</span>` : '';
-    return `<div class="cached-row"><b>${c.label}</b>
-            <span class="cached-count">${c.count.toLocaleString()}개</span> ${span}</div>`;
+    if (!c.count) {
+      return `<tr><th>${c.label}</th><td class="num dim">없음</td>
+              <td class="dim" colspan="2">아직 안 받았습니다</td></tr>`;
+    }
+    // **언제부터 언제까지인지**를 반드시 보여준다. 개수만 적으면 그게
+    // 어제 하루치인지 4년치인지 알 수가 없다.
+    return `<tr>
+      <th>${c.label}</th>
+      <td class="num">${c.count.toLocaleString()}개</td>
+      <td class="num dim">${howLong(c.from, c.to)}</td>
+      <td class="num span">${when(c.from)} <span class="dim">~</span> ${when(c.to)}</td>
+    </tr>`;
   }).join('');
-  box.innerHTML = `<div class="cached-head">받아둔 시세 <span class="dim">이 기기에 저장돼
-      있습니다. 지나간 봉은 다시 받지 않습니다.</span></div>${rows}
-    <div class="dim cached-foot">더 긴 과거를 보려면 위에서 <b>얼마나 과거까지</b>를 늘리고
-      <b>지금 시세로 판단받기</b>를 누르세요.
-      <button type="button" id="btn-forget" class="linky">받아둔 시세 지우기</button></div>`;
+  box.innerHTML = `<div class="section-title">받아둔 시세
+      <span class="hint">이 기기에 저장돼 있습니다. 지나간 봉은 다시 받지 않습니다.</span></div>
+    <div class="table-wrap"><table class="cached">
+      <thead><tr><th>봉</th><th>개수</th><th>기간</th><th>언제부터 언제까지 (UTC)</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="note-line">더 긴 과거를 보려면 위에서 <b>얼마나 과거의 데이터와 비교하나요</b>를
+      늘리고 <b>지금 시세로 판단받기</b>를 누르세요.
+      <button type="button" id="btn-forget" class="linky">받아둔 시세 지우기</button></p>`;
   $('btn-forget').addEventListener('click', () => {
     if (busy) return;
     send({ type: 'forget', market });
@@ -363,15 +387,24 @@ function renderVerdict(analysis) {
 function renderCoverage(analysis) {
   const box = $('coverage');
   box.hidden = false;
-  const spans = analysis.series
-    .map((s) => `<b>${s.label}</b> ${s.count.toLocaleString()}개${s.gaps ? ` (끊긴 곳 ${s.gaps})` : ''}`)
-    .join(' · ');
+  const spans = analysis.series.map((s) => `<tr>
+      <th>${s.label}</th>
+      <td class="num">${s.count.toLocaleString()}개</td>
+      <td class="num dim">${howLong(s.from, s.to)}</td>
+      <td class="num span">${when(s.from)} <span class="dim">~</span> ${when(s.to)}</td>
+      <td class="dim">${s.gaps ? `끊긴 곳 ${s.gaps}` : ''}</td>
+    </tr>`).join('');
   const missing = (analysis.missing || []).length
-    ? `<br><b class="warn">${analysis.missing.map((m) => m.label).join(', ')} 시세가 없어 빠졌습니다.</b>`
+    ? `<p class="note-line warn">${analysis.missing.map((m) => m.label).join(', ')} 시세가 없어 빠졌습니다.</p>`
     : '';
-  box.innerHTML = `${spans}${missing}<br>왕복 비용 <b>${pct(analysis.cost, 2)}</b> ·
-    직전 <b>${analysis.oddsLength}개</b> 봉 기준 · 닮았다고 볼 기준 상관계수
-    <b>${analysis.similarity.toFixed(2)}</b>`;
+  box.innerHTML = `<div class="section-title">무엇으로 계산했나</div>
+    <div class="table-wrap"><table class="cached">
+      <thead><tr><th>봉</th><th>개수</th><th>기간</th>
+        <th>언제부터 언제까지 (UTC)</th><th></th></tr></thead>
+      <tbody>${spans}</tbody></table></div>${missing}
+    <p class="note-line">왕복 비용 <b>${pct(analysis.cost, 2)}</b> ·
+      직전 <b>${analysis.oddsLength}개</b> 봉 기준 ·
+      닮았다고 볼 기준 상관계수 <b>${analysis.similarity.toFixed(2)}</b></p>`;
 }
 
 function renderOdds(analysis) {

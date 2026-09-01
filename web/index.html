@@ -44,27 +44,33 @@
       <div class="coins" id="coins" role="group" aria-label="종목 고르기"></div>
       <div class="row">
         <label>
-          얼마나 과거까지 <span class="hint" id="period-note"></span>
+          <span class="ask">얼마나 과거의 데이터와 비교하나요</span>
+          <span class="hint" id="period-note"></span>
           <select id="in-period"></select>
         </label>
         <label>
-          직전 몇 개 봉 <span class="hint">20~40을 권합니다</span>
+          <span class="ask">직전 몇 개 봉 기준으로 비교하나요</span>
+          <span class="hint">(20~40개를 권장합니다)</span>
           <input id="in-length" type="number" step="10" min="5" max="180" value="20">
         </label>
         <label>
-          닮았다고 볼 기준 <span class="hint">상관계수</span>
+          <span class="ask">얼마나 닮아야 같은 모양인가요</span>
+          <span class="hint">(상관계수, 1에 가까울수록 엄격)</span>
           <input id="in-similarity" type="number" step="0.01" min="0" max="1" value="0.85">
         </label>
         <label>
-          편도 수수료 <span class="hint">업비트 0.05%</span>
+          <span class="ask">편도 수수료는 얼마인가요</span>
+          <span class="hint">(업비트는 0.05%)</span>
           <input id="in-fee" type="number" step="0.0001" min="0" value="0.0005">
         </label>
         <label>
-          편도 슬리피지 <span class="hint">호가 차이</span>
+          <span class="ask">편도 슬리피지는 얼마인가요</span>
+          <span class="hint">(사고팔 때 벌어지는 호가 차이)</span>
           <input id="in-slippage" type="number" step="0.0001" min="0" value="0.0002">
         </label>
         <label>
-          넣을 금액 <span class="hint">원</span>
+          <span class="ask">얼마를 넣는다고 볼까요</span>
+          <span class="hint">(원)</span>
           <input id="in-amount" type="number" step="100000" min="0" value="1000000">
         </label>
       </div>
@@ -73,7 +79,8 @@
         <button id="btn-scan">받아둔 시세로 다시 계산</button>
         <button id="btn-stop" class="danger" hidden>멈추기</button>
         <label class="check">
-          <input id="in-auto" type="checkbox"> 1분마다 자동 갱신
+          <input id="in-auto" type="checkbox">
+          <span>1분마다 자동 갱신</span>
         </label>
         <span id="job" class="job"></span>
       </div>
