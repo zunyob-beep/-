@@ -30,10 +30,27 @@ const TYPES = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
+/**
+ * **하위 경로에 얹어서** 띄운다.
+ *
+ * GitHub Pages는 저장소 이름이 붙은 경로에 얹는다 — `/-/index.html`.
+ * 루트(`/`)에서만 시험하면 절대경로가 하나라도 섞여 있을 때 못 잡고,
+ * 정작 배포한 자리에서 흰 화면이 된다. 실제 배포와 같은 모양으로 띄우고,
+ * 하위 경로 **밖을** 찾는 요청이 하나라도 있으면 실패로 본다.
+ */
+const BASE = '/-';
+const outside = [];
+
 function serve() {
   const server = createServer(async (req, res) => {
     const asked = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    const path = join(ROOT, normalize(asked === '/' ? '/index.html' : asked));
+    if (asked !== BASE && !asked.startsWith(`${BASE}/`)) {
+      outside.push(asked);
+      res.writeHead(404).end('하위 경로 밖입니다');
+      return;
+    }
+    const rest = asked.slice(BASE.length) || '/';
+    const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));
     if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
     try {
       const body = await readFile(path);
@@ -134,7 +151,7 @@ page.on('console', (m) => {
   problems.push(`CONSOLE ${m.text()}`);
 });
 
-await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
+await page.goto(`http://127.0.0.1:${port}${BASE}/`, { waitUntil: 'domcontentloaded' });
 
 // ── 화면이 스스로 시작하는가 (예전에 이게 통째로 빠져 있었다)
 await page.waitForFunction(
@@ -241,6 +258,22 @@ check(
   (await page.locator('#job').innerText()).includes('못 받았습니다')
     || !(await page.locator('#blocked').isHidden()),
   await page.locator('#job').innerText(),
+);
+
+// ── 하위 경로에서 제대로 얹혔는가 (진짜 배포와 같은 모양)
+check(
+  '절대경로가 섞여 있지 않다',
+  outside.length === 0,
+  outside.length ? `밖을 찾았습니다: ${[...new Set(outside)].slice(0, 5)}` : '',
+);
+const scope = await page.evaluate(async () => {
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.scope : null;
+});
+check(
+  '서비스 워커가 하위 경로를 관할한다',
+  Boolean(scope && scope.endsWith(`${BASE}/`)),
+  scope ?? '(등록 안 됨)',
 );
 
 console.log('');
