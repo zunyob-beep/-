@@ -13,6 +13,7 @@ let selected = null;      // {timeframe, horizon}
 let shownAnalysis = -1;
 let timer = null;
 let market = 'KRW-BTC';
+let everLoaded = false;   // 첫 화면을 한 번은 그렸는가
 let coinsDrawn = '';      // 이미 그린 종목 목록 (매번 다시 그리면 누르는 중에 사라진다)
 
 // ---------------------------------------------------------------- 통신
@@ -78,6 +79,19 @@ function report(err) {
 // 단추가 영영 잠긴 채로 남았다. 화면이 통째로 굳어서, 새로고침 말고는
 // 되살릴 방법이 없었다. 실제로 404 한 번에 그렇게 됐다.
 async function refreshState() {
+  // 탭이 안 보이면 **되묻지 않는다.**
+  //
+  // 코드스페이스는 접속이 끊겨야 잠든다. 그런데 이 화면은 열어만 둬도
+  // 15초마다 상태를, 5초마다 시세를 물어봤다. 보고 있지도 않은 탭 하나가
+  // 컨테이너를 24시간 깨워 두고 무료 시간을 녹이고 있었던 셈이다.
+  //
+  // 단, **첫 번째는 반드시 한다.** 안 그러면 배경 탭에서 연 화면이
+  // 영영 빈 채로 남는다 — 실제로 그렇게 만들었다가 되돌렸다.
+  if (everLoaded && document.hidden) {
+    stopPolling();
+    timer = setTimeout(refreshState, HEARTBEAT);
+    return;
+  }
   let next = HEARTBEAT;
   try {
     next = applyState(await api('/api/state'));
@@ -99,6 +113,7 @@ function unlock() {
 }
 
 function applyState(state) {
+  everLoaded = true;
   setOffline(false);
 
   const job = state.job || {};
@@ -230,6 +245,7 @@ const won = (x) => x >= 1000
   : x.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
 
 async function refreshTicker() {
+  if (everLoaded && document.hidden) return;   // 위와 같은 이유
   let data;
   try { data = await api(`/api/ticker?market=${encodeURIComponent(market)}`); }
   catch (err) { return; }   // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다
@@ -526,7 +542,8 @@ let auto = null;
 $('in-auto').addEventListener('change', (e) => {
   if (auto !== null) { clearInterval(auto); auto = null; }
   if (e.target.checked) auto = setInterval(() => {
-    if (!$('btn-live').disabled) runLive();
+    // 안 보고 있는데 1분마다 시세를 받고 계산까지 할 이유가 없다.
+    if (!document.hidden && !$('btn-live').disabled) runLive();
   }, 60000);
 });
 
@@ -834,3 +851,27 @@ function theoryRow(r) {
     <td class="${p.edge > 0 ? 'pos' : 'neg'}">${signed(p.edge, 1)}</td>
     <td class="l">${verdict}</td></tr>`;
 }
+
+
+// ================================================================ 시작
+//
+// 이 블록이 없으면 화면을 열어도 아무 일도 안 일어난다. 단추를 누르기
+// 전까지는 시세도, 받아둔 양도, 서버가 꺼졌다는 안내도 나오지 않는다.
+// 실제로 한동안 그런 채로 있었다 — 안내 문구 하나를 걷어내면서 이 줄들이
+// 같이 지워졌는데, 그 뒤로도 계속 단추를 눌러 확인했기 때문에 못 봤다.
+//
+// 맨 아래에 둔다. 위에서 쓰는 함수들이 모두 정의된 뒤여야 한다.
+
+refreshTicker();
+setInterval(refreshTicker, 5000);
+
+// 탭을 다시 보면 곧바로 따라잡는다. 안 보는 동안 아무것도 안 물어봤으므로
+// 화면이 그만큼 뒤처져 있다.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  refreshTicker();
+  stopPolling();
+  refreshState();
+});
+
+refreshState();

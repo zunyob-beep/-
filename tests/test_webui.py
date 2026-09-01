@@ -1130,3 +1130,49 @@ def test_the_reason_names_the_money_gate_only_when_it_is_the_one_that_failed():
     said = webui._verdict([unclear], cost)
     assert not any("돈이 되지는 않습니다" in r for r in said["reasons"]), \
         "돈은 되는데 돈 때문이라고 했습니다"
+
+
+# ==================================================== 화면이 스스로 시작하나
+def test_the_page_actually_starts_itself(client):
+    """이 줄들이 없으면 화면을 열어도 **아무 일도 안 일어난다.**
+
+    실제로 한동안 그랬다. 안내 문구 하나를 걷어내면서 파일 맨 아래의 시작
+    호출까지 같이 지워졌는데, 그 뒤로도 계속 단추를 눌러 확인했기 때문에
+    몇 커밋 동안 아무도 못 봤다. 단추를 누르기 전까지 시세도, 받아둔 양도,
+    서버가 꺼졌다는 안내도 나오지 않는 상태였다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    tail = source[source.index("// ================================================================ 시작"):]
+    assert "refreshState();" in tail, "상태를 처음 불러오는 호출이 없습니다"
+    assert "refreshTicker();" in tail, "시세를 처음 불러오는 호출이 없습니다"
+    assert "setInterval(refreshTicker" in tail, "시세 갱신이 돌지 않습니다"
+    # 정의보다 먼저 부르면 안 되므로 맨 아래여야 한다
+    assert tail.index("refreshState();") > 0
+    assert source.rindex("function refreshState") < source.index(
+        "// ================================================================ 시작"
+    )
+
+
+def test_polling_stops_when_nobody_is_looking(client):
+    """열어만 둔 탭이 코드스페이스를 24시간 깨워 두고 무료 시간을 녹였다.
+
+    15초마다 상태를, 5초마다 시세를 물어보니 접속이 끊기질 않아서
+    컨테이너가 잠들지 못했다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "everLoaded && document.hidden" in source, "안 보일 때도 계속 물어봅니다"
+    # 자동 갱신도 마찬가지 — 안 보는데 시세를 받고 계산까지 할 이유가 없다
+    assert "!document.hidden && !$('btn-live').disabled" in source
+
+
+def test_the_very_first_load_happens_even_in_a_background_tab(client):
+    """첫 화면까지 건너뛰면 배경 탭에서 연 화면이 영영 빈 채로 남는다.
+
+    실제로 그렇게 만들었다가 되돌렸다. 아낄 것은 '되묻는 트래픽'이지
+    '첫 화면'이 아니다.
+    """
+    source = client[0].get("/static/app.js")[1].decode("utf-8")
+    assert "let everLoaded = false" in source
+    assert "everLoaded = true" in source
+    # everLoaded 없이 hidden만 보는 옛 구조로 돌아가면 안 된다
+    assert "if (document.hidden) {\n    stopPolling();" not in source
