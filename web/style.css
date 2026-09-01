@@ -100,6 +100,7 @@ body {
 
 /* ---------------------------------------------------------------- 머리말 */
 .top {
+  position: relative;   /* 판 번호를 모서리에 붙이기 위해 */
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap;
   max-width: 1120px; margin: 0 auto;
@@ -420,6 +421,19 @@ table.theories td.down { color: var(--down); }
  * 정보이므로 남아야 한다. */
 table.theories tr.quiet td { opacity: 0.6; }
 table.theories tr.real td.l b { color: var(--accent); }
+
+/* 판 번호. 밀어 넣은 것이 실제로 화면까지 갔는지 확인하는 유일한 방법이다.
+ *
+ * 흐름에서 빼내 모서리에 붙인다. 시세 격자 안에 넣었더니 가격 아래 세 번째
+ * 줄로 밀려서, 무슨 값인지 모를 숫자가 하나 떠 있는 것처럼 보였다. */
+.version {
+  position: absolute; top: 6px; right: 22px;
+  font-family: var(--mono); font-size: 10px; color: var(--dim);
+  letter-spacing: 0.08em; opacity: 0.7;
+}
+@media (display-mode: standalone) {
+  .version { top: calc(6px + env(safe-area-inset-top)); }
+}
 
 /* "다시 받지 않는다"는 약속. 이걸 못 믿으면 다시 누르기가 겁난다. */
 .keep {

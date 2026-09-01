@@ -1,27 +1,25 @@
-# 받아둔 시세 캐시
-data/
-*.csv
-
-# 파이썬
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.venv/
-venv/
 
 # 도구
+# 받아둔 시세 캐시
+# 브라우저 테스트에 쓰는 것 (npm install --no-save playwright)
+# 에디터
+# 파이썬
+*.csv
+*.egg-info/
+*.py[cod]
+.DS_Store
+.clickthrough.png
+.coverage
+.idea/
 .pytest_cache/
 .ruff_cache/
-.coverage
-htmlcov/
-
-# 에디터
+.venv/
 .vscode/
-.idea/
-.DS_Store
-
-# 브라우저 테스트에 쓰는 것 (npm install --no-save playwright)
+__pycache__/
+build/
+data/
+dist/
+htmlcov/
 node_modules/
 package-lock.json
+venv/

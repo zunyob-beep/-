@@ -1,0 +1,267 @@
+// **사람처럼 눌러 본다.**
+//
+// browser.mjs는 '한 번 돌려서 화면이 뜨는지'를 본다. 이건 다르다 — 아이패드
+// 크기에서 있는 단추를 다 눌러 보고, 그때 콘솔에 오류가 나는지, 가로로
+// 삐져나가는 곳이 있는지, 눌렀는데 아무 일도 안 일어나는지를 본다.
+//
+// 왜 따로 필요한가: 지금까지 나온 문제 중 여러 개가 **눌러 봐야만 보이는**
+// 것이었다. 이론 표의 색이 사라진 것, 조작부 줄이 어긋난 것, 금액 칸에 듣는
+// 사람이 없던 것. 전부 시험은 통과하는데 사람이 보면 이상한 것들이었다.
+//
+//     node tests/js/clickthrough.mjs
+
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { dirname, extname, join, normalize } from 'node:path';
+import { chromium } from 'playwright';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(here, '..', '..', 'web');
+const BASE = '/-';
+
+const TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+};
+
+function serve() {
+  const server = createServer(async (req, res) => {
+    const asked = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const rest = asked.startsWith(BASE) ? asked.slice(BASE.length) || '/' : null;
+    if (rest === null) { res.writeHead(404).end(); return; }
+    const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));
+    if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
+    try {
+      const body = await readFile(path);
+      res.writeHead(200, { 'Content-Type': TYPES[extname(path)] ?? 'application/octet-stream' });
+      res.end(body);
+    } catch { res.writeHead(404).end(); }
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+// 가짜 업비트. 값은 시각만으로 정해지므로 몇 번을 물어도 같은 답이 온다.
+const STEP = { 1: 60, 3: 180, 5: 300 };
+const priceAt = (ts) => {
+  const t = ts / 600;
+  return 50000000 * (1 + 0.02 * Math.sin(t) + 0.008 * Math.sin(t * 3.7));
+};
+const fakeCandle = (ts, market) => {
+  const close = priceAt(ts);
+  const open = priceAt(ts - 60);
+  return {
+    market,
+    candle_date_time_utc: new Date(ts * 1000).toISOString().slice(0, 19),
+    opening_price: open,
+    high_price: Math.max(open, close) * 1.0004,
+    low_price: Math.min(open, close) * 0.9996,
+    trade_price: close,
+    candle_acc_trade_volume: 2 + (ts % 7) / 3,
+  };
+};
+
+async function stubUpbit(context) {
+  await context.route('https://api.upbit.com/**', async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (url.pathname === '/v1/ticker') {
+      const now = Math.floor(Date.now() / 1000);
+      const market = url.searchParams.get('markets').split(',')[0];
+      return json([{
+        market,
+        trade_price: priceAt(now),
+        signed_change_rate: 0.0123,
+        signed_change_price: 610000,
+        high_price: priceAt(now) * 1.01,
+        low_price: priceAt(now) * 0.99,
+      }]);
+    }
+    const unit = Number(url.pathname.split('/').pop());
+    const step = STEP[unit] ?? 60;
+    const count = Number(url.searchParams.get('count') ?? 200);
+    const market = url.searchParams.get('market');
+    const to = url.searchParams.get('to');
+    const end = to ? Math.floor(Date.parse(to) / 1000) : Math.floor(Date.now() / 1000);
+    const last = end - (end % step);
+    return json(Array.from({ length: count }, (_, i) => fakeCandle(last - i * step, market)));
+  });
+}
+
+// ---------------------------------------------------------------- 확인
+const found = [];
+const ok = [];
+const note = (name, good, detail = '') => {
+  (good ? ok : found).push(`${name}${detail ? `  ${detail}` : ''}`);
+  console.log(`  ${good ? 'ok  ' : '문제'}  ${name}${detail ? `  ${detail}` : ''}`);
+};
+
+const { server, port } = await serve();
+const url = `http://127.0.0.1:${port}${BASE}/`;
+// 이 환경에는 크로미움이 미리 깔려 있다. 받으러 나가지 않는다.
+const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+
+// 아이패드 크기. 사용자가 쓰는 화면이다.
+const context = await browser.newContext({
+  viewport: { width: 1024, height: 768 },
+  deviceScaleFactor: 2,
+});
+await stubUpbit(context);
+const page = await context.newPage();
+
+// 콘솔 오류는 **하나도** 없어야 한다. 눌렀는데 조용히 터지는 것이 제일 나쁘다.
+const errors = [];
+page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+page.on('console', (m) => {
+  if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+});
+
+await page.goto(url, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.coin', { timeout: 20000 });
+
+// ── 판 번호
+const version = (await page.locator('#version').innerText()).trim();
+note('판 번호가 화면에 뜬다', /^v\d+$/.test(version), version);
+
+const shown = await page.evaluate(async () => {
+  const mod = await import('./version.js');
+  return mod.VERSION;
+});
+note('화면의 판 번호가 코드와 같다', shown === version, `${shown} / ${version}`);
+
+// ── 가로로 삐져나가는 곳이 없어야 한다 (아이패드에서 좌우 스크롤은 최악이다)
+const overflow = await page.evaluate(() => {
+  const wide = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.scrollWidth > document.documentElement.clientWidth + 2) {
+      const style = getComputedStyle(el);
+      if (style.overflowX === 'auto' || style.overflowX === 'scroll') continue;
+      wide.push(`${el.tagName.toLowerCase()}.${el.className || '(무명)'}`);
+    }
+  }
+  return wide.slice(0, 5);
+});
+note('가로로 삐져나가는 곳이 없다', overflow.length === 0, overflow.join(', '));
+
+// ── 기간을 바꾸면 안내가 따라 바뀐다
+const noteBefore = await page.locator('#period-note').innerText();
+await page.selectOption('#in-period', { index: 2 });
+await page.waitForTimeout(100);
+const noteAfter = await page.locator('#period-note').innerText();
+note('기간을 바꾸면 예상 시간이 바뀐다', noteBefore !== noteAfter, `${noteBefore} → ${noteAfter}`);
+await page.selectOption('#in-period', { index: 0 });
+
+// ── 받아서 계산 (여기서 시간이 제일 오래 걸린다)
+const started = Date.now();
+await page.click('#btn-live');
+await page.waitForFunction(
+  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  null, { timeout: 300000 },
+);
+note('받아서 계산까지 끝난다', true, `${((Date.now() - started) / 1000).toFixed(1)}초`);
+
+// ── 이론 탭을 눌러 본다
+const tabs = await page.locator('#theory-tabs .tab').count();
+if (tabs > 1) {
+  const firstRow = await page.locator('table.theories tbody tr').first().innerText();
+  await page.locator('#theory-tabs .tab').nth(1).click();
+  await page.waitForTimeout(300);
+  const afterRow = await page.locator('table.theories tbody tr').first().innerText();
+  const onTab = await page.locator('#theory-tabs .tab.on').count();
+  note('이론 탭을 누르면 표가 바뀐다', firstRow !== afterRow || onTab === 1);
+} else {
+  note('이론 탭이 그려진다', false, `${tabs}개뿐입니다`);
+}
+
+// ── 확률 표의 줄을 눌러 본다
+const rows = await page.locator('#odds-body tbody tr').count();
+await page.locator('#odds-body tbody tr').nth(Math.min(3, rows - 1)).click();
+await page.waitForTimeout(600);
+note(
+  '확률 표의 줄을 누르면 사례가 그려진다',
+  (await page.locator('.example').count()) > 0 && (await page.locator('#examples-panel').isVisible()),
+);
+note('누른 줄이 표시된다', (await page.locator('#odds-body tbody tr.selected').count()) === 1);
+
+// ── 금액
+await page.fill('#in-amount', '3000000');
+await page.waitForTimeout(400);
+note(
+  '금액을 바꾸면 표의 돈이 바뀐다',
+  (await page.locator('#odds-body tbody tr td:last-child').first().innerText()).length > 1,
+);
+await page.fill('#in-amount', '1000000');
+
+// ── 받아둔 시세로 다시 계산 (업비트에 안 가야 한다)
+let calls = 0;
+await context.route('https://api.upbit.com/v1/candles/**', async (route) => {
+  calls += 1;
+  await route.fallback();
+});
+await page.click('#btn-scan');
+await page.waitForFunction(
+  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  null, { timeout: 120000 },
+);
+note('받아둔 시세로 다시 계산은 업비트에 안 간다', calls === 0, `${calls}번 갔습니다`);
+
+// ── 자동 갱신 켰다 끄기
+await page.check('#in-auto');
+note('자동 갱신을 켤 수 있다', await page.isChecked('#in-auto'));
+await page.uncheck('#in-auto');
+note('자동 갱신을 끌 수 있다', !(await page.isChecked('#in-auto')));
+
+// ── 종목 바꾸기 (남은 표가 그대로 있으면 다른 코인 숫자를 잘못 읽는다)
+await page.locator('.coin').nth(1).click();
+await page.waitForTimeout(500);
+const code = await page.locator('#ticker-code').innerText();
+note('종목을 바꾸면 맨 위가 따라 바뀐다', code === 'KRW-ETH', code);
+const cleared = await page.evaluate(() => document.getElementById('verdict').hidden
+  || document.getElementById('verdict-headline').textContent.length === 0);
+note('종목을 바꾸면 앞 종목 결과가 남지 않는다', cleared);
+
+// ── 멈추기
+await page.waitForTimeout(1500);
+const stopVisible = await page.locator('#btn-stop').isVisible();
+if (stopVisible) {
+  await page.click('#btn-stop');
+  await page.waitForTimeout(500);
+  note('멈추기를 누르면 단추가 다시 살아난다', await page.isEnabled('#btn-live'));
+} else {
+  note('멈추기 단추는 받는 중에만 보인다', true, '이미 끝나 있었습니다');
+}
+
+// ── 세로 화면(아이패드 세로)에서도 삐져나가지 않는다
+await page.setViewportSize({ width: 834, height: 1194 });
+await page.waitForTimeout(400);
+const tallOverflow = await page.evaluate(() => {
+  const wide = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.scrollWidth > document.documentElement.clientWidth + 2) {
+      const style = getComputedStyle(el);
+      if (style.overflowX === 'auto' || style.overflowX === 'scroll') continue;
+      wide.push(`${el.tagName.toLowerCase()}.${el.className || '(무명)'}`);
+    }
+  }
+  return wide.slice(0, 5);
+});
+note('세로 화면에서도 삐져나가지 않는다', tallOverflow.length === 0, tallOverflow.join(', '));
+
+// ── 콘솔 오류
+note('콘솔에 오류가 없다', errors.length === 0, errors.slice(0, 3).join(' | '));
+
+await page.screenshot({ path: join(here, '..', '..', '.clickthrough.png'), fullPage: false });
+await browser.close();
+server.close();
+
+console.log(`\n${ok.length}개 통과, ${found.length}개 문제`);
+if (found.length) {
+  console.log('\n문제:');
+  for (const f of found) console.log(`  · ${f}`);
+  process.exit(1);
+}

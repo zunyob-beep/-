@@ -6,6 +6,7 @@
 // 생기지 않는다.
 
 import { MARKETS, marketLabel } from './core/models.js';
+import { VERSION } from './version.js';
 import { MAX_BARS, PERIODS } from './core/analysis.js';
 import {
   API_BASE, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
@@ -1188,6 +1189,7 @@ function theoryRow(r, scoring) {
 //
 // 맨 아래에 둔다. 위에서 쓰는 함수들이 모두 정의된 뒤여야 한다.
 
+$('version').textContent = VERSION;
 renderCoins();
 renderPeriods();
 spawn();
