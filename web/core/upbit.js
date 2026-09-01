@@ -40,15 +40,24 @@ export const PER_SECOND = 3;
 /**
  * 잘 되고 있을 때 **올라갈 수 있는 상한.**
  *
- * 처음에는 이게 없었다. 정확히는 상한이 시작 속도와 같았다(`top = perSecond`).
- * 그래서 한 번도 안 막히고 술술 받는 동안에도 초당 3회를 절대 못 넘었다.
- * 실측 72초 / 231번 = 초당 3.2회 — 받는 시간 전부가 이 기다림이었다.
+ * 한때 이걸 8로 올렸다가 되돌렸다. 상한이 시작 속도와 같은 것을 버그로 보고
+ * "잘 되면 더 빨라져야 한다"고 고쳤는데, 그게 **버그가 아니라 안전장치**였다.
  *
- * 시작은 조심스럽게(3회), 잘 되면 올라간다(최대 8회). 업비트가 한 번이라도
- * 밀어내면 곧장 절반으로 내린다. 그래야 진짜 한도를 찾아간다.
- * 업비트 시세 API의 공개 한도는 초당 10회다.
+ * 실제로 겪은 순서가 이렇다.
+ *
+ *   초당 8회, 몰아 쏨      201개에서 막힘
+ *   초당 5회, 고르게       4,812개에서 막힘
+ *   초당 3회, 고르게       끝까지 잘 받음
+ *   초당 3→8회로 올림      다시 막힘
+ *
+ * 그리고 막히면 초당 한도가 아니라 **한동안 통째로** 막힌다. 진단이 요청을
+ * 1.2초씩 벌려 8번 물어봤는데 전부 실패했다 — 초당 한도였다면 그 간격의 단발
+ * 요청은 통과해야 한다. 즉 한 번 넘기면 대가가 몇 분이다.
+ *
+ * 그래서 상한을 시작 속도와 같게 둔다. 올리는 기능은 남는다 — 막혀서 절반으로
+ * 내려갔을 때 **원래 속도까지 되돌아오기 위한** 것이고, 그게 원래 목적이었다.
  */
-export const CEILING = 8;
+export const CEILING = 3;
 
 /**
  * `to`(어느 시점 이전을 달라)를 적는 방법. 업비트가 여럿을 받아 준다.
@@ -130,6 +139,19 @@ export const STALL_RETRIES = 6;
 /** 걸렸을 때 쉬는 시간. 다시 걸릴수록 더 오래 쉰다. */
 export const STALL_PAUSE = 3000;
 
+/**
+ * **막혔을 때** 쉬는 시간. 삐끗한 것과는 차원이 다르다.
+ *
+ * 업비트는 한도를 넘긴 주소를 초 단위가 아니라 몇 분씩 막는다. 그 사이에는
+ * 무엇을 해도 안 되고, 자꾸 두드리면 더 길어질 뿐이다. 1분부터 시작해
+ * 늘려 가며 네 번 기다린다 — 합쳐서 10분이다.
+ *
+ * 사람이 10분 뒤에 다시 누르는 대신 앱이 스스로 기다리는 것이다. 받은
+ * 만큼은 저장돼 있으므로 기다렸다 이어 받으면 잃는 것이 없다.
+ */
+export const THROTTLE_PAUSE = 60000;
+export const THROTTLE_RETRIES = 4;
+
 /** 진단 결과를 이만큼은 그대로 쓴다 (밀리초). */
 export const DIAGNOSIS_TTL = 5000;
 
@@ -202,12 +224,13 @@ export class RateLimiter {
 export class UpbitClient {
   constructor({
     base = API_BASE, retries = 4, perSecond = PER_SECOND, fetcher = null,
-    sweepPause = SWEEP_PAUSE, stallPause = STALL_PAUSE,
+    sweepPause = SWEEP_PAUSE, stallPause = STALL_PAUSE, throttlePause = THROTTLE_PAUSE,
   } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.sweepPause = sweepPause;
     this.stallPause = stallPause;
+    this.throttlePause = throttlePause;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
@@ -609,17 +632,40 @@ export class UpbitClient {
         // 첫 요청부터 실패했다면 이어 받을 것도 없고, 길이 아예 막힌
         // 경우다. 그때까지 1분씩 쥐고 있으면 "막혔습니다"라는 말조차 늦게
         // 나온다 — 사용자는 그동안 무슨 일인지 알 수가 없다.
-        const worthWaiting = error instanceof UpbitError
-          && got > 0 && error.kind !== 'offline' && error.kind !== 'blocked'
-          && stalls < STALL_RETRIES;
-        if (!worthWaiting) throw error;
+        const kind = error instanceof UpbitError ? error.kind : null;
+
+        // **막힌 것은 기다리면 풀린다.** 그러니 포기하지 않는다.
+        //
+        // 업비트는 한도를 넘긴 주소를 초 단위가 아니라 **몇 분씩** 막는다
+        // (진단이 1.2초 간격으로 8번 물어봐도 전부 실패했다). 그동안은
+        // 무슨 짓을 해도 안 되고, 자꾸 두드리면 더 길어질 뿐이다.
+        //
+        // 그런데 받은 만큼은 이미 저장돼 있으므로 기다렸다 이어 받으면 된다.
+        // 사람이 10분 뒤에 다시 누르는 대신 **앱이 스스로 기다린다.**
+        const banned = kind === 'throttled' || kind === 'rate';
+        const canWait = kind !== null && kind !== 'offline' && kind !== 'blocked'
+          && (banned ? stalls < THROTTLE_RETRIES : got > 0 && stalls < STALL_RETRIES);
+        if (!canWait) throw error;
         stalls += 1;
-        this.limiter.slowDown();
-        // 살아 있다는 걸 알려야 한다. 아무 표시 없이 몇십 초를 쉬면
-        // 멈춘 것으로 보인다.
-        if (onProgress) onProgress(got, count, { stalled: stalls });
-        // eslint-disable-next-line no-await-in-loop
-        await sleep(this.stallPause * stalls);
+        // 막힌 게 아니라 삐끗한 것이면 속도를 낮춰 본다. 막힌 상태에서는
+        // 속도를 낮춰도 소용없다 — 이미 통째로 거절당하는 중이다.
+        if (!banned) this.limiter.slowDown();
+
+        // 몇 분을 아무 표시 없이 쉬면 멈춘 것으로 보인다. 1초마다 남은
+        // 시간을 알려서, 기다리는 중이라는 걸 보이게 한다.
+        const until = Date.now() + (banned ? this.throttlePause : this.stallPause) * stalls;
+        while (Date.now() < until) {
+          if (shouldStop && shouldStop()) break;
+          if (onProgress) {
+            onProgress(got, count, {
+              stalled: stalls, banned, waitLeft: Math.ceil((until - Date.now()) / 1000),
+            });
+          }
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(Math.min(1000, Math.max(0, until - Date.now())));
+        }
+        // 다음 시도는 새로 진단한다. 기다린 뒤에도 옛 판단을 쓰면 안 된다.
+        this.lastDiagnosis = null;
         // eslint-disable-next-line no-continue
         continue;
       }

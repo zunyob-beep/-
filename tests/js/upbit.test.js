@@ -408,6 +408,53 @@ test('받다가 한 번 걸려도 이어서 받는다', async () => {
   assert.ok(saved.length >= 8, `${saved.length}개에서 멈췄습니다 — 이어 받았어야 합니다`);
 });
 
+test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => {
+  // 업비트는 한도를 넘긴 주소를 몇 분씩 막는다. 사람이 10분 뒤에 다시
+  // 누르는 대신 **앱이 스스로 기다린다.** 그게 "무조건 받아온다"의 뜻이다.
+  let calls = 0;
+  const UNBLOCKS_AT = 3;
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    sweepPause: 5,
+    throttlePause: 20,   // 시험에서는 짧게. 실제로는 1분부터 시작한다.
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);   // 닿기는 한다 = 막힌 상태
+      calls += 1;
+      if (calls < UNBLOCKS_AT) throw new TypeError('Load failed');
+      return OK(candleRows(2, 1700000000 - calls * 600));
+    },
+  });
+
+  const waits = [];
+  const saved = [];
+  await client.collect('KRW-BTC', 'minute1', 4, {
+    retain: false,
+    onBatch: (batch) => { saved.push(...batch); },
+    onProgress: (done, total, info) => { if (info?.banned) waits.push(info.waitLeft); },
+  });
+
+  assert.ok(saved.length >= 4, `${saved.length}개에서 포기했습니다 — 기다렸어야 합니다`);
+  assert.ok(waits.length > 0, '기다리는 동안 남은 시간을 알려줘야 합니다');
+});
+
+test('막힌 채로 영원히 매달리지는 않는다', async () => {
+  // 기다리는 것과 붙잡고 있는 것은 다르다. 끝내 안 풀리면 말해 줘야 한다.
+  const client = new UpbitClient({
+    retries: 0, perSecond: 100000, sweepPause: 5, throttlePause: 5,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      throw new TypeError('Load failed');
+    },
+  });
+  const failure = await client.collect('KRW-BTC', 'minute1', 500, { retain: false })
+    .then(() => null, (error) => error);
+  assert.ok(failure instanceof UpbitError, '조용히 빈손으로 끝내면 안 됩니다');
+  assert.equal(failure.kind, 'throttled');
+});
+
 test('끝까지 안 되면 그때는 멈춘다 (영원히 매달리지 않는다)', async () => {
   let calls = 0;
   const client = new UpbitClient({
@@ -425,28 +472,23 @@ test('끝까지 안 되면 그때는 멈춘다 (영원히 매달리지 않는다
   );
 });
 
-test('시작 속도와 상한은 달라야 한다', () => {
-  // **이것 때문에 느렸다.** 상한을 시작 속도와 같게 두면(`top = perSecond`)
-  // 한 번도 안 막히고 술술 받는 동안에도 절대 빨라지지 못한다.
-  // 실측 72초 / 231번 = 초당 3.2회 — 받는 시간이 전부 이 기다림이었다.
-  // 상한을 따로 두자 30.5초가 됐다.
+test('안전하다고 확인된 속도를 넘지 않는다', () => {
+  // 한때 상한을 8로 올렸다가 되돌렸다. "잘 되면 더 빨라져야 한다"고 고쳤는데
+  // 그게 **버그가 아니라 안전장치**였다. 실제로 겪은 순서:
+  //
+  //   초당 8회 → 201개에서 막힘 / 초당 5회 → 4,812개에서 막힘
+  //   초당 3회 → 끝까지 받음    / 3→8회로 올림 → 다시 막힘
+  //
+  // 그리고 한 번 막히면 몇 분씩 통째로 막힌다. 빨리 받으려다 10분을 잃는다.
   const limiter = new RateLimiter();
-  assert.ok(
-    limiter.top > limiter.perSecond,
-    `상한(${limiter.top})이 시작 속도(${limiter.perSecond})보다 크지 않습니다 — `
-    + '이러면 잘 되고 있어도 영영 안 빨라집니다',
+  assert.equal(
+    limiter.top, PER_SECOND,
+    `상한이 ${limiter.top}입니다 — 확인된 속도(${PER_SECOND})를 넘으면 막힙니다`,
   );
 
-  // 잘 되면 시작 속도를 **넘어서** 올라가야 한다.
+  // 아무리 잘 돼도 그 위로는 안 올라간다.
   for (let i = 0; i < 20; i += 1) limiter.speedUp();
-  assert.ok(
-    limiter.perSecond > PER_SECOND,
-    `아무리 잘 돼도 초당 ${limiter.perSecond}회에 묶여 있습니다`,
-  );
-  assert.equal(limiter.perSecond, limiter.top, '상한까지는 올라가야 합니다');
-
-  // 그래도 상한은 넘지 않는다. 업비트 공개 한도는 초당 10회다.
-  assert.ok(limiter.top <= 10, `상한 ${limiter.top}은 업비트 한도를 넘습니다`);
+  assert.equal(limiter.perSecond, PER_SECOND, `초당 ${limiter.perSecond}회까지 올라갔습니다`);
 });
 
 test('잘 되면 속도가 도로 올라간다', async () => {
