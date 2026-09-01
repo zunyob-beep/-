@@ -86,23 +86,43 @@ export const STALL_PAUSE = 3000;
 export const STALL_RETRIES = 4;
 
 /**
- * **막혔을 때** 쉬는 시간. 잠깐 걸린 것과는 차원이 다르다.
+ * **막혔을 때 입을 다무는 시간.** 이 앱에서 가장 중요한 숫자다.
  *
- * 업비트는 한도를 넘긴 주소를 초 단위가 아니라 몇 분씩 막는다. 진단이 요청을
- * 1.2초씩 벌려 8번 물어봤는데 전부 실패한 적이 있다 — 초당 한도였다면 그
- * 간격의 단발 요청은 통과해야 한다.
+ * 왜 이게 제일 중요한가
+ * --------------------
+ * 업비트는 한도를 넘긴 주소를 초 단위가 아니라 **몇 분씩** 막는다. 그리고
+ * 막혀 있는 동안 들어오는 요청은 대개 **차단을 연장시킨다.** 즉 막힌 뒤에
+ * 계속 두드리면 영영 안 풀린다.
  *
- * 그 사이에는 무엇을 해도 안 되고 자꾸 두드리면 더 길어진다. 1분부터
- * 늘려 가며 여섯 번 기다린다(1+2+3+4+5+6 = 합쳐서 21분). 사람이 21분 뒤에
- * 다시 누르는 대신 앱이 스스로 기다리는 것이고, 받은 만큼은 저장돼 있으니
- * 잃는 게 없다.
+ * 그런데 우리가 정확히 그러고 있었다. 실제로 세어 봤다.
  *
- * 예전에는 네 번(10분)이었다. 10분을 다 기다리고도 안 풀려서 포기한 적이
- * 있어서 늘렸다. **기다리는 동안 요청은 한 번도 안 나간다** — 늘려도 업비트에
- * 부담이 되지 않고, 오히려 두드리는 횟수가 줄어 빨리 풀리는 쪽이다.
+ *     시세 한 번 부르기 → 업비트로 3번 (요청 1 + 진단 2)
+ *     막힌 걸 아는 상태에서 또 부르기 → 그래도 1번이 나간다
+ *
+ * 맨 위 시세는 20초마다 돈다. '막힌 걸 안다'가 1분뿐이었으므로, 1분에 한 번씩
+ * 3번이 나갔다 — **시간당 180번.** 아무것도 안 하고 앱만 켜 둔 밤새 천 번이
+ * 넘는다. 그 주소를 업비트가 이미 거절하고 있는데도.
+ *
+ * 그래서 규칙을 바꾼다.
+ *
+ *   1. 막힌 걸 알면 **아예 안 보낸다.** 보내고 실패하는 게 아니라, 보내지
+ *      않고 곧장 "아직 막혀 있습니다"라고 답한다. 나가는 요청은 0이다.
+ *   2. 조용히 있는 시간을 **막힐 때마다 늘린다.** 1 → 2 → 5 → 10 → 20 → 30분.
+ *      한 번이라도 성공하면 처음으로 되돌린다.
+ *
+ * 이건 사용자를 기다리게 하려는 게 아니라, **풀릴 틈을 주려는 것**이다.
+ * 두드리지 않는 것 말고 우리가 할 수 있는 일이 없다.
  */
-export const THROTTLE_PAUSE = 60000;
-export const THROTTLE_RETRIES = 6;
+export const QUIET_STEPS = [60000, 120000, 300000, 600000, 1200000, 1800000];
+
+/**
+ * 받는 중에 막혔을 때 **몇 번까지 기다렸다 이어 받을지.**
+ *
+ * 위 표의 앞 네 칸을 쓰므로 합쳐서 18분이다. 그 뒤로도 안 풀리면 사람에게
+ * 말한다 — 한 시간을 말없이 붙들고 있는 것보다 낫다. 받은 만큼은 저장돼
+ * 있으므로 나중에 다시 눌러도 이어서 받는다.
+ */
+export const THROTTLE_RETRIES = 4;
 
 /** 진단 결과를 이만큼은 그대로 쓴다 (밀리초). */
 export const DIAGNOSIS_TTL = 5000;
@@ -140,12 +160,12 @@ export class RateLimiter {
 export class UpbitClient {
   constructor({
     base = API_BASE, retries = 2, perSecond = PER_SECOND, fetcher = null,
-    stallPause = STALL_PAUSE, throttlePause = THROTTLE_PAUSE,
+    stallPause = STALL_PAUSE, quietSteps = QUIET_STEPS,
   } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.stallPause = stallPause;
-    this.throttlePause = throttlePause;
+    this.quietSteps = quietSteps;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
@@ -154,8 +174,53 @@ export class UpbitClient {
     this.succeeded = 0;
     /** 마지막 진단 결과. 실패마다 다시 물어보지 않으려고 잠깐 들고 있는다. */
     this.lastDiagnosis = null;
-    /** 막혀 있다고 확인된 시각. 그동안은 급하지 않은 요청을 아예 안 보낸다. */
-    this.blockedAt = 0;
+    /** 이 시각까지는 업비트에 **아무것도 안 보낸다** (유닉스 밀리초). */
+    this.blockedUntil = 0;
+    /** 연달아 몇 번 막혔는가. 조용히 있을 시간을 여기서 고른다. */
+    this.banLevel = 0;
+  }
+
+  /**
+   * 막혔다고 확인했다. **조용히 있을 시간을 한 칸 늘린다.**
+   *
+   * 연달아 막힐수록 길게 쉰다. 짧게 쉬고 다시 두드리면 차단이 연장될 뿐이라,
+   * 안 풀리는 상황에서 두드리는 횟수를 스스로 줄이는 것이 유일한 수단이다.
+   */
+  markBlocked() {
+    const step = this.quietSteps[Math.min(this.banLevel, this.quietSteps.length - 1)];
+    this.banLevel += 1;
+    this.blockedUntil = Date.now() + step;
+  }
+
+  /**
+   * 한 번이라도 받아 왔다. **처음으로 되돌린다.**
+   *
+   * 이게 없으면 새벽에 한 번 막힌 것 때문에 아침 내내 30분씩 쉬게 된다.
+   */
+  markWorking() {
+    this.banLevel = 0;
+    this.blockedUntil = 0;
+  }
+
+  /** 지금 막혀 있다고 알고 있는가. 그동안은 한 번도 안 보낸다. */
+  knownBlocked() {
+    return Date.now() < this.blockedUntil;
+  }
+
+  /** 다시 말 걸어도 되기까지 남은 초. 화면이 이 숫자를 보여준다. */
+  quietLeft() {
+    return Math.max(0, Math.ceil((this.blockedUntil - Date.now()) / 1000));
+  }
+
+  /** 아직 조용히 있어야 할 때 던질 오류. 보내지 않고 만든다. */
+  stillBlocked() {
+    const left = this.quietLeft();
+    const say = left >= 60 ? `${Math.ceil(left / 60)}분` : `${left}초`;
+    return new UpbitError(
+      `업비트가 아직 우리 요청을 막고 있습니다. ${say} 뒤에 다시 시도합니다 — `
+      + '그때까지는 두드리지 않습니다. 자꾸 두드리면 차단이 길어집니다.',
+      'throttled',
+    );
   }
 
   /**
@@ -165,6 +230,13 @@ export class UpbitClient {
    */
   async get(path, params = {}, toSeconds = null, { retries = this.retries } = {}) {
     let last = null;
+
+    // **막힌 걸 알면 보내지 않는다.**
+    //
+    // 예전에는 여기가 없어서, 막힌 걸 뻔히 알면서도 일단 보내고 실패했다.
+    // 그 한 번이 차단을 연장시킨다. 보내지 않는 것이 지금 할 수 있는 유일한
+    // 일이므로, 확인을 요청보다 **앞**에 둔다.
+    if (this.knownBlocked()) throw this.stillBlocked();
 
     for (let attempt = 0; ; attempt += 1) {
       const url = new URL(this.base + path);
@@ -199,6 +271,9 @@ export class UpbitClient {
           throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
         }
         this.succeeded += 1;
+        // 통했다. 쌓아 둔 차단 기억을 지운다 — 안 그러면 새벽에 한 번 막힌
+        // 것 때문에 아침 내내 30분씩 쉰다.
+        this.markWorking();
         return payload;
       }
 
@@ -242,12 +317,12 @@ export class UpbitClient {
     }
     // **막힌 걸 이미 알면 다시 물어보지 않는다.**
     //
-    // 진단 한 번에 업비트로 두 번 나간다(평범한 요청 + no-cors). 몇 분짜리
-    // 차단 동안 5초마다 그걸 반복하면, 확인하려다 풀릴 틈을 없앤다.
-    if (this.knownBlocked() && this.lastDiagnosis) return this.lastDiagnosis.error;
+    // 진단 한 번에 업비트로 두 번 나간다(평범한 요청 + no-cors). 차단 동안
+    // 그걸 반복하면, 확인하려다 풀릴 틈을 없앤다. 확인도 두드리는 것이다.
+    if (this.knownBlocked()) return this.lastDiagnosis?.error ?? this.stillBlocked();
     const remember = (error, blocked = false) => {
       this.lastDiagnosis = { at: Date.now(), error };
-      if (blocked) this.blockedAt = Date.now();
+      if (blocked) this.markBlocked();
       return error;
     };
     const offline = () => new UpbitError(
@@ -265,12 +340,27 @@ export class UpbitClient {
       return remember(offline());
     }
 
+    // **한 번 막힌 걸 확인했으면, 다시 확인하는 데 두 번을 더 쓰지 않는다.**
+    //
+    // 조용히 있다가 시간이 되어 한 번 보냈는데 또 실패했다면, 답은 뻔하다 —
+    // 아직 막혀 있는 것이다. 그걸 확인하겠다고 업비트로 두 번을 더 보내면
+    // 재시도 한 번의 값이 3배가 되고, 그 3배가 차단을 연장시킨다.
+    //
+    // 인터넷이 끊긴 경우는 바로 위에서 이미 걸렀다(우리 쪽 파일 받아 보기).
+    // 업비트로는 한 번도 안 나간다.
+    if (this.banLevel > 0) {
+      return remember(new UpbitError(
+        '업비트가 아직 우리 요청을 막고 있습니다. 조금 더 기다렸다 다시 시도합니다.',
+        'throttled',
+      ), true);
+    }
+
     if (!(await this.plainWorks()) && await this.reaches()) {
       return remember(new UpbitError(
         '업비트가 지금 우리 요청을 막고 있습니다. 업비트까지는 갔고 답도 왔지만 '
         + '브라우저가 그 답을 읽을 수 없습니다 — 거절당했을 때 그렇습니다. '
-        + '요청이 잦아서 잠시 막힌 것일 수 있습니다. 받는 중이었다면 앱이 스스로 '
-        + '기다렸다 이어 받고, 아니면 20분쯤 뒤에 다시 눌러 주세요.',
+        + '요청이 잦아서 잠시 막힌 것일 수 있습니다. **지금부터는 두드리지 않고 '
+        + '기다립니다** — 막혀 있는 동안 계속 두드리면 차단이 길어지기 때문입니다.',
         'throttled',
       ), true);
     }
@@ -285,16 +375,6 @@ export class UpbitClient {
       '인터넷은 되는데 업비트에 닿지 못했습니다. 업비트가 잠깐 막혔거나 점검 중일 수 있습니다.',
       'blocked',
     ));
-  }
-
-  /**
-   * 지금 막혀 있다고 알고 있는가.
-   *
-   * 급하지 않은 요청(맨 위 시세)은 이 동안 아예 보내지 않는다. 숫자 하나
-   * 때문에 막힌 업비트를 계속 두드리면 풀릴 틈만 없어진다.
-   */
-  knownBlocked(within = THROTTLE_PAUSE) {
-    return this.blockedAt > 0 && Date.now() - this.blockedAt < within;
   }
 
   /** 가장 평범한 요청이 되는가. */
@@ -432,9 +512,16 @@ export class UpbitClient {
           && (banned ? stalls < THROTTLE_RETRIES : got > 0 && stalls < STALL_RETRIES);
         if (!canWait) throw error;
         stalls += 1;
+        // **얼마나 쉴지는 클라이언트가 정한다.**
+        //
+        // 막힌 것은 blockedUntil이 이미 잡혀 있다. 여기서 따로 세면 두 시계가
+        // 어긋나서, 짧은 쪽이 끝나자마자 보내려다 긴 쪽에 막혀 아무 일도
+        // 안 하고 시도만 한 번 날린다. 조용히 있을 시간은 **한 곳에서만** 센다.
+        const until = banned
+          ? Math.max(this.blockedUntil, Date.now())
+          : Date.now() + this.stallPause * stalls;
         // 몇 분을 아무 표시 없이 쉬면 멈춘 것으로 보인다. 1초마다 남은
         // 시간을 알려서, 기다리는 중이라는 걸 보이게 한다.
-        const until = Date.now() + (banned ? this.throttlePause : this.stallPause) * stalls;
         while (Date.now() < until) {
           if (shouldStop && shouldStop()) break;
           if (onProgress) {

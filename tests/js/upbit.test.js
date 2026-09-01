@@ -242,7 +242,7 @@ test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => 
   let calls = 0;
   const UNBLOCKS_AT = 3;
   const client = new UpbitClient({
-    retries: 0, perSecond: 100000, throttlePause: 20,
+    retries: 0, perSecond: 100000, quietSteps: [20],
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);   // 닿기는 한다 = 막힌 상태
@@ -266,7 +266,7 @@ test('막혀 있으면 기다렸다가 스스로 이어 받는다', async () => 
 test('막힌 채로 영원히 매달리지는 않는다', async () => {
   // 기다리는 것과 붙잡고 있는 것은 다르다. 끝내 안 풀리면 말해 줘야 한다.
   const client = new UpbitClient({
-    retries: 0, perSecond: 100000, throttlePause: 5,
+    retries: 0, perSecond: 100000, quietSteps: [5],
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);
@@ -329,4 +329,92 @@ test('판 번호와 캐시 이름이 어긋나지 않는다', async () => {
 
   // 서비스 워커가 담는 목록에 version.js가 있어야 오프라인에서도 뜬다.
   assert.ok(sw.includes("'./version.js'"), '서비스 워커가 version.js를 안 담습니다');
+});
+
+// ------------------------------------------- 막혀 있는 동안 얼마나 두드리나
+//
+// **"전혀 데이터를 불러오고 있지 않아"의 원인이 여기 있었다.**
+//
+// 업비트는 한도를 넘긴 주소를 몇 분씩 막고, 막혀 있는 동안 들어오는 요청은
+// 대개 차단을 연장시킨다. 그런데 우리가 정확히 그러고 있었다 — 실패할 때마다
+// 업비트로 3번(요청 1 + 진단 2)이 나갔고, 막힌 걸 아는 상태에서도 일단
+// 보내고 실패했다. 맨 위 시세가 20초마다 도니까 밤새 천 번이 넘게 나갔다.
+//
+// 두드리지 않는 것 말고 우리가 할 수 있는 일이 없다. 그래서 이 셋을 묶는다.
+
+test('막힌 걸 알면 업비트로 한 번도 안 보낸다', async () => {
+  // 예전에는 여기서 1번이 나갔다. 보내고 실패하는 게 아니라 안 보내야 한다.
+  let calls = 0;
+  const client = new UpbitClient({
+    retries: 0,
+    perSecond: 100000,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') { calls += 1; return OK([]); }
+      calls += 1;
+      throw new TypeError('Load failed');
+    },
+  });
+
+  await client.getTicker('KRW-BTC').catch(() => {});
+  assert.ok(client.knownBlocked(), '막힌 걸 기억해야 합니다');
+
+  calls = 0;
+  const failure = await client.getTicker('KRW-BTC').then(() => null, (error) => error);
+  assert.equal(calls, 0, `막힌 걸 아는데 ${calls}번을 보냈습니다`);
+  assert.equal(failure.kind, 'throttled');
+  assert.ok(failure.message.includes('막고'), '왜 안 보냈는지 말해야 합니다');
+});
+
+test('막힐수록 더 길게 입을 다물고, 한 번 통하면 처음으로 돌아간다', () => {
+  const client = new UpbitClient({ quietSteps: [1000, 5000, 20000] });
+  const windows = [];
+  for (let i = 0; i < 4; i += 1) {
+    client.markBlocked();
+    windows.push(client.blockedUntil - Date.now());
+  }
+  // 늘어나야 한다. 같은 간격으로 계속 두드리면 풀릴 틈이 안 생긴다.
+  assert.ok(windows[1] > windows[0], `안 늘어났습니다: ${windows}`);
+  assert.ok(windows[2] > windows[1], `안 늘어났습니다: ${windows}`);
+  // 맨 끝 칸에서 멈춘다 — 한없이 늘어나면 풀린 뒤에도 하루를 쉰다.
+  assert.ok(windows[3] <= windows[2] + 5, `상한이 없습니다: ${windows}`);
+
+  // 한 번이라도 받아 오면 되돌린다. 안 그러면 새벽에 한 번 막힌 것 때문에
+  // 아침 내내 20초씩 쉰다.
+  client.markWorking();
+  assert.equal(client.knownBlocked(), false, '통했는데도 막힌 줄 압니다');
+  client.markBlocked();
+  assert.ok(client.blockedUntil - Date.now() <= 1000, '처음으로 안 돌아갔습니다');
+});
+
+test('밤새 막혀 있어도 시간당 몇 번밖에 안 두드린다', async () => {
+  // 실제 상황 그대로 8시간을 돌린다 — 앱을 켜 두면 맨 위 시세가 20초마다
+  // 돌고, 업비트는 계속 거절한다. 예전 코드는 1,443번이었다(시간당 180번).
+  // 이미 거절당하고 있는 주소로 그만큼 보내면 풀릴 리가 없다.
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  let calls = 0;
+  try {
+    const client = new UpbitClient({
+      retries: 0,
+      fetcher: async (url, init) => {
+        if (isPing(url)) return OK([]);
+        calls += 1;
+        if (init?.mode === 'no-cors') return OK([]);
+        throw new TypeError('Load failed');
+      },
+    });
+    const start = clock;
+    const HOURS = 8;
+    while (clock - start < HOURS * 3600 * 1000) {
+      // 워커가 하는 것과 같다: 막힌 걸 알면 아예 묻지 않는다.
+      // eslint-disable-next-line no-await-in-loop
+      if (!client.knownBlocked()) await client.getTicker('KRW-BTC').catch(() => {});
+      clock += 20000;
+    }
+    assert.ok(calls <= 40, `8시간에 ${calls}번을 두드렸습니다 (예전 1,443번)`);
+  } finally {
+    Date.now = realNow;
+  }
 });
