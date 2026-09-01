@@ -38,6 +38,19 @@ export const PAGE = 200;
 export const PER_SECOND = 3;
 
 /**
+ * 잘 되고 있을 때 **올라갈 수 있는 상한.**
+ *
+ * 처음에는 이게 없었다. 정확히는 상한이 시작 속도와 같았다(`top = perSecond`).
+ * 그래서 한 번도 안 막히고 술술 받는 동안에도 초당 3회를 절대 못 넘었다.
+ * 실측 72초 / 231번 = 초당 3.2회 — 받는 시간 전부가 이 기다림이었다.
+ *
+ * 시작은 조심스럽게(3회), 잘 되면 올라간다(최대 8회). 업비트가 한 번이라도
+ * 밀어내면 곧장 절반으로 내린다. 그래야 진짜 한도를 찾아간다.
+ * 업비트 시세 API의 공개 한도는 초당 10회다.
+ */
+export const CEILING = 8;
+
+/**
  * `to`(어느 시점 이전을 달라)를 적는 방법. 업비트가 여럿을 받아 준다.
  *
  * 왜 여러 개를 두는가 — 아이패드에서 실제로 돌려 보니 **`to`가 붙은 요청만**
@@ -87,8 +100,22 @@ export const SWEEP_PAUSE = 2000;
 /** 아무리 느려져도 이보다 느려지지는 않는다 (초당 회수). */
 export const SLOWEST = 0.5;
 
-/** 이만큼 연속으로 성공하면 도로 빨라져 본다. */
-export const SPEEDUP_AFTER = 20;
+/**
+ * 이만큼 연속으로 성공하면 빨라져 본다.
+ *
+ * 20이었는데 너무 느긋했다. 30일치가 231번이라 올릴 기회가 11번뿐이고,
+ * 한 번 삐끗해 절반으로 내려가면 그 안에 회복이 안 된다.
+ */
+export const SPEEDUP_AFTER = 10;
+
+/**
+ * 되돌아온 뒤 이만큼(× SPEEDUP_AFTER)을 더 잘 받으면 **한 번 더 올려 본다.**
+ *
+ * 예전에는 한 번 되돌아오면 영영 안 올렸다. 그런데 개수 조합이 10개짜리로
+ * 내려가 있으면 요청이 **스무 배**가 된다 (30일치 216번 → 4,320번). 딸꾹질
+ * 한 번의 대가가 그것이면 너무 크다. 오래 잘 되고 있으면 다시 올려 본다.
+ */
+export const CLIMB_RETRY = 10;
 
 /**
  * 받는 도중에 걸렸을 때 **같은 자리에서 몇 번까지 다시 이어 받을지.**
@@ -121,10 +148,13 @@ export const DIAGNOSIS_TTL = 5000;
  * 곳에서 동시에 불러도 서로 겹치지 않고 줄을 선다.
  */
 export class RateLimiter {
-  constructor(perSecond = PER_SECOND) {
+  constructor(perSecond = PER_SECOND, ceiling = CEILING) {
     this.perSecond = Math.max(SLOWEST, perSecond);
-    /** 원래 속도. 잘 되면 여기까지 다시 올린다. */
-    this.top = this.perSecond;
+    /**
+     * 올라갈 수 있는 상한. **시작 속도와 다른 값이어야 한다.**
+     * 같게 두면 잘 되고 있어도 절대 빨라지지 못한다 — 그게 느렸던 이유다.
+     */
+    this.top = Math.max(this.perSecond, ceiling);
     this.next = 0;
   }
 
@@ -196,6 +226,8 @@ export class UpbitClient {
     this.settled = false;
     /** 지금 더 빠른 조합을 시험해 보는 중이면, 안 될 때 돌아갈 자리. */
     this.fallback = null;
+    /** 되돌아온 뒤 얼마나 잘 되고 있는지. 충분하면 다시 올려 본다. */
+    this.climbWait = 0;
     /** 마지막 진단 결과. 실패마다 다시 물어보지 않으려고 잠깐 들고 있는다. */
     this.lastDiagnosis = null;
   }
@@ -304,9 +336,21 @@ export class UpbitClient {
           // **개수도 도로 올려 본다.** 더듬는 중에 딸꾹질 한 번으로 10개짜리
           // 조합에 눌러앉으면, 그 뒤로 계속 스무 배 많은 요청을 보내게 된다.
           // 4,812개에서 멈추고 "많이 느리다"는 말이 나온 이유가 여기다.
-          if (wantsTo && !this.settled && this.planAt > 0) {
-            this.fallback = this.planAt;
-            this.planAt -= 1;
+          if (wantsTo && this.planAt > 0) {
+            if (!this.settled) {
+              this.fallback = this.planAt;
+              this.planAt -= 1;
+            } else {
+              // 되돌아온 뒤에도 한참 잘 되고 있으면 한 번 더 올려 본다.
+              // 영영 안 올리면 딸꾹질 한 번에 스무 배 느린 채로 끝까지 간다.
+              this.climbWait += 1;
+              if (this.climbWait >= CLIMB_RETRY) {
+                this.climbWait = 0;
+                this.settled = false;
+                this.fallback = this.planAt;
+                this.planAt -= 1;
+              }
+            }
           }
         }
         return payload;

@@ -21,7 +21,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  RateLimiter, SPEEDUP_AFTER, TO_FORMATS, UpbitClient, UpbitError,
+  PER_SECOND, RateLimiter, SPEEDUP_AFTER, TO_FORMATS, UpbitClient, UpbitError,
 } from '../../web/core/upbit.js';
 
 const OK = (rows) => ({ status: 200, async json() { return rows; }, async text() { return ''; } });
@@ -425,6 +425,30 @@ test('끝까지 안 되면 그때는 멈춘다 (영원히 매달리지 않는다
   );
 });
 
+test('시작 속도와 상한은 달라야 한다', () => {
+  // **이것 때문에 느렸다.** 상한을 시작 속도와 같게 두면(`top = perSecond`)
+  // 한 번도 안 막히고 술술 받는 동안에도 절대 빨라지지 못한다.
+  // 실측 72초 / 231번 = 초당 3.2회 — 받는 시간이 전부 이 기다림이었다.
+  // 상한을 따로 두자 30.5초가 됐다.
+  const limiter = new RateLimiter();
+  assert.ok(
+    limiter.top > limiter.perSecond,
+    `상한(${limiter.top})이 시작 속도(${limiter.perSecond})보다 크지 않습니다 — `
+    + '이러면 잘 되고 있어도 영영 안 빨라집니다',
+  );
+
+  // 잘 되면 시작 속도를 **넘어서** 올라가야 한다.
+  for (let i = 0; i < 20; i += 1) limiter.speedUp();
+  assert.ok(
+    limiter.perSecond > PER_SECOND,
+    `아무리 잘 돼도 초당 ${limiter.perSecond}회에 묶여 있습니다`,
+  );
+  assert.equal(limiter.perSecond, limiter.top, '상한까지는 올라가야 합니다');
+
+  // 그래도 상한은 넘지 않는다. 업비트 공개 한도는 초당 10회다.
+  assert.ok(limiter.top <= 10, `상한 ${limiter.top}은 업비트 한도를 넘습니다`);
+});
+
 test('잘 되면 속도가 도로 올라간다', async () => {
   // 이게 없으면 딸꾹질 한 번이 끝까지 가는 벌이 된다.
   const limiter = new RateLimiter(8);
@@ -465,7 +489,7 @@ test('작은 개수에 눌러앉지 않고 도로 올려 본다', async () => {
   assert.equal(client.planAt, 0, `${client.planAt}번 조합에 눌러앉았습니다`);
 });
 
-test('올려 봤다가 안 되면 되돌아가고, 다시는 안 올린다', async () => {
+test('올려 봤다가 안 되면 되돌아가고, 한동안 안 올린다', async () => {
   const GOOD = 1;   // 1번 조합만 통한다
   const client = new UpbitClient({
     retries: 0, perSecond: 100000, sweepPause: 5,
