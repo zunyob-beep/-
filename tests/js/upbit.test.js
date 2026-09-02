@@ -768,6 +768,73 @@ test('업비트가 알려 주는 남은 한도를 읽고 따른다', async () =>
   assert.ok(plain.next - Date.now() < 100, '헤더도 없는데 쉬었습니다');
 });
 
+test('브라우저 요청은 분당 6번이라는 걸 헤더에서 배운다', async () => {
+  // **이 앱이 며칠을 헤맨 이유가 이 한 줄이었다.**
+  //
+  // 깃허브 액션에서 같은 주소를 두 번 불러 보면 이렇게 나온다.
+  //
+  //     Origin 없이   → remaining-req: group=candles; min=600; sec=9
+  //     Origin 붙여서 → remaining-req: group=origin;  min=6;   sec=0
+  //
+  // 같은 주소인데 한도 묶음이 다르다. 브라우저는 `origin` 묶음이고 분당
+  // 6번이다 — 초당 0.1번. 우리는 초당 3번(30배)을 보내고 있었다.
+  const limiter = new RateLimiter(3);
+  limiter.observe('group=origin; min=6; sec=0');
+  assert.ok(
+    limiter.perSecond <= 6 / 60 + 1e-9,
+    `분당 6번으로 안 내려갔습니다: 초당 ${limiter.perSecond}`,
+  );
+  // 요청 간격이 10초쯤 되어야 한다
+  assert.ok(limiter.gap >= 9000, `간격이 ${limiter.gap}ms입니다`);
+});
+
+test('한도가 넉넉하다고 빨라지지는 않는다', async () => {
+  // 늦추기만 한다. 아끼는 만큼이 덜 막히는 쪽으로 돌아온다.
+  const limiter = new RateLimiter(1);
+  limiter.observe('group=candles; min=600; sec=9');
+  assert.equal(limiter.perSecond, 1, '여유가 있다고 빨라졌습니다');
+});
+
+test('남은 분 한도가 적으면 그만큼으로 편다', async () => {
+  // 묶음 이름을 몰라도 남은 개수만으로 속도를 정할 수 있다.
+  const limiter = new RateLimiter(3);
+  limiter.observe('group=무엇이든; min=6; sec=9');
+  assert.ok(limiter.perSecond <= 0.11, `초당 ${limiter.perSecond}`);
+});
+
+test('직접 가는 길은 처음부터 분당 6번으로 간다', async () => {
+  // 헤더를 못 읽는 경우가 있다(브라우저가 안 열어 주면). 그때도 30배를
+  // 보내면 안 된다 — 첫 요청부터 거절당하고, 거절 응답은 읽히지도 않는다.
+  const client = new UpbitClient({ fetcher: async () => OK([]) });
+  client.paceForRoute();
+  assert.ok(
+    client.limiter.perSecond <= 6 / 60 + 1e-9,
+    `직접 길이 초당 ${client.limiter.perSecond}입니다`,
+  );
+});
+
+test('우회로 넘어가면 다시 빨라진다', async () => {
+  // 우회는 우회 서버가 대신 부르므로 서버 몫(분당 600)을 쓴다. 직접에서
+  // 내려간 속도를 그대로 들고 가면, 쓸 수 있는 한도를 100배 놀리게 된다.
+  const client = new UpbitClient({ fetcher: async () => OK([]) });
+  client.paceForRoute();
+  const direct = client.limiter.perSecond;
+  client.nextRoute();
+  client.paceForRoute();
+  assert.ok(client.limiter.perSecond > direct * 10,
+    `우회인데 초당 ${client.limiter.perSecond}입니다`);
+});
+
+test('한 길에서 배운 속도가 다른 길로 옮아붙지 않는다', async () => {
+  const client = new UpbitClient({ fetcher: async () => OK([]) });
+  client.nextRoute();               // 우회로 옮긴다
+  client.paceForRoute();
+  const before = client.limiter.perSecond;
+  client.learned.set(0, 6 / 60);    // 직접 길에서 배운 것
+  client.paceForRoute();
+  assert.equal(client.limiter.perSecond, before, '남의 길에서 배운 것을 씌웠습니다');
+});
+
 test('받은 응답의 남은 한도를 실제로 챙겨 본다', async () => {
   // 헤더가 와도 안 읽으면 없는 것과 같다. get()이 실제로 보는지 확인한다.
   const client = new UpbitClient({

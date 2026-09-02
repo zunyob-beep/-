@@ -171,6 +171,9 @@ const FETCH_BUDGET_MS = 90000;
  */
 const SEED_TOPUP_MS = 20000;
 
+/** 미리 받아 둔 파일이 이보다 새것이면 업비트에 물어보지 않는다 (초). */
+const SEED_FRESH_SECONDS = 120;
+
 /**
  * **하루 전과 견준 변화를 받아둔 분봉에서 계산한다.**
  *
@@ -307,7 +310,18 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   // 막히면 앱은 아무것도 못 했다. 이제는 파일이 첫째다 — 한 번 내려받으면
   // 14일치가 통째로 들어온다. 업비트는 그 뒤에 최근 몇 분만 채우는,
   // **되면 좋은** 자리로 내려간다.
-  if (fresh) seedAt = await seedFrom(db, market);
+  if (fresh) {
+    seedAt = await seedFrom(db, market);
+    if (seedAt) {
+      // 막대가 여기서부터 보여야 한다. 파일 하나로 목표의 거의 전부가
+      // 들어오므로, 이 한 줄이 없으면 사용자는 아무 일도 안 일어난 줄 안다.
+      progress(
+        '미리 받아 둔 시세를 읽었습니다',
+        await db.count(market, 'minute1'),
+        Math.floor(bars / RATIO.minute1),
+      );
+    }
+  }
 
   // **가진 것으로 먼저 답한다.**
   //
@@ -335,7 +349,13 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   const deadline = Date.now() + (seedAt ? SEED_TOPUP_MS : FETCH_BUDGET_MS);
   let ranOut = false;
 
-  if (fresh) {
+  // **파일이 방금 것이면 업비트에 아예 안 물어본다.**
+  //
+  // 직접 가는 길은 분당 6번이라 한 요청에 10초가 든다. 파일이 이미 마지막
+  // 봉까지 담고 있는데 그 10초를 쓰는 건 아무것도 안 얻고 기다리는 것이고,
+  // 한도만 축낸다. 몇 분이라도 벌어져 있을 때만 채우러 간다.
+  const seedIsNow = seedAt && Date.now() / 1000 - seedAt < SEED_FRESH_SECONDS;
+  if (fresh && !seedIsNow) {
     for (const timeframe of ['minute1']) {
       if (blocked) break;
       const label = timeframeLabel(timeframe);
@@ -483,7 +503,12 @@ onmessage = async (event) => {
       await ready();
       // 막혀 있는 걸 이미 안다면 두드리지 않는다. 맨 위 숫자 하나 때문에
       // 회복을 늦출 이유가 없다.
-      const live = client.knownBlocked() ? null : await client.getPrice(message.market).catch(() => null);
+      // `keptOnly`면 업비트에 안 물어본다. 판이 막 끝난 직후에 쓴다 —
+      // 방금 저장한 마지막 봉이 우리가 가진 가장 새 값이라, 그걸 두고
+      // 분당 6번짜리 한도를 또 쓸 이유가 없다.
+      const live = (message.keptOnly || client.knownBlocked())
+        ? null
+        : await client.getPrice(message.market).catch(() => null);
       if (live) {
         say({ type: 'ticker', market: message.market, rows: [await withChange(live)] });
         return;

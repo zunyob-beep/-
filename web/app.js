@@ -151,6 +151,10 @@ function handle(message) {
       // 새 시세를 못 받았다. 결과는 나올 수 있지만(받아둔 것으로) 그건
       // '지금'이 아니다. 그 사실이 결과보다 먼저 보여야 한다.
       setBlocked(message.kind, message.seedAt);
+      // 방금 저장한 마지막 봉으로 맨 위 숫자를 채운다. 업비트에 안 간다 —
+      // 우리가 가진 가장 새 값이 이미 손안에 있는데 분당 6번짜리 한도를
+      // 또 쓸 이유가 없다.
+      send({ type: 'ticker', market, keptOnly: true });
       if (!message.stale) finish();
       // 예전에는 여기서 진단을 자동으로 돌렸다. 무엇 때문에 막히는지 몰랐을
       // 때는 그게 유일한 단서였다. 지금은 클라이언트가 이미 정확히 가르므로
@@ -220,6 +224,8 @@ function start(text) {
 
 /** 새 판으로 갈아탈 준비가 됐지만 받는 중이라 미뤄 둔 것. */
 let pendingSwap = null;
+/** 금액을 고쳐 놓고 다시 세기를 기다리는 중인가. */
+let amountPending = false;
 
 function finish() {
   busy = false;
@@ -227,6 +233,15 @@ function finish() {
   $('btn-stop').hidden = true;
   $('progress').hidden = true;
   setStale(false);
+  // **금액을 고쳐 놓고 기다리던 다시 세기가 있으면 이제 한다.**
+  //
+  // 예전에는 받는 중이면 그냥 버렸다(`if (!busy)`). 그러면 사용자가 금액을
+  // 고쳐도 판정 문구는 옛 금액으로 남는다 — 물어 놓고 답에는 안 쓰는 셈이다.
+  // 받는 시간이 길어질수록 이게 자주 일어난다.
+  if (amountPending && lastAnalysis) {
+    amountPending = false;
+    setTimeout(() => { if (!busy) run(false); }, 0);
+  }
   // 미뤄 둔 새 판 갈아타기가 있으면 **정리를 다 마친 뒤에** 한다.
   if (pendingSwap) {
     const swap = pendingSwap;
@@ -872,7 +887,10 @@ $('in-amount').addEventListener('input', () => {
   }
   clearTimeout(amountTimer);
   amountTimer = setTimeout(() => {
-    if (!busy && lastAnalysis) run(false);
+    if (!lastAnalysis) return;
+    // 받는 중이면 버리지 않고 **적어 뒀다가** 끝나면 한다.
+    if (busy) { amountPending = true; return; }
+    run(false);
   }, 800);
 });
 

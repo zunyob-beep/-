@@ -38,7 +38,9 @@ let seedOn = false;
 const SEED_BARS = 12000;
 
 function seedFile(market) {
-  const now = Math.floor(Date.now() / 1000 / 60) * 60;
+  // 10분 전까지만 담는다 — 실제로도 파일은 늘 몇 분 뒤처져 있다. 지금까지
+  // 담아 버리면 '마지막 몇 분을 업비트로 채우는' 길이 시험에서 안 걸린다.
+  const now = Math.floor(Date.now() / 1000 / 60) * 60 - 600;
   const rows = [];
   for (let i = SEED_BARS - 1; i >= 0; i -= 1) {
     const ts = now - i * 60;
@@ -248,11 +250,10 @@ await page.fill('#in-length', '0');
 await page.fill('#in-similarity', '2');
 await page.fill('#in-amount', '0');
 await page.click('#btn-live');
+// **판이 끝났는지**로 기다린다. 끝나는 모양이 여럿이다 — 다 받았거나,
+// 시간에 걸려 끊겼거나, 막혔거나. 어느 쪽이든 단추가 살아난다.
 await page.waitForFunction(
-  () => {
-    const job = document.getElementById('job').textContent;
-    return job.includes('마쳤') || job.includes('못 받') || !document.getElementById('error').hidden;
-  },
+  () => !document.getElementById('btn-live').disabled,
   null, { timeout: 300000 },
 );
 const body = await page.locator('main').innerText();
@@ -269,7 +270,7 @@ await page.fill('#in-amount', '1000000');
 // ── 3. 제대로 한 번 받는다 (다음 시험들의 재료)
 await page.click('#btn-live');
 await page.waitForFunction(
-  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  () => !document.getElementById('btn-live').disabled,
   null, { timeout: 300000 },
 );
 const before = await page.locator('#coverage').innerText();
@@ -327,7 +328,7 @@ await page.evaluate(() => { document.getElementById('btn-forget')?.click(); });
 await page.waitForTimeout(1000);
 await page.click('#btn-live');
 await page.waitForFunction(
-  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  () => !document.getElementById('btn-live').disabled,
   null, { timeout: 300000 },
 );
 const viaDetourText = await page.locator('#coverage').innerText();

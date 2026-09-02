@@ -43,6 +43,31 @@ const TYPES = {
 const BASE = '/-';
 const outside = [];
 
+/**
+ * **미리 받아 둔 봉 파일.** 진짜 앱이 켜자마자 읽는 것이 이것이다.
+ *
+ * 깃허브 액션이 20분마다 서버에서 받아 `data` 브랜치에 적어 두고, 앱은
+ * 그걸 내려받아 캐시에 넣은 뒤에야 업비트로 마지막 몇 분을 채운다.
+ * 이걸 안 내면 시험은 실제로 아무도 안 걷는 길을 걷게 된다.
+ */
+const SEED_BARS = 20000;
+function seedFile(market) {
+  // **10분 전까지만 담는다.** 실제로도 그렇다 — 서버가 20분마다 받으므로
+  // 파일은 늘 몇 분 뒤처져 있고, 앱은 그 몇 분을 업비트로 채우러 간다.
+  // 지금까지 담아 버리면 그 길이 시험에서 통째로 안 걸린다.
+  const now = Math.floor(Date.now() / 1000 / 60) * 60 - 600;
+  const rows = [];
+  for (let i = SEED_BARS - 1; i >= 0; i -= 1) {
+    const ts = now - i * 60;
+    const c = fakeCandle(ts, market);
+    rows.push([ts, c.opening_price, c.high_price, c.low_price,
+      c.trade_price, c.candle_acc_trade_volume]);
+  }
+  return JSON.stringify({
+    market, timeframe: 'minute1', step: 60, days: 14, made: now, rows,
+  });
+}
+
 function serve() {
   const server = createServer(async (req, res) => {
     const asked = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -52,6 +77,14 @@ function serve() {
       return;
     }
     const rest = asked.slice(BASE.length) || '/';
+    // 미리 받아 둔 봉 파일. 실제 앱에서는 raw.githubusercontent.com에서 오지만
+    // 시험은 바깥으로 안 나가므로 같은 주소에서 낸다.
+    const seed = rest.match(/^\/data\/(KRW-[A-Z]+)\.min1\.json$/);
+    if (seed) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(seedFile(seed[1]));
+      return;
+    }
     const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));
     if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
     try {
@@ -240,7 +273,9 @@ const bar = await page.evaluate(() => {
   };
 });
 check('진행 막대가 눈에 보인다', bar.shown && bar.tall >= 4, `높이 ${bar.tall}px`);
-check('진행 막대가 실제로 찬다', bar.wide > 0 && bar.wide < bar.track,
+// 다 찼을 수도 있다 — 미리 받아 둔 파일이 목표를 한 번에 채우면 100%다.
+// 그게 정상이고, 지켜야 할 것은 '0이 아니고 칸을 넘지 않는다'이다.
+check('진행 막대가 실제로 찬다', bar.wide > 0 && bar.wide <= bar.track + 1,
   `${Math.round(bar.wide)} / ${Math.round(bar.track)}px · 적힌 너비 ${bar.said} · ${bar.pct}`);
 check('몇 퍼센트인지 적혀 있다', /%$/.test(bar.pct), bar.pct);
 
