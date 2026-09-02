@@ -146,6 +146,22 @@ async function buildSeries(db, market, bars) {
 const FIRST_ANSWER = 2000;
 
 /**
+ * **한 번 누르면 이만큼만 받고 끝낸다.**
+ *
+ * 예전에는 목표를 다 채울 때까지 끝나지 않았다. 30일치면 216번이고, 거절이
+ * 섞이면 10분이 넘는다. 그동안 단추는 잠겨 있고 화면은 "받는 중"이다 —
+ * 사용자 눈에는 그게 **작동 안 하는 것**이다. 실제로 그 말을 들었다.
+ *
+ * 그래서 한 판을 시간으로 끊는다. 받은 만큼으로 계산해서 답을 주고 끝낸다.
+ * 지나간 봉은 다시 안 받으므로, 다시 누르면 **이어서** 받는다. 세 번 누르면
+ * 세 배가 쌓인다. 누를 때마다 반드시 끝나는 것이 오래 붙들고 있는 것보다
+ * 훨씬 낫다.
+ *
+ * 90초로 둔다 — 잘 풀리면 30일치(216번, 72초)가 한 번에 들어온다.
+ */
+const FETCH_BUDGET_MS = 90000;
+
+/**
  * **하루 전과 견준 변화를 받아둔 분봉에서 계산한다.**
  *
  * 예전에는 맨 위 가격을 `/v1/ticker`로 따로 받았다. 그 주소가 전일 대비까지
@@ -232,6 +248,10 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
     }
   }
 
+  // 한 판이 끝날 시각. 이걸 넘기면 받은 만큼으로 계산하고 끝낸다.
+  const deadline = Date.now() + FETCH_BUDGET_MS;
+  let ranOut = false;
+
   if (fresh) {
     for (const timeframe of ['minute1']) {
       if (blocked) break;
@@ -254,6 +274,11 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
         // eslint-disable-next-line no-await-in-loop
         await update(db, market, timeframe, wanted, {
           client,
+          shouldStop: () => {
+            if (Date.now() <= deadline) return false;
+            ranOut = true;
+            return true;
+          },
           onProgress: (done, total, info) => {
             if (info?.banned) {
               // 몇 분을 기다려야 한다. 남은 시간을 초 단위로 보여주지 않으면
@@ -335,7 +360,12 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
     // 뜻이 다르므로, 여기서는 문구만 바꾼다.
     onStep: (text) => progress(text),
   });
-  say({ type: 'done', analysis: analysisJson(analysis), stale: blocked !== null });
+  // **한 판이 시간에 걸려 끝났으면 그렇다고 말한다.**
+  //
+  // 조용히 끝내면 사용자는 다 받은 줄 안다. 다시 누르면 이어서 받는다는
+  // 것도 같이 말해야, 누를수록 쌓인다는 걸 알고 다시 누른다.
+  const more = ranOut ? { have: await db.count(market, 'minute1'), want: bars } : null;
+  say({ type: 'done', analysis: analysisJson(analysis), stale: blocked !== null, more });
 }
 
 onmessage = async (event) => {
