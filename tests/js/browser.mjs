@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 import { launchOptions } from './launch.mjs';
+import { DEFAULT_PERIOD } from '../../web/core/analysis.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -95,6 +96,18 @@ function fakeCandle(ts) {
 
 let requests = 0;
 
+// **시험은 바깥 세상을 부르지 않는다.**
+//
+// 앱은 직접 가는 길이 막히면 공개 우회 서버로 돌아선다. api.upbit.com만
+// 막아 두면 그 순간부터 진짜 남의 서버로 요청이 나간다 — 느리고, 남에게
+// 폐가 되고, 그 서버가 죽은 날 CI가 같이 죽는다. 통째로 끊는다.
+async function blockDetours(context) {
+  for (const pattern of ['https://corsproxy.io/**', 'https://api.allorigins.win/**']) {
+    // eslint-disable-next-line no-await-in-loop
+    await context.route(pattern, (route) => route.abort('failed'));
+  }
+}
+
 async function stubUpbit(context) {
   await context.route('https://api.upbit.com/**', async (route) => {
     requests += 1;
@@ -139,6 +152,7 @@ const { server, port } = await serve();
 const browser = await chromium.launch(launchOptions);
 const context = await browser.newContext({ ...chromium.devices?.['iPad (gen 7)'] });
 await stubUpbit(context);
+await blockDetours(context);
 const page = await context.newPage();
 
 // 마지막 단계에서 업비트를 일부러 끊으므로 그때의 네트워크 오류는
@@ -174,7 +188,11 @@ await page.waitForFunction(
 check('맨 위 시세가 뜬다', (await page.locator('#ticker-price').innerText()).includes('원'));
 
 // ── 실제로 받아서 계산한다
-await page.selectOption('#in-period', { index: 0 });
+// **index로 고르지 않는다.** 예전에는 index 0이 30일치였는데, 1일 선택지를
+// 앞에 넣으면서 1,440봉이 됐다. 그 정도로는 닮은 과거가 스무 개를 못 넘길
+// 때가 있어서 확률 표가 비고, 아래 '줄이 있다'가 가끔 실패한다. 실제로
+// CI에서 그렇게 한 번 죽었다. 사용자가 실제로 받는 기본값을 그대로 쓴다.
+await page.selectOption('#in-period', String(DEFAULT_PERIOD));
 await page.fill('#in-length', '20');
 await page.fill('#in-similarity', '0.6');
 await page.click('#btn-live');

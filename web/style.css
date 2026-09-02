@@ -562,3 +562,27 @@ table.theories tr.real td.l b { color: var(--accent); }
   .level { grid-template-columns: 3px 2.8rem 1fr 3.8rem; }
   .level-touch { display: none; }
 }
+
+/* ── 우회 주소
+ *
+ * 평소에는 접혀 있어야 한다. 업비트가 브라우저 요청을 막을 때만 필요한
+ * 것이라, 늘 펼쳐 두면 조작부가 무거워지고 "이걸 꼭 채워야 하나" 싶어진다. */
+.detour { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.detour > summary {
+  cursor: pointer; color: var(--dim); font-size: 13px;
+  list-style: none; padding: 2px 0;
+}
+.detour > summary::-webkit-details-marker { display: none; }
+.detour > summary::before { content: '▸ '; }
+.detour[open] > summary::before { content: '▾ '; }
+.detour > summary:hover { color: var(--text); }
+.detour p { margin: 10px 0; font-size: 13px; line-height: 1.6; max-width: 62ch; }
+.detour code {
+  font: 400 12px/1 var(--mono); background: var(--field);
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px;
+}
+.detour input { width: 100%; max-width: 46rem; }
+
+/* 지금 어느 길로 받았는지. 직접이 아닐 때만 뜬다. */
+.via { color: var(--dim); font-size: 12px; }
+.via b { color: var(--accent); font-weight: 500; }

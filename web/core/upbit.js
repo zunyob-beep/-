@@ -68,6 +68,51 @@ export const TO_FORMATS = [
   (seconds) => `${new Date(seconds * 1000).toISOString().slice(0, 19)}+00:00`,
 ];
 
+/**
+ * **업비트까지 가는 길.**
+ *
+ * 왜 이게 필요한가 — 진단표 세 장이 같은 말을 했다.
+ *
+ *     안 됨 | 봉 1개 (to 없음)      | TypeError: Load failed
+ *     안 됨 | 현재가 ①②③          | TypeError: Load failed
+ *     됨    | 같은 주소를 no-cors로 | 닿았습니다 (128ms)
+ *
+ * no-cors가 128ms에 닿는다는 건 **업비트 서버는 멀쩡히 답한다**는 뜻이다.
+ * 그런데 브라우저가 읽을 수 있는 요청은 거의 다 실패한다. 그리고 5G에서
+ * 와이파이로 바꿔도 똑같았다 — 우리 주소가 차단당한 게 아니라는 뜻이다.
+ *
+ * 즉 **브라우저에서 직접 부르는 길 자체가 막혀 있다.** 초당 회수를 낮추든
+ * 재시도를 늘리든 고칠 수 없는 종류다. 이틀 동안 그 위에서 조절만 했다.
+ *
+ * 브라우저가 못 가져오면 **브라우저가 아닌 곳을 거쳐서** 가져오면 된다.
+ * 우회 서버는 업비트에 서버끼리 물어보고, 그 답에 브라우저가 요구하는 허용
+ * 표시를 붙여서 돌려준다. 우리가 보내는 건 '어느 종목, 어느 시각'뿐이고
+ * 계정도 키도 없으므로, 남에게 보여서 곤란한 것이 없다.
+ *
+ * **직접이 먼저다.** 되면 아무 데도 안 거친다. 안 될 때만 돌아간다.
+ */
+export const ROUTES = [
+  { id: 'direct', label: '직접', wrap: (url) => url },
+  {
+    id: 'corsproxy',
+    label: 'corsproxy.io',
+    wrap: (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  },
+  {
+    id: 'allorigins',
+    label: 'allorigins.win',
+    wrap: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  },
+];
+
+/**
+ * 직접 길이 이만큼 연달아 실패하면 우회로 넘어간다.
+ *
+ * 한 번 실패는 아무 정보가 아니다(통과가 섞인 망도 있었다). 세 번 연달아
+ * 실패하면 그건 이 길이 막힌 것이다.
+ */
+export const SWITCH_AFTER = 3;
+
 /** 시세 조회 실패. `kind`로 무엇 때문인지 구분한다. */
 export class UpbitError extends Error {
   constructor(message, kind = 'unknown', extra = {}) {
@@ -203,6 +248,7 @@ export class UpbitClient {
   constructor({
     base = API_BASE, retries = RETRIES, perSecond = PER_SECOND, fetcher = null,
     stallPause = STALL_PAUSE, quietSteps = QUIET_STEPS, retryPause = RETRY_PAUSE,
+    routes = ROUTES, myProxy = null,
   } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
@@ -223,6 +269,41 @@ export class UpbitClient {
     this.banLevel = 0;
     /** 마지막으로 실제로 받아 온 시각. 이게 있으면 길이 열려 있는 것이다. */
     this.lastSuccessAt = 0;
+
+    // **업비트까지 가는 길.** 직접이 먼저고, 안 되면 우회한다.
+    //
+    // 사용자가 자기 우회 주소를 적어 두면 그게 맨 앞에 선다 — 남의 서버를
+    // 안 거치는 편이 언제나 낫고, 자기 것이면 한도도 자기 몫이다.
+    this.routes = myProxy
+      ? [{ id: 'mine', label: '내 우회 주소', wrap: (url) => myProxy.replace('{url}', encodeURIComponent(url)) },
+        ...routes]
+      : [...routes];
+    /** 지금 쓰는 길. 통하는 길을 찾으면 거기 머문다. */
+    this.route = 0;
+    /** 이 길로 연달아 실패한 횟수. */
+    this.routeMisses = 0;
+  }
+
+  /** 지금 어느 길로 가고 있는지. 화면이 이걸 보여준다. */
+  get routeLabel() {
+    return this.routes[this.route]?.label ?? '직접';
+  }
+
+  /**
+   * 이 길이 안 통한다. **다음 길로 넘어간다.**
+   *
+   * 넘어가면 실패 횟수를 0으로 되돌린다 — 새 길은 새로 세야 한다.
+   * 마지막 길까지 갔으면 더 갈 데가 없으므로 거기 머문다(거짓을 돌려준다).
+   */
+  nextRoute() {
+    if (this.route >= this.routes.length - 1) return false;
+    this.route += 1;
+    this.routeMisses = 0;
+    // 길이 바뀌었으니 옛 판단은 버린다. '막혔다'는 앞 길 이야기다.
+    this.lastDiagnosis = null;
+    this.blockedUntil = 0;
+    this.banLevel = 0;
+    return true;
   }
 
   /**
@@ -306,7 +387,9 @@ export class UpbitClient {
       try {
         // 헤더를 하나도 붙이지 않는다. 붙이면 브라우저가 먼저 OPTIONS를
         // 보내는데(사전 요청), 그건 실패할 구멍을 하나 더 만드는 것이다.
-        response = await this.fetch(url.toString(), { cache: 'no-store' });
+        response = await this.fetch(
+          this.routes[this.route].wrap(url.toString()), { cache: 'no-store' },
+        );
       } catch {
         // **인터넷이 끊긴 것은 다시 해 봐야 소용없다.**
         //
@@ -317,6 +400,21 @@ export class UpbitClient {
         // 쪽마다 첫 실패에서만 확인한다. 실패할 때마다 확인하면 같은 답을
         // 수천 번 받으려고 우리 서버를 두드리는 셈이다.
         if (attempt === 0 && !(await this.online())) throw await this.diagnose();
+
+        // **이 길이 막힌 것이면 다른 길로 간다.**
+        //
+        // 같은 길을 열두 번 두드리는 것보다 다른 길을 한 번 가 보는 게 낫다.
+        // 브라우저에서 직접 부르는 길이 통째로 막혀 있던 것이 지금까지의
+        // 진짜 원인이었고, 그건 몇 번을 다시 해도 안 뚫린다.
+        this.routeMisses += 1;
+        if (this.routeMisses >= SWITCH_AFTER && this.nextRoute()) {
+          if (onRetry) onRetry(0, retries, this.routeLabel);
+          // 새 길에는 **재시도 횟수를 새로 준다.** 앞 길에서 쓴 횟수를 물려받으면
+          // 길이 셋인데 예산이 모자라 마지막 길은 가 보지도 못한다.
+          attempt = -1;
+          // eslint-disable-next-line no-continue
+          continue;
+        }
 
         // **한 번 실패했다고 무슨 일인지 알아보러 가지 않는다.**
         //
@@ -368,6 +466,7 @@ export class UpbitClient {
           throw new UpbitError('업비트 응답을 읽지 못했습니다 (JSON 아님)', 'parse');
         }
         this.succeeded += 1;
+        this.routeMisses = 0;
         // 통했다. 쌓아 둔 차단 기억을 지운다 — 안 그러면 새벽에 한 번 막힌
         // 것 때문에 아침 내내 30분씩 쉰다.
         this.markWorking();
@@ -503,7 +602,11 @@ export class UpbitClient {
     try {
       const url = new URL(this.base + path);
       for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-      const response = await this.fetch(url.toString(), { cache: 'no-store' });
+      // **지금 쓰는 길로 물어본다.** 직접으로만 물어보면, 우회로 잘 받고
+      // 있는 중에도 "안 됩니다"라고 답하게 된다 — 쓰지도 않는 길을 진단하는 셈이다.
+      const response = await this.fetch(
+        this.routes[this.route].wrap(url.toString()), { cache: 'no-store' },
+      );
       return response.status < 400;
     } catch {
       return false;

@@ -68,6 +68,18 @@ const fakeCandle = (ts, market) => {
   };
 };
 
+// **시험은 바깥 세상을 부르지 않는다.**
+//
+// 앱은 직접 가는 길이 막히면 공개 우회 서버로 돌아선다. api.upbit.com만
+// 막아 두면 그 순간부터 진짜 남의 서버로 요청이 나간다 — 느리고, 남에게
+// 폐가 되고, 그 서버가 죽은 날 CI가 같이 죽는다. 통째로 끊는다.
+async function blockDetours(context) {
+  for (const pattern of ['https://corsproxy.io/**', 'https://api.allorigins.win/**']) {
+    // eslint-disable-next-line no-await-in-loop
+    await context.route(pattern, (route) => route.abort('failed'));
+  }
+}
+
 async function stubUpbit(context) {
   await context.route('https://api.upbit.com/**', async (route) => {
     const url = new URL(route.request().url());
@@ -113,6 +125,7 @@ const context = await browser.newContext({
   deviceScaleFactor: 2,
 });
 await stubUpbit(context);
+await blockDetours(context);
 const page = await context.newPage();
 
 // 콘솔 오류는 **하나도** 없어야 한다. 눌렀는데 조용히 터지는 것이 제일 나쁘다.
