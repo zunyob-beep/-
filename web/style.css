@@ -497,6 +497,17 @@ table.theories tr.real td.l b { color: var(--accent); }
   user-select: all; overflow-x: auto;
 }
 
+/* 막힘 안내 밑에 접어 두는 '방금 보낸 요청'. 평소엔 눈에 안 걸리고,
+   보내 달라고 할 때만 펴면 된다. */
+.sent { margin-top: 10px; }
+.sent > summary {
+  cursor: pointer; font-size: 12px; color: var(--text-2);
+  list-style: none; text-decoration: underline; text-underline-offset: 3px;
+}
+.sent > summary::-webkit-details-marker { display: none; }
+.sent > summary::before { content: '▸ '; }
+.sent[open] > summary::before { content: '▾ '; }
+
 /* ------------------------------------------------------------ 지지·저항 */
 .level {
   display: grid;
