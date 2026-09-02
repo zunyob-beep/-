@@ -811,6 +811,33 @@ test('가격을 분봉에서 가져온다 — 다른 주소를 부르지 않는�
   );
 });
 
+test('봉이 막혀도 현재가로는 값을 가져온다', async () => {
+  // 업비트 한도는 묶음별로 따로 센다 (`group=candles`). 봉 묶음이 다 차도
+  // 현재가 묶음은 멀쩡할 수 있고, 사용자 진단표가 실제로 그 모양이었다.
+  // v35에서 현재가를 아예 지워서 그때부터 화면에 숫자가 하나도 안 떴다.
+  const asked = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      const path = new URL(url).pathname;
+      asked.push(path);
+      if (path.startsWith('/v1/candles/')) throw new TypeError('Load failed');
+      return OK([{ market: 'KRW-BTC', trade_price: 106735000, timestamp: 1700000000000 }]);
+    },
+  });
+  const now = await client.getPrice('KRW-BTC');
+  assert.equal(now.price, 106735000, '현재가를 못 읽었습니다');
+  assert.equal(now.ts, 1700000000, '시각이 초 단위가 아닙니다');
+  assert.ok(
+    asked.some((p) => p.startsWith('/v1/candles/')),
+    '봉을 먼저 물어보지 않았습니다 — 봉이 우선입니다',
+  );
+  assert.ok(asked.includes('/v1/ticker'), '봉이 막혔는데 현재가를 안 물어봤습니다');
+});
+
 test('맨 위 가격 하나 때문에 여러 번 두드리지 않는다', async () => {
   // 장식이다. 그것 하나 때문에 막혀 있는 업비트를 열두 번 더 두드릴 이유가 없다.
   let calls = 0;

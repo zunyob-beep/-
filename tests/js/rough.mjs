@@ -195,6 +195,18 @@ await page.waitForFunction(() => !document.getElementById('btn-live').disabled,
   null, { timeout: 30000 });
 note('막혀도 단추가 다시 살아난다', await page.isEnabled('#btn-live'));
 
+// **무엇을 어떻게 보냈는지가 화면에 남아야 한다.**
+//
+// 이게 없어서 여기까지 왔다. "거절당했습니다" 한 줄만 뜨고, 어느 길로 무슨
+// 주소를 보냈고 무슨 답이 왔는지는 아무 데도 안 남았다. 그래서 고칠 때마다
+// 추측이었다. 이제 막힘 안내 밑에 접힌 채로 붙어 있고, 펴면 그대로 나온다.
+await page.waitForSelector('#blocked .sent', { timeout: 15000 }).catch(() => {});
+await page.evaluate(() => { document.querySelector('#blocked .sent')?.setAttribute('open', ''); });
+const sentText = await page.locator('#blocked .sent .diag-text').innerText().catch(() => '');
+note('무엇을 보냈고 무슨 답이 왔는지 화면에 남는다',
+  /\/v1\/candles\//.test(sentText) && /\d+ms/.test(sentText),
+  sentText.split('\n')[0]?.slice(0, 52) ?? '아무것도 안 남았습니다');
+
 // ── 2. 잘못된 값을 넣는다
 //
 // 숫자 칸은 사람이 무엇이든 넣을 수 있다. 0개 봉으로 비교하라거나 상관계수

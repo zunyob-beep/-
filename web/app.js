@@ -13,6 +13,10 @@ import {
 } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
+
+/** 화면에 그대로 찍을 글자. 기록에는 주소가 들어 있으니 반드시 거른다. */
+const escapeHtml = (text) => String(text)
+  .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
 const signed = (x, d = 2) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
 
@@ -87,6 +91,29 @@ function routes() {
   ];
 }
 
+/**
+ * 워커가 요청 기록을 돌려주면 여기로 온다. 진단이 한 번에 하나만 물어보므로
+ * 하나면 충분하다.
+ */
+let onLog = null;
+
+/** 워커가 실제로 보낸 요청 목록을 받아 온다. 답이 없으면 빈 목록. */
+function askLog() {
+  return new Promise((resolve) => {
+    let done = false;
+    const settle = (rows) => { if (!done) { done = true; resolve(rows); } };
+    onLog = settle;
+    send({ type: 'log' });
+    setTimeout(() => { if (onLog === settle) onLog = null; settle([]); }, 2000);
+  });
+}
+
+/** 기록 한 줄: 시각 · 어느 길로 · 무슨 주소를 · 얼마나 걸려 · 무슨 답. */
+const logLines = (rows) => rows.map((r) => {
+  const at = new Date(r.at).toTimeString().slice(0, 8);
+  return `${at} | ${r.route} | ${r.path} | ${r.ms}ms | ${r.how}`;
+});
+
 function send(message) {
   if (!worker) spawn();
   if (!worker) return;
@@ -155,6 +182,12 @@ function handle(message) {
     case 'examples':
       drawExamples(message.examples, lastAnalysis);
       break;
+    case 'log': {
+      const waiting = onLog;
+      onLog = null;
+      if (waiting) waiting(message.rows || []);
+      break;
+    }
     case 'error':
       workerHasResult = false;
       finish();
@@ -287,6 +320,30 @@ function setBlocked(kind) {
   }[kind];
   box.innerHTML = said ?? '';
   box.hidden = !said;
+  if (said) attachLog(box);
+}
+
+/** 막힘 안내가 몇 번째 것인지. 늦게 온 기록이 새 안내에 붙는 걸 막는다. */
+let blockedTurn = 0;
+
+/**
+ * **방금 앱이 실제로 보낸 요청**을 막힘 안내 아래에 그대로 편다.
+ *
+ * 이걸 안 보여줘서 여기까지 왔다. 화면에는 "거절당했습니다" 한 줄만 뜨고,
+ * 무엇을 어느 길로 보냈고 무슨 답이 왔는지는 어디에도 안 남았다. 그래서
+ * 고칠 때마다 추측이었고, 아니면 또 추측이었다.
+ *
+ * 업비트로 나가는 요청은 하나도 안 늘어난다 — 워커가 이미 적어 둔 것을
+ * 꺼내 오는 것뿐이다. 접어 두었으니 평소엔 눈에 걸리지도 않는다.
+ */
+async function attachLog(box) {
+  const turn = (blockedTurn += 1);
+  const rows = await askLog();
+  if (turn !== blockedTurn || box.hidden || !rows.length) return;
+  box.insertAdjacentHTML('beforeend', `<details class="sent">
+      <summary>방금 보낸 요청 ${rows.length}개 — 무엇이 어떻게 실패했는지</summary>
+      <pre class="diag-text">${escapeHtml(logLines(rows).join('\n'))}</pre>
+    </details>`);
 }
 
 function reportWorkerError(message) {
@@ -1147,6 +1204,10 @@ async function runDiagnosis() {
   plan.push(['같은 주소를 no-cors로 (직접)', withTo, { mode: 'no-cors' }]);
 
   const done = [];
+  // **앱이 실제로 보낸 요청.** 위의 표는 '지금 물어보면 되는가'이고,
+  // 이건 '아까 눌렀을 때 무슨 일이 있었는가'다. 둘은 다른 질문이고,
+  // 지금까지 없던 건 뒤쪽이었다.
+  let sent = [];
   const draw = (running) => {
     const rows = done.map((r) => `<tr>
       <th>${r.label}</th>
@@ -1159,11 +1220,16 @@ async function runDiagnosis() {
         <span class="hint">한 번에 하나씩, ${DIAG_GAP}ms씩 벌려서 물어봅니다</span></div>
       ${running ? '' : `<p class="diag-said"><b>${headline}</b> ${detail}</p>`}
       <div class="table-wrap"><table class="cached"><tbody>${rows}</tbody></table></div>
+      ${sent.length ? `<div class="section-title">앱이 실제로 보낸 요청
+          <span class="hint">마지막 ${sent.length}개 — 시각 · 길 · 주소 · 걸린 시간 · 답</span></div>
+        <pre class="diag-text">${escapeHtml(logLines(sent).join('\n'))}</pre>` : ''}
       ${running
     ? '<p class="note-line dim">물어보는 중…</p>'
     : `<p class="note-line"><button type="button" id="btn-diag-copy" class="linky">결과
          복사하기</button> <span class="dim">복사해서 그대로 보내 주시면 됩니다.</span></p>`}`;
   };
+  draw(true);
+  sent = await askLog();
   draw(true);
 
   for (const [label, url, init] of plan) {
@@ -1181,6 +1247,7 @@ async function runDiagnosis() {
       `기시감 연결 진단 (${new Date().toISOString()})`,
       navigator.userAgent,
       ...done.map((r) => `${r.ok ? '됨  ' : '안 됨'} | ${r.label} | ${r.note}`),
+      ...(sent.length ? ['', `앱이 실제로 보낸 요청 (마지막 ${sent.length}개)`, ...logLines(sent)] : []),
     ].join('\n');
     try {
       await navigator.clipboard.writeText(text);

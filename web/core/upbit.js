@@ -332,6 +332,18 @@ export class UpbitClient {
     /** 마지막으로 실제로 받아 온 시각. 이게 있으면 길이 열려 있는 것이다. */
     this.lastSuccessAt = 0;
 
+    /**
+     * **실제로 보낸 요청을 그대로 적어 둔다.**
+     *
+     * 이걸 안 해서 여기까지 왔다. 화면에는 "거절당했습니다"만 뜨고, 무엇을
+     * 어느 길로 보냈고 무슨 답이 왔는지는 아무 데도 안 남았다. 그래서 매번
+     * 추측으로 고치고, 아니면 또 추측하고를 반복했다.
+     *
+     * 마지막 40개만 들고 있는다. 진단 화면이 이걸 그대로 보여준다 —
+     * 한 장이면 무엇이 되고 무엇이 안 되는지 다 나온다.
+     */
+    this.log = [];
+
     // **업비트까지 가는 길.** 직접이 먼저고, 안 되면 우회한다.
     //
     // 사용자가 자기 우회 주소를 적어 두면 그게 맨 앞에 선다 — 남의 서버를
@@ -474,13 +486,26 @@ export class UpbitClient {
 
       await this.limiter.acquire();
       let response = null;
+      const startedAt = Date.now();
+      const note = (how) => {
+        this.log.push({
+          at: Date.now(),
+          route: this.routeLabel,
+          path: `${path}${toSeconds !== null ? ' +to' : ''}`,
+          ms: Date.now() - startedAt,
+          how,
+        });
+        if (this.log.length > 40) this.log.shift();
+      };
       try {
         // 헤더를 하나도 붙이지 않는다. 붙이면 브라우저가 먼저 OPTIONS를
         // 보내는데(사전 요청), 그건 실패할 구멍을 하나 더 만드는 것이다.
         response = await this.fetch(
           this.routes[this.route].wrap(url.toString()), { cache: 'no-store' },
         );
+        note(`${response.status}`);
       } catch {
+        note('못 읽음 (TypeError)');
         // **인터넷이 끊긴 것은 다시 해 봐야 소용없다.**
         //
         // 그건 우리 쪽 파일 하나로 알 수 있고, 그 요청은 업비트로 나가지
@@ -785,18 +810,48 @@ export class UpbitClient {
   }
 
   /**
-   * 지금 얼마인지. 봉이 아니라 현재가다.
+   * 지금 얼마인지.
    *
-   * 봉은 그 분이 끝나야 확정되므로, '지금 시세'로 쓰면 최대 1분 늦은 값을
-   * 보여주게 된다. 화면 맨 위에 큰 글씨로 띄울 숫자는 그러면 안 된다.
+   * **봉으로 먼저 물어보고, 안 되면 현재가로 물어본다.**
+   *
+   * 이 순서에는 이유가 있다. 업비트의 한도는 하나가 아니라 **묶음별로**
+   * 따로 센다 — 응답 헤더가 `group=candles`라고 대놓고 말한다. 그러니
+   * `봉` 묶음이 다 차 있어도 `현재가` 묶음은 멀쩡할 수 있다. 실제로
+   * 사용자 진단표 세 장 중 두 장이 그 모양이었다: 현재가는 49ms에
+   * 돌아오는데 봉은 전부 실패.
+   *
+   * 그런데 v35에서 나는 현재가를 **아예 지웠다.** "그냥 분봉 기준으로
+   * 가격을 가져와"라는 말을 '현재가를 없애라'로 읽었기 때문이다. 그래서
+   * 봉이 막힌 그 순간부터 화면에는 숫자가 하나도 안 떴다 — "전혀 데이터를
+   * 못받아오고있어"가 여기였다.
+   *
+   * 봉이 우선인 건 맞다(같은 줄에서 받은 값이라 뒤에 쓰는 계산과 어긋나지
+   * 않는다). 다만 봉이 막혔다고 입을 다물 이유는 없다.
    */
   async getPrice(market) {
     // **재시도하지 않는다.** 맨 위 숫자는 장식이라, 그것 하나 때문에 막혀
     // 있는 업비트를 여러 번 더 두드릴 이유가 없다. 그건 회복을 늦출 뿐이다.
-    const rows = await this.getCandles(market, 'minute1', 1, null, { retries: 0 });
-    if (!rows.length) throw new UpbitError('현재가를 받지 못했습니다', 'unknown');
-    const now = rows[rows.length - 1];
-    return { market, price: now.close, ts: now.ts };
+    let first = null;
+    try {
+      const rows = await this.getCandles(market, 'minute1', 1, null, { retries: 0 });
+      if (rows.length) {
+        const now = rows[rows.length - 1];
+        return { market, price: now.close, ts: now.ts };
+      }
+      first = new UpbitError('현재가를 받지 못했습니다', 'unknown');
+    } catch (error) {
+      first = error;
+    }
+
+    // 봉 묶음만 막힌 것일 수 있다. 다른 묶음으로 한 번 더 물어본다.
+    const rows = await this.get('/v1/ticker', { markets: market }, null, { retries: 0 })
+      .catch(() => { throw first; });
+    const now = Array.isArray(rows) ? rows[0] : null;
+    const price = Number(now?.trade_price);
+    if (!Number.isFinite(price)) throw first;
+    // timestamp는 밀리초다. 없으면 지금으로 친다 — 현재가니까 사실이다.
+    const ms = Number(now.timestamp);
+    return { market, price, ts: Math.floor((Number.isFinite(ms) ? ms : Date.now()) / 1000) };
   }
 
   /**

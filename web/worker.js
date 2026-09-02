@@ -405,6 +405,15 @@ onmessage = async (event) => {
       say({ type: 'summary', market: message.market, cached: await summary(message.market) });
       return;
     }
+    // **앱이 실제로 보낸 요청 목록.** 진단 화면이 이걸 그대로 펴 준다.
+    //
+    // 여기까지 오는 데 오래 걸렸다. 그동안 화면에 남는 건 "거절당했습니다"
+    // 한 줄뿐이었고, 무엇을 어느 길로 보냈고 무슨 답이 왔는지는 아무 데도
+    // 안 남았다. 그래서 고칠 때마다 추측이었다. 이제 안 그런다.
+    if (message.type === 'log') {
+      say({ type: 'log', rows: client ? [...client.log] : [] });
+      return;
+    }
     if (message.type === 'run') {
       analysis = null;
       await run(message);
