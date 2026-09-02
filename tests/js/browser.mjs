@@ -95,6 +95,7 @@ function fakeCandle(ts) {
 }
 
 let requests = 0;
+let tickerCalls = 0;
 
 // **시험은 바깥 세상을 부르지 않는다.**
 //
@@ -113,6 +114,7 @@ async function stubUpbit(context) {
     requests += 1;
     const url = new URL(route.request().url());
     if (url.pathname === '/v1/ticker') {
+      tickerCalls += 1;
       const now = Math.floor(Date.now() / 1000);
       await route.fulfill({
         contentType: 'application/json',
@@ -187,6 +189,11 @@ await page.waitForFunction(
 );
 check('맨 위 시세가 뜬다', (await page.locator('#ticker-price').innerText()).includes('원'));
 
+// **가격도 분봉에서 온다.** 주소를 하나로 줄였으니 실제로 그런지 본다 —
+// /v1/ticker를 부르고 있으면 20초마다 다른 주소가 하나 더 나가는 것이다.
+check('맨 위 가격도 분봉에서 가져온다', tickerCalls === 0,
+  `/v1/ticker를 ${tickerCalls}번 불렀습니다`);
+
 // ── 실제로 받아서 계산한다
 // **index로 고르지 않는다.** 예전에는 index 0이 30일치였는데, 1일 선택지를
 // 앞에 넣으면서 1,440봉이 됐다. 그 정도로는 닮은 과거가 스무 개를 못 넘길
@@ -196,6 +203,22 @@ await page.selectOption('#in-period', String(DEFAULT_PERIOD));
 await page.fill('#in-length', '20');
 await page.fill('#in-similarity', '0.6');
 await page.click('#btn-live');
+
+// **받는 동안 몇 개를 받았는지 보이는가.**
+//
+// 예전에는 잘 받고 있을 때 개수를 안 적었다 — 걸렸을 때만 나왔다. 그래서
+// 순조로울 때가 오히려 깜깜했고, 화면만 봐서는 쌓이는 중인지 멈춘 건지
+// 알 수가 없었다.
+// 개수가 **올라가는지**를 본다. 0이 떠 있는 것만으로는 실시간이 아니다.
+const growing = await page.waitForFunction(
+  () => {
+    const seen = document.getElementById('job').textContent.match(/([\d,]+) \/ [\d,]+개/);
+    return seen ? Number(seen[1].replace(/,/g, '')) > 0 : false;
+  },
+  null, { timeout: 60000 },
+).then(() => true, () => false);
+check('받는 동안 개수가 실시간으로 올라간다', growing,
+  (await page.locator('#job').innerText()).slice(0, 46));
 
 const startedAt = Date.now();
 await page.waitForFunction(
