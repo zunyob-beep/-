@@ -325,10 +325,39 @@ check(
 expectFailures = true;
 await context.route('https://api.upbit.com/**', (route) => route.abort('failed'));
 await page.click('#btn-live');
+// **말없이 있으면 안 된다.**
+//
+// 예전에는 여기서 곧장 오류 칸이 뜨기를 기다렸다. 그런데 이제 앱은 한 번
+// 실패했다고 포기하지 않고 다시 해 본다 — 7번 중 1번은 통과하는 망이 실제로
+// 있었기 때문이다. 그건 옳은 동작이다.
+//
+// 다만 **다시 해 보는 중이라는 걸 화면이 말해야** 한다. 실제로 그걸 안 하고
+// 있었고, 화면에는 "받는 중…"만 몇 분씩 떠서 앱이 죽은 것처럼 보였다.
+// 그러니 여기서 볼 것은 '오류가 떴는가'가 아니라 **'무슨 일이 벌어지고
+// 있는지 사용자가 알 수 있는가'**다.
 await page.waitForFunction(
-  () => !document.getElementById('blocked').hidden, null, { timeout: 60000 },
+  () => !document.getElementById('blocked').hidden
+    || /거절|막고|걸렸/.test(document.getElementById('job').textContent),
+  null, { timeout: 60000 },
 );
-const blocked = await page.locator('#blocked').innerText();
+check(
+  '거절당하는 동안 말없이 있지 않는다',
+  /거절|막고|걸렸/.test(await page.locator('#job').innerText())
+    || !(await page.locator('#blocked').isHidden()),
+  (await page.locator('#job').innerText()).slice(0, 44),
+);
+// 끝내 포기하고 오류 칸을 띄우는 것까지는 여기서 재지 않는다. 길이 열려
+// 있을 가능성이 남아 있는 동안 계속 해 보는 게 맞고, 그건 몇 분이 걸릴 수
+// 있다. 시간을 재는 시험으로 만들면 상수를 조금만 건드려도 깨진다.
+// **한 번도 못 받은 채 막혀 있을 때** 이유를 말하는지는 rough.mjs가 본다.
+// 그리고 **끝내는** 오류 칸까지 떠야 한다. 다시 해 보는 것과 붙잡고 있는
+// 것은 다르다. 다만 길이 열려 있을 가능성이 남아 있는 동안은 계속 해 보는
+// 게 맞으므로, 여기서는 2분 남짓이 걸린다 — 그동안 화면은 위에서 확인한
+// 대로 무슨 일이 벌어지는지 계속 말하고 있다.
+await page.waitForFunction(
+  () => !document.getElementById('blocked').hidden, null, { timeout: 200000 },
+);
+const blocked = await page.locator('#blocked').innerText().catch(() => '');
 check(
   '업비트가 막히면 무엇 때문인지 말해 준다',
   blocked.includes('업비트') || blocked.includes('인터넷'),

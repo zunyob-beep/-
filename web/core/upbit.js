@@ -86,6 +86,48 @@ export const STALL_PAUSE = 3000;
 export const STALL_RETRIES = 4;
 
 /**
+ * **한 쪽을 몇 번까지 다시 해 보는가.**
+ *
+ * 진단표가 말해 준 것: 이 망은 완전히 막힌 게 아니라 **7번 중 1번은
+ * 통과**한다. 현재가든 봉이든, 순서가 앞이든 뒤든 상관없이 그랬다.
+ *
+ * 그렇다면 한 번 실패한 건 아무 정보가 아니다. 그냥 다시 하면 된다.
+ * 12번이면 (6/7)^12 ≈ 16%만 남으므로 대부분의 쪽이 통과한다.
+ */
+export const RETRIES = 12;
+
+/** 다시 하기 전에 쉬는 시간. 회를 거듭해도 늘리지 않는다. */
+export const RETRY_PAUSE = 2000;
+
+/**
+ * **아직 한 번도 못 받았을 때는** 몇 번까지만 해 보는가.
+ *
+ * 12번은 '길이 열려 있다'는 증거가 있을 때 쓰는 숫자다. 한 번도 못 받은
+ * 상태라면 정말 막혀 있는 것일 수도 있고, 그때 12번을 두드리는 건 차단을
+ * 연장시킬 뿐이다. 그래서 증거가 생기기 전까지는 조심스럽게만 해 본다.
+ *
+ * 한 쪽만 통과하면 그때부터는 12번을 쓴다.
+ */
+export const FIRST_RETRIES = 6;
+
+/**
+ * **최근에 받아 온 적이 있으면 '막혔다'고 보지 않는다.**
+ *
+ * 이게 v27의 잘못을 막는 자물쇠다. 그때 나는 실패 한 번을 차단으로 보고
+ * 몇 분씩 입을 다물게 만들었다. 완전히 막힌 주소라면 옳지만, 통과가 섞여
+ * 있는 망에서는 **통과했을 요청까지 안 보내는** 것이라 정확히 반대로 작동한다.
+ * 실제로 7일치 받기가 5시간에서 15시간으로 늘었다.
+ *
+ * 받아 온 게 있다면 길은 열려 있다. 그때는 조용히 있을 게 아니라 계속
+ * 두드려야 한다. 입을 다무는 건 **한 번도 못 받고 있을 때**만이다.
+ *
+ * 2분으로 둔다. 통과가 섞인 망에서는 14초에 한 쪽씩 들어오므로 넉넉하고,
+ * 정말 캄캄해졌을 때는 2분이면 알 수 있다. 이보다 길게 두면 이미 꺼진 길을
+ * 붙들고 몇 분을 더 두드리게 되고, 사용자는 그동안 답을 못 듣는다.
+ */
+export const WORKED_RECENTLY = 120000;
+
+/**
  * **막혔을 때 입을 다무는 시간.** 이 앱에서 가장 중요한 숫자다.
  *
  * 왜 이게 제일 중요한가
@@ -159,12 +201,13 @@ export class RateLimiter {
 
 export class UpbitClient {
   constructor({
-    base = API_BASE, retries = 2, perSecond = PER_SECOND, fetcher = null,
-    stallPause = STALL_PAUSE, quietSteps = QUIET_STEPS,
+    base = API_BASE, retries = RETRIES, perSecond = PER_SECOND, fetcher = null,
+    stallPause = STALL_PAUSE, quietSteps = QUIET_STEPS, retryPause = RETRY_PAUSE,
   } = {}) {
     this.base = base.replace(/\/$/, '');
     this.retries = retries;
     this.stallPause = stallPause;
+    this.retryPause = retryPause;
     this.quietSteps = quietSteps;
     this.limiter = new RateLimiter(perSecond);
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
@@ -178,6 +221,8 @@ export class UpbitClient {
     this.blockedUntil = 0;
     /** 연달아 몇 번 막혔는가. 조용히 있을 시간을 여기서 고른다. */
     this.banLevel = 0;
+    /** 마지막으로 실제로 받아 온 시각. 이게 있으면 길이 열려 있는 것이다. */
+    this.lastSuccessAt = 0;
   }
 
   /**
@@ -200,6 +245,17 @@ export class UpbitClient {
   markWorking() {
     this.banLevel = 0;
     this.blockedUntil = 0;
+    this.lastSuccessAt = Date.now();
+  }
+
+  /**
+   * 최근에 실제로 받아 온 적이 있는가.
+   *
+   * 있으면 길은 열려 있다 — 지금 실패한 건 통과율이 낮아서지 막혀서가
+   * 아니다. 그때 입을 다물면 통과했을 요청까지 안 보내게 된다.
+   */
+  recentlyWorked() {
+    return this.lastSuccessAt > 0 && Date.now() - this.lastSuccessAt < WORKED_RECENTLY;
   }
 
   /** 지금 막혀 있다고 알고 있는가. 그동안은 한 번도 안 보낸다. */
@@ -228,7 +284,7 @@ export class UpbitClient {
    *
    * `toSeconds`가 있으면 `to`를 붙인다. 표기는 문서에 있는 하나만 쓴다.
    */
-  async get(path, params = {}, toSeconds = null, { retries = this.retries } = {}) {
+  async get(path, params = {}, toSeconds = null, { retries = this.retries, onRetry = null } = {}) {
     let last = null;
 
     // **막힌 걸 알면 보내지 않는다.**
@@ -252,15 +308,56 @@ export class UpbitClient {
         // 보내는데(사전 요청), 그건 실패할 구멍을 하나 더 만드는 것이다.
         response = await this.fetch(url.toString(), { cache: 'no-store' });
       } catch {
-        // 브라우저는 CORS로 막힌 것과 인터넷이 끊긴 것을 똑같이 알려준다.
-        // 무엇 때문인지는 diagnose가 가른다.
+        // **인터넷이 끊긴 것은 다시 해 봐야 소용없다.**
+        //
+        // 그건 우리 쪽 파일 하나로 알 수 있고, 그 요청은 업비트로 나가지
+        // 않는다. 이걸 먼저 안 거르면 비행기 모드에서 12번을 다시 하느라
+        // 1분을 쓰고 나서야 "인터넷이 끊겼습니다"라고 말하게 된다.
+        //
+        // 쪽마다 첫 실패에서만 확인한다. 실패할 때마다 확인하면 같은 답을
+        // 수천 번 받으려고 우리 서버를 두드리는 셈이다.
+        if (attempt === 0 && !(await this.online())) throw await this.diagnose();
+
+        // **한 번 실패했다고 무슨 일인지 알아보러 가지 않는다.**
+        //
+        // 예전에는 여기서 곧장 diagnose()를 불렀다. 그게 두 가지를 망쳤다.
+        //
+        //   · 실패 한 번의 값이 3배가 된다 (요청 1 + 진단 2)
+        //   · throttled로 판정되면 **재시도 없이 곧장 포기**한다
+        //
+        // 그런데 진단표를 보니 이 망은 완전히 막힌 게 아니라 **7번 중 1번은
+        // 통과**한다. 그 상태에서 한 번 실패했다고 포기하면, 통과했을 요청을
+        // 스스로 안 보내는 셈이다. 실제로 7일치 받는 데 15시간이 걸렸다.
+        //
+        // 그러니 먼저 **그냥 다시 해 본다.** 몇 번 해 보고도 안 되면 그때
+        // 무슨 일인지 알아본다. 진단은 마지막에 한 번이면 된다.
+        // 증거가 있는 만큼만 끈질기게 한다. **최근에** 받아 봤으면 길이
+        // 열려 있는 것이니 12번, 아니면 6번까지만.
+        //
+        // 누적 성공 횟수가 아니라 '최근'을 본다. 누적은 줄어들지 않으므로,
+        // 그걸 기준으로 삼으면 한 번 받아 본 뒤로는 길이 캄캄해져도 영영
+        // 12번씩 두드리게 된다 — 증거가 사라져도 그 증거로 계속 행동하는 셈이다.
+        const budget = this.recentlyWorked() ? retries : Math.min(retries, FIRST_RETRIES);
+        if (attempt < budget) {
+          // **쉬는 시간은 회를 거듭해도 늘리지 않는다.**
+          //
+          // 처음에는 2 → 3 → 4 → … → 10초로 늘렸다. 근거 없이 넣은 것이었고,
+          // 실제로는 한 쪽에 84초가 걸려서 화면이 몇 분씩 멈춘 것처럼 보이는
+          // 원인이 됐다. 통과율이 일정한 망이라면 늘릴 이유가 없다 — 고르게
+          // 2초씩 두드리는 편이 더 빨리 끝나고 두드리는 횟수도 같다.
+          //
+          // **다시 해 보는 중이라는 걸 화면이 말해야 한다.**
+          //
+          // 이게 없어서 화면에 "받는 중…"만 몇 분씩 떠 있었다. 사용자 눈에는
+          // 앱이 죽은 것과 구분이 안 된다 — 실제로 "아예 읽어오지를 못해"라는
+          // 말을 들었는데, 그때 앱은 조용히 재시도하는 중이었다.
+          if (onRetry) onRetry(attempt + 1, budget);
+          await sleep(this.retryPause);
+          // eslint-disable-next-line no-continue
+          continue;
+        }
         last = await this.diagnose();
-        // 이 둘은 다시 해 봐야 소용없다. 특히 막힌 상태에서 재시도하는 건
-        // 상황을 나쁘게만 만든다.
-        if (last.kind === 'offline' || last.kind === 'throttled') throw last;
-        if (attempt >= retries) throw last;
-        await sleep(Math.min(2 ** attempt, 8) * 1000);
-        continue;
+        throw last;
       }
 
       if (response.status < 400) {
@@ -322,23 +419,16 @@ export class UpbitClient {
     if (this.knownBlocked()) return this.lastDiagnosis?.error ?? this.stillBlocked();
     const remember = (error, blocked = false) => {
       this.lastDiagnosis = { at: Date.now(), error };
-      if (blocked) this.markBlocked();
+      // **받아 온 게 있으면 입을 다물지 않는다.** v27에서 이걸 빠뜨려서
+      // 통과가 섞인 망인데도 몇 분씩 조용히 있었고, 받는 시간이 3배가 됐다.
+      if (blocked && !this.recentlyWorked()) this.markBlocked();
       return error;
     };
     const offline = () => new UpbitError(
       '인터넷이 끊겨 있습니다. 연결을 확인하고 다시 눌러 주세요.', 'offline',
     );
 
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      return remember(offline());
-    }
-    try {
-      // 같은 출처라 CORS와 무관하다. ?ping= 이 붙은 요청은 서비스 워커가
-      // 캐시로 답하지 않는다(web/sw.js) — 그래야 진짜로 나갔다 온 게 된다.
-      await this.fetch(`./manifest.webmanifest?ping=${Date.now()}`, { cache: 'no-store' });
-    } catch {
-      return remember(offline());
-    }
+    if (!(await this.online())) return remember(offline());
 
     // **한 번 막힌 걸 확인했으면, 다시 확인하는 데 두 번을 더 쓰지 않는다.**
     //
@@ -391,6 +481,23 @@ export class UpbitClient {
     ));
   }
 
+  /**
+   * 인터넷 자체가 살아 있는가. **업비트로는 한 번도 안 나간다.**
+   *
+   * 우리 쪽 파일을 하나 불러 본다. 같은 출처라 CORS와 무관하고, `?ping=`이
+   * 붙은 요청은 서비스 워커가 캐시로 답하지 않는다(web/sw.js) — 그래야
+   * 진짜로 나갔다 온 것이 된다.
+   */
+  async online() {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    try {
+      await this.fetch(`./manifest.webmanifest?ping=${Date.now()}`, { cache: 'no-store' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** 그 주소가 되는가. 던지지 않고 참·거짓으로만 답한다. */
   async works(path, params) {
     try {
@@ -434,13 +541,13 @@ export class UpbitClient {
   }
 
   /** 오래된 것부터 정렬해 돌려준다 (업비트는 최신순으로 준다). */
-  async getCandles(market, timeframe, count = PAGE, to = null) {
+  async getCandles(market, timeframe, count = PAGE, to = null, { onRetry = null } = {}) {
     const path = ENDPOINTS[timeframe];
     if (!path) {
       throw new Error(`모르는 봉 간격 '${timeframe}'. 사용 가능: ${Object.keys(ENDPOINTS).join(', ')}`);
     }
     const params = { market, count: Math.min(Math.max(count, 1), PAGE) };
-    const rows = (await this.get(path, params, to)) ?? [];
+    const rows = (await this.get(path, params, to, { onRetry })) ?? [];
     return rows.map(parseCandle).sort((a, b) => a.ts - b.ts);
   }
 
@@ -521,7 +628,11 @@ export class UpbitClient {
       let batch;
       try {
         // eslint-disable-next-line no-await-in-loop
-        batch = await this.getCandles(market, timeframe, asking, cursor);
+        batch = await this.getCandles(market, timeframe, asking, cursor, {
+          onRetry: onProgress
+            ? (tried, of) => onProgress(got, count, { retrying: tried, of })
+            : null,
+        });
         stalls = 0;
       } catch (error) {
         // **받던 중에** 걸린 것만 기다린다.
@@ -539,9 +650,15 @@ export class UpbitClient {
         //
         // 그런데 받은 만큼은 이미 저장돼 있으므로 기다렸다 이어 받으면 된다.
         // 사람이 10분 뒤에 다시 누르는 대신 **앱이 스스로 기다린다.**
-        const banned = kind === 'throttled' || kind === 'rate';
+        // **'막혔다'는 판정을 증거로 한 번 더 거른다.**
+        //
+        // 최근에 받아 온 게 있으면 길은 열려 있는 것이다. 통과율이 낮아서
+        // 실패했을 뿐이니 몇 분씩 쉴 이유가 없다 — 짧게 쉬고 다시 한다.
+        // 몇 분씩 쉬는 건 **한 번도 못 받고 있을 때**만이다.
+        const banned = (kind === 'throttled' || kind === 'rate') && !this.recentlyWorked();
+        const keepTrying = got > 0 || this.recentlyWorked();
         const canWait = kind !== null && kind !== 'offline' && kind !== 'blocked'
-          && (banned ? stalls < THROTTLE_RETRIES : got > 0 && stalls < STALL_RETRIES);
+          && (banned ? stalls < THROTTLE_RETRIES : keepTrying && stalls < STALL_RETRIES);
         if (!canWait) throw error;
         stalls += 1;
         // **얼마나 쉴지는 클라이언트가 정한다.**

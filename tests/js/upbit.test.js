@@ -171,8 +171,15 @@ test('닿기는 하는데 전부 거절당하면 "못 닿았다"고 하지 않�
   assert.ok(client.knownBlocked(), '막힌 걸 기억해야 급하지 않은 요청을 멈춥니다');
 });
 
-test('막힌 상태에서는 더 두드리지 않는다', async () => {
-  // 막혀 있는데 재시도하는 건 풀릴 틈만 없앤다.
+test('한 번도 못 받은 상태에서는 조심스럽게만 다시 해 본다', async () => {
+  // 예전 이 시험은 "막혔으면 아예 재시도하지 마라"였다. 진단표를 받고 나서
+  // 그 믿음이 틀렸다는 걸 알았다 — 이 망은 **7번 중 1번은 통과한다.** 한 번
+  // 실패했다고 포기하면 통과했을 요청을 스스로 안 보내는 것이고, 실제로
+  // 7일치 받는 데 15시간이 걸렸다.
+  //
+  // 그렇다고 무한정 두드릴 수는 없다. 정말 막힌 주소일 수도 있고, 그때
+  // 두드리면 차단만 길어진다. **한 번도 못 받았으면 조금만, 한 쪽이라도
+  // 받아 봤으면 끈질기게** — 증거가 있는 만큼만 한다.
   let calls = 0;
   const client = new UpbitClient({
     retries: 4,
@@ -185,7 +192,42 @@ test('막힌 상태에서는 더 두드리지 않는다', async () => {
     },
   });
   await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
-  assert.ok(calls <= 3, `막혀 있는데 ${calls}번이나 더 두드렸습니다`);
+  assert.ok(calls >= 2, `한 번도 다시 안 해 봤습니다 (${calls}번)`);
+  assert.ok(calls <= 8, `한 번도 못 받았는데 ${calls}번이나 두드렸습니다`);
+
+  // **그리고 멈춘다.** 여기가 핵심이다 — 몇 번 해 보고 안 되면 입을 다문다.
+  assert.ok(client.knownBlocked(), '몇 번 실패하고도 안 멈췄습니다');
+  calls = 0;
+  await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
+  assert.equal(calls, 0, `멈춘 뒤에도 ${calls}번을 보냈습니다`);
+});
+
+test('한 쪽이라도 받아 봤으면 끈질기게 다시 한다', async () => {
+  // 7번 중 1번만 통과하는 망. 예전에는 한 번 실패하면 몇 분씩 쉬어서
+  // 7일치가 15시간이었다. 길이 열려 있다는 증거가 있으면 쉬지 말아야 한다.
+  let calls = 0;
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      calls += 1;
+      if (calls % 7 !== 0) throw new TypeError('Load failed');
+      return OK(candleRows(200, 1700000000 - calls * 60));
+    },
+  });
+
+  const started = Date.now();
+  const saved = [];
+  await client.collect('KRW-BTC', 'minute1', 600, {
+    retain: false,
+    onBatch: (batch) => { saved.push(...batch); },
+  });
+  assert.ok(saved.length >= 600, `${saved.length}개에서 포기했습니다`);
+  // 몇 분씩 쉬었다면 여기서 몇 분이 걸린다. 쉬지 않으면 순식간이다.
+  assert.ok(Date.now() - started < 5000, '통과가 섞인 망인데 입을 다물었습니다');
+  assert.equal(client.knownBlocked(), false, '받고 있는데 막혔다고 봅니다');
 });
 
 test('인터넷 자체가 끊겼으면 업비트 탓을 하지 않는다', async () => {
