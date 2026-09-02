@@ -136,9 +136,17 @@ function handle(message) {
       break;
     case 'done':
       finish();
-      $('job').textContent = message.stale
-        ? '받아둔 시세로 계산했습니다 (새 시세는 못 받았습니다)'
-        : '계산을 마쳤습니다';
+      if (message.stale) {
+        $('job').textContent = '받아둔 시세로 계산했습니다 (새 시세는 못 받았습니다)';
+      } else if (message.more) {
+        // 시간에 걸려 끊긴 판. 다시 누르면 이어서 받는다는 걸 같이 말한다 —
+        // 안 그러면 다 받은 줄 알고 다시 안 누른다.
+        const { have, want } = message.more;
+        $('job').textContent = `${have.toLocaleString()} / ${want.toLocaleString()}개까지 받고 계산했습니다`
+          + ' — 다시 누르면 이어서 받습니다';
+      } else {
+        $('job').textContent = '계산을 마쳤습니다';
+      }
       lastAnalysis = message.analysis;
       workerHasResult = true;
       selected = null;

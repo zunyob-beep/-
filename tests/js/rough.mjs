@@ -309,9 +309,11 @@ mode = 'flaky';
 await page.evaluate(() => { document.getElementById('btn-forget')?.click(); });
 await page.waitForTimeout(1000);
 await page.click('#btn-live');
+// **판이 끝났는지**로 기다린다. 문구는 상황마다 다르지만(다 받았거나,
+// 시간에 걸려 끊겼거나) 단추가 살아나는 것은 어느 쪽이든 같다.
 await page.waitForFunction(
-  () => document.getElementById('job')?.textContent?.includes('마쳤'),
-  null, { timeout: 300000 },
+  () => !document.getElementById('btn-live').disabled,
+  null, { timeout: 240000 },
 );
 const shown = await page.evaluate(() => {
   const seen = document.getElementById('progress-count')?.textContent?.match(/([\d,]+) \/ ([\d,]+)/);
@@ -340,6 +342,32 @@ note('거절이 섞여도 끝까지 받아 온다', stored > 1000,
 note('화면에 뜬 개수가 실제 저장된 개수와 같다',
   shown !== null && Math.abs(shown[0] - stored) <= 5,
   shown ? `화면 ${shown[0].toLocaleString()} / ${shown[1].toLocaleString()} · 실제 ${stored.toLocaleString()}` : '못 읽음');
+
+// ── 5-5. **한 번 누르면 반드시 끝나는가**
+//
+// "전혀 작동을 안 한다"의 마지막 조각이다. 예전에는 목표를 다 채울 때까지
+// 판이 안 끝났다. 30일치면 216번이고 거절이 섞이면 10분이 넘는다 — 그동안
+// 단추는 잠겨 있고 화면은 "받는 중"이다. 사용자 눈에는 그게 작동 안 하는
+// 것이다.
+//
+// 여기서는 **손에 닿지도 않는 목표**(4년치, 10,512번)를 걸어 두고, 그래도
+// 판이 끝나서 단추가 살아나는지 본다.
+mode = 'flaky';
+const longest = await page.locator('#in-period option').evaluateAll(
+  (options) => options.map((o) => Number(o.value)).sort((a, b) => b - a)[0],
+);
+await page.selectOption('#in-period', String(longest));
+await page.click('#btn-live');
+const ended = await page.waitForFunction(
+  () => !document.getElementById('btn-live').disabled,
+  null, { timeout: 240000 },
+).then(() => true, () => false);
+note('손에 닿지 않는 목표를 걸어도 판이 끝난다', ended,
+  (await page.locator('#job').innerText()).slice(0, 52));
+note('다시 누르면 이어서 받는다는 걸 말해 준다',
+  (await page.locator('#job').innerText()).includes('이어서'),
+  (await page.locator('#job').innerText()).slice(0, 52));
+note('그때도 판정은 나와 있다', !(await page.locator('#verdict').isHidden()));
 
 // ── 6. 오프라인에서도 앱이 뜬다 (서비스 워커)
 //
