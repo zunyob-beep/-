@@ -138,6 +138,42 @@ async function buildSeries(db, market, bars) {
  */
 const FIRST_ANSWER = 2000;
 
+/**
+ * **하루 전과 견준 변화를 받아둔 분봉에서 계산한다.**
+ *
+ * 예전에는 맨 위 가격을 `/v1/ticker`로 따로 받았다. 그 주소가 전일 대비까지
+ * 같이 주기 때문이었는데, 그러자고 20초마다 **다른 주소를 하나 더** 부르고
+ * 있었다 — 시간당 180번, 거절당할 구멍도 하나 더.
+ *
+ * 가격은 어차피 받고 있는 1분봉의 마지막 값이 곧 지금 값이다. 변화율은
+ * 받아둔 분봉에서 24시간 전 값을 찾아 직접 계산하면 된다. 부르는 주소가
+ * 하나로 줄고, 없는 값은 안 보여 주면 그만이다(하루치가 아직 없을 때).
+ */
+async function withChange(now) {
+  const row = { market: now.market, price: now.price, changeRate: 0, changePrice: 0 };
+  try {
+    const db = await ready();
+    const span = await db.span(now.market, 'minute1');
+    if (!span || now.ts - span[0] < DAY) return row;
+    // 하루치 꼬리만 읽어서 24시간 전 값을 찾는다. 받아둔 것에서 꺼내므로
+    // 요청이 안 들고, 배열로 읽으므로 봉 객체를 1,441개 만들지 않는다.
+    const tail = await db.loadTailColumns(now.market, 'minute1', 1441);
+    const want = now.ts - DAY;
+    let at = -1;
+    for (let i = 0; i < tail.ts.length; i += 1) {
+      if (tail.ts[i] >= want) { at = i; break; }
+    }
+    if (at < 0) return row;
+    const then = tail.close[at];
+    if (!then) return row;
+    row.changePrice = now.price - then;
+    row.changeRate = row.changePrice / then;
+  } catch { /* 못 구하면 변화율 없이 가격만 보여 준다. */ }
+  return row;
+}
+
+const DAY = 86400;
+
 /** 업비트가 알려 준 남은 한도를 화면에 적을 문구로. 못 읽으면 빈 문자열. */
 function budget() {
   const left = client?.limiter?.remaining;
@@ -173,16 +209,16 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   // 계산해서 보여 주고, 받기는 뒤에서 계속한다. 다 받으면 다시 계산해서
   // 덮어쓴다 — 숫자는 그때 정확해진다.
   if (fresh) {
-    const have = await db.count(market, 'minute1');
-    if (have >= FIRST_ANSWER) {
-      progress(`받아둔 ${have.toLocaleString()}개로 먼저 계산합니다…`);
+    const cached = await db.count(market, 'minute1');
+    if (cached >= FIRST_ANSWER) {
+      progress(`받아둔 ${cached.toLocaleString()}개로 먼저 계산합니다…`);
       const early = await buildSeries(db, market, bars);
       if (Object.keys(early).length) {
         analysis = analyse(market, early, { similarity, fee, slippage, length, stake });
         say({
           type: 'partial',
           analysis: analysisJson(analysis),
-          have,
+          have: cached,
           want: Math.floor(bars / RATIO.minute1),
         });
       }
@@ -201,8 +237,12 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
       // 보인다. 그러면 다시 누르기가 겁난다 — 사실은 누를수록 쌓이는데도.
       // eslint-disable-next-line no-await-in-loop
       const already = await db.count(market, timeframe);
-      const kept = already ? ` (이미 ${already.toLocaleString()}개 있음 — 다시 안 받습니다)` : '';
-      progress(`${label} 받는 중…${kept}`, 0, Math.max(0, wanted - already));
+      /** 지금까지 몇 개를 받았는지. 어느 상황에서든 이 말이 앞에 온다. */
+      const have = (done) => {
+        const got = (already + done).toLocaleString();
+        return `${label} ${got} / ${wanted.toLocaleString()}개`;
+      };
+      progress(have(0), 0, Math.max(0, wanted - already));
       try {
         // eslint-disable-next-line no-await-in-loop
         await update(db, market, timeframe, wanted, {
@@ -212,8 +252,8 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
               // 몇 분을 기다려야 한다. 남은 시간을 초 단위로 보여주지 않으면
               // 멈춘 것으로 보이고, 사용자는 앱을 닫는다.
               progress(
-                `업비트가 막고 있습니다 — ${info.waitLeft}초 뒤에 이어서 받습니다`
-                + ` (받아둔 ${(already + done).toLocaleString()}개는 그대로입니다)`,
+                `${have(done)} · 업비트가 막고 있습니다`
+                + ` — ${info.waitLeft}초 뒤에 이어서 받습니다`,
                 done, total,
               );
               return;
@@ -224,20 +264,24 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
               // 이게 없을 때 화면에는 "받는 중…"만 몇 분씩 떠 있었다.
               // 앱이 죽은 것과 구분이 안 되고, 실제로 그렇게 보였다.
               progress(
-                `업비트가 거절해서 다시 해 보는 중입니다 (${info.retrying}/${info.of})`
-                + ` — 받아둔 ${(already + done).toLocaleString()}개는 그대로입니다`,
+                `${have(done)} · 업비트가 거절해서 다시 해 보는 중입니다`
+                + ` (${info.retrying}/${info.of})`,
                 done, total,
               );
               return;
             }
+            // **몇 개를 받았는지 늘 적는다.**
+            //
+            // 예전에는 잘 받고 있을 때 개수를 안 적었다. 걸렸을 때만
+            // "받아둔 N개는 그대로입니다"가 떴다. 그래서 순조로울 때가
+            // 오히려 깜깜했다 — 화면만 봐서는 쌓이는 중인지 멈춘 건지
+            // 알 수가 없다. 늘 보여야 한다.
             progress(
               info?.stalled
-                ? `${label} 잠시 걸렸습니다 — ${info.waitLeft}초 뒤 이어서 받습니다${kept}`
-                // 지금 속도를 같이 적는다. 느릴 때 왜 느린지 보이지 않으면
-                // 멈춘 건지 기다리는 건지 알 수가 없다.
-                // **업비트가 알려 준 남은 한도를 그대로 적는다.**
-                // 이 숫자가 보이면 "왜 거절당하나"를 추측할 필요가 없다.
-                : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${budget()}${kept}`,
+                ? `${have(done)} · 잠시 걸렸습니다 — ${info.waitLeft}초 뒤 이어서 받습니다`
+                // 지금 속도와, 업비트가 알려 준 남은 한도를 같이 적는다.
+                // 이 숫자들이 보이면 "왜 거절당하나"를 추측할 필요가 없다.
+                : `${have(done)} · 초당 ${client.limiter.perSecond.toFixed(1)}회${budget()}`,
               done, total,
             );
           },
@@ -303,8 +347,8 @@ onmessage = async (event) => {
         return;
       }
       try {
-        const rows = await client.getTicker(message.market);
-        say({ type: 'ticker', market: message.market, rows });
+        const now = await client.getPrice(message.market);
+        say({ type: 'ticker', market: message.market, rows: [await withChange(now)] });
       } catch {
         // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다.
         say({ type: 'ticker', market: message.market, rows: [] });

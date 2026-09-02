@@ -426,12 +426,12 @@ test('길이 다 막히면 그 뒤로는 한 번도 안 보낸다', async () => 
   // 길이 다 떨어질 때까지 부른다
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
-    await client.getTicker('KRW-BTC').catch(() => {});
+    await client.getPrice('KRW-BTC').catch(() => {});
   }
   assert.ok(client.knownBlocked(), '막힌 걸 기억해야 합니다');
 
   calls = 0;
-  const failure = await client.getTicker('KRW-BTC').then(() => null, (error) => error);
+  const failure = await client.getPrice('KRW-BTC').then(() => null, (error) => error);
   assert.equal(calls, 0, `길이 다 막혔는데 ${calls}번을 보냈습니다`);
   assert.equal(failure.kind, 'throttled');
   assert.ok(failure.message.includes('막고'), '왜 안 보냈는지 말해야 합니다');
@@ -502,7 +502,7 @@ test('밤새 막혀 있어도 시간당 몇 번밖에 안 두드린다', async (
     while (clock - start < HOURS * 3600 * 1000) {
       // 워커가 하는 것과 같다: 막힌 걸 알면 아예 묻지 않는다.
       // eslint-disable-next-line no-await-in-loop
-      if (!client.knownBlocked()) await client.getTicker('KRW-BTC').catch(() => {});
+      if (!client.knownBlocked()) await client.getPrice('KRW-BTC').catch(() => {});
       clock += 20000;
     }
     assert.ok(calls <= 40, `8시간에 ${calls}번을 두드렸습니다 (예전 1,443번)`);
@@ -782,4 +782,48 @@ test('받은 응답의 남은 한도를 실제로 챙겨 본다', async () => {
   await client.getCandles('KRW-BTC', 'minute1', 200);
   assert.equal(client.limiter.remaining?.min, 598, '남은 한도를 안 읽었습니다');
   assert.equal(client.limiter.remaining?.sec, 8);
+});
+
+// ------------------------------- 가격은 분봉에서 가져온다 (주소 하나로)
+//
+// 예전에는 맨 위 가격을 `/v1/ticker`로 따로 받았다. 그 주소가 전일 대비까지
+// 같이 주기 때문이었는데, 그러자고 20초마다 **다른 주소를 하나 더** 부르고
+// 있었다 — 시간당 180번, 거절당할 구멍도 하나 더.
+//
+// 가격은 어차피 받고 있는 1분봉의 마지막 값이 곧 지금 값이다.
+
+test('가격을 분봉에서 가져온다 — 다른 주소를 부르지 않는다', async () => {
+  const asked = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      asked.push(new URL(url).pathname);
+      return OK(candleRows(1, 1700000000));
+    },
+  });
+  const now = await client.getPrice('KRW-BTC');
+  assert.equal(now.price, 100, '분봉의 마지막 값이 지금 값입니다');
+  assert.ok(asked.length, '아무것도 안 불렀습니다');
+  assert.ok(
+    asked.every((p) => p.startsWith('/v1/candles/')),
+    `분봉 말고 다른 주소를 불렀습니다: ${asked.join(', ')}`,
+  );
+});
+
+test('맨 위 가격 하나 때문에 여러 번 두드리지 않는다', async () => {
+  // 장식이다. 그것 하나 때문에 막혀 있는 업비트를 열두 번 더 두드릴 이유가 없다.
+  let calls = 0;
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      calls += 1;
+      throw new TypeError('Load failed');
+    },
+  });
+  await client.getPrice('KRW-BTC').catch(() => {});
+  assert.ok(calls <= 6, `가격 하나 받으려고 ${calls}번을 보냈습니다`);
 });

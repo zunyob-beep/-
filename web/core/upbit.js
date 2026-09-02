@@ -774,13 +774,13 @@ export class UpbitClient {
   }
 
   /** 오래된 것부터 정렬해 돌려준다 (업비트는 최신순으로 준다). */
-  async getCandles(market, timeframe, count = PAGE, to = null, { onRetry = null } = {}) {
+  async getCandles(market, timeframe, count = PAGE, to = null, { onRetry = null, retries } = {}) {
     const path = ENDPOINTS[timeframe];
     if (!path) {
       throw new Error(`모르는 봉 간격 '${timeframe}'. 사용 가능: ${Object.keys(ENDPOINTS).join(', ')}`);
     }
     const params = { market, count: Math.min(Math.max(count, 1), PAGE) };
-    const rows = (await this.get(path, params, to, { onRetry })) ?? [];
+    const rows = (await this.get(path, params, to, { onRetry, ...(retries !== undefined ? { retries } : {}) })) ?? [];
     return rows.map(parseCandle).sort((a, b) => a.ts - b.ts);
   }
 
@@ -790,21 +790,13 @@ export class UpbitClient {
    * 봉은 그 분이 끝나야 확정되므로, '지금 시세'로 쓰면 최대 1분 늦은 값을
    * 보여주게 된다. 화면 맨 위에 큰 글씨로 띄울 숫자는 그러면 안 된다.
    */
-  async getTicker(markets) {
-    const list = Array.isArray(markets) ? markets : [markets];
+  async getPrice(market) {
     // **재시도하지 않는다.** 맨 위 숫자는 장식이라, 그것 하나 때문에 막혀
-    // 있는 업비트를 다섯 번 더 두드릴 이유가 없다. 그건 회복을 늦출 뿐이다.
-    const rows = (await this.get('/v1/ticker', { markets: list.join(',') }, null, { retries: 0 }))
-      ?? [];
+    // 있는 업비트를 여러 번 더 두드릴 이유가 없다. 그건 회복을 늦출 뿐이다.
+    const rows = await this.getCandles(market, 'minute1', 1, null, { retries: 0 });
     if (!rows.length) throw new UpbitError('현재가를 받지 못했습니다', 'unknown');
-    return rows.map((row) => ({
-      market: String(row.market),
-      price: Number(row.trade_price),
-      changeRate: Number(row.signed_change_rate ?? 0),
-      changePrice: Number(row.signed_change_price ?? 0),
-      high: Number(row.high_price ?? 0),
-      low: Number(row.low_price ?? 0),
-    }));
+    const now = rows[rows.length - 1];
+    return { market, price: now.close, ts: now.ts };
   }
 
   /**
