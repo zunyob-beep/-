@@ -7,4 +7,4 @@
  *
  * **고칠 때마다 하나씩 올린다.** 화면의 숫자와 여기 숫자가 같으면 최신이다.
  */
-export const VERSION = 'v33';
+export const VERSION = 'v34';
