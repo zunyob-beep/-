@@ -28,11 +28,43 @@ const TYPES = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
+/**
+ * **미리 받아 둔 봉 파일**을 낼지 말지. 시험이 켜고 끈다.
+ *
+ * 진짜 앱에서는 깃허브 액션이 20분마다 서버에서 받아 `data` 브랜치에 적어
+ * 두고, 앱은 그걸 내려받는다. 여기서는 그 자리를 흉내 낸다.
+ */
+let seedOn = false;
+const SEED_BARS = 12000;
+
+function seedFile(market) {
+  const now = Math.floor(Date.now() / 1000 / 60) * 60;
+  const rows = [];
+  for (let i = SEED_BARS - 1; i >= 0; i -= 1) {
+    const ts = now - i * 60;
+    rows.push([ts, priceAt(ts - 60), priceAt(ts) * 1.0004,
+      priceAt(ts) * 0.9996, priceAt(ts), 2 + (ts % 7) / 3]);
+  }
+  return JSON.stringify({
+    market, timeframe: 'minute1', step: 60, days: 14, made: now, rows,
+  });
+}
+
 function serve() {
   const server = createServer(async (req, res) => {
     const asked = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     const rest = asked.startsWith(BASE) ? asked.slice(BASE.length) || '/' : null;
     if (rest === null) { res.writeHead(404).end(); return; }
+
+    // 미리 받아 둔 파일. 깃허브 페이지에서는 여기가 404이고 raw 쪽에 있지만,
+    // 시험은 바깥으로 안 나가므로 같은 주소에서 낸다.
+    const seed = rest.match(/^\/data\/(KRW-[A-Z]+)\.min1\.json$/);
+    if (seed) {
+      if (!seedOn) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(seedFile(seed[1]));
+      return;
+    }
     const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));
     if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
     try {
@@ -380,6 +412,60 @@ note('다시 누르면 이어서 받는다는 걸 말해 준다',
   (await page.locator('#job').innerText()).includes('이어서'),
   (await page.locator('#job').innerText()).slice(0, 52));
 note('그때도 판정은 나와 있다', !(await page.locator('#verdict').isHidden()));
+
+// ── 5-6. **업비트가 통째로 죽어 있어도 앱이 돈다**
+//
+// 여기가 이 앱의 전부다.
+//
+// 업비트는 브라우저에서 부르라고 만든 API가 아니다. 거절할 때 돌려주는
+// 응답에 허용 표시가 없어서 브라우저는 그 답을 읽지도 못하고, 한도는
+// 주소 단위라 휴대폰 데이터에서는 남이 쓴 몫 때문에 막힌다. 공개 우회
+// 서버로 돌아가 봤지만 그건 문제를 옮긴 것뿐이었다 — 그 주소도 수천 명이
+// 같이 쓴다.
+//
+// 그래서 순서를 뒤집었다. 서버가 20분마다 미리 받아 파일로 적어 두고,
+// 앱은 그 파일을 읽는다. 업비트는 **되면 좋은** 자리로 내려갔다.
+//
+// 이 시험은 그걸 그대로 확인한다: 업비트로 가는 길을 **전부** 끊고,
+// 캐시도 비우고, 그래도 판정이 나오는가.
+mode = 'dead';
+seedOn = true;
+await page.evaluate(() => { document.getElementById('btn-forget')?.click(); });
+await page.waitForTimeout(1000);
+// 새 워커에서 다시 읽게 한다 (파일은 10분에 한 번만 읽는다).
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.coin', { timeout: 20000 });
+await page.selectOption('#in-period', '10080');
+await page.click('#btn-live');
+const seedDone = await page.waitForFunction(
+  () => !document.getElementById('btn-live').disabled
+    && !document.getElementById('verdict').hidden,
+  null, { timeout: 120000 },
+).then(() => true, () => false);
+const seedKept = await page.evaluate(async () => {
+  const db = await new Promise((resolve, reject) => {
+    const open = indexedDB.open('gisigam');
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  return new Promise((resolve) => {
+    const tx = db.transaction('index', 'readonly');
+    const all = tx.objectStore('index').getAll();
+    all.onsuccess = () => resolve(all.result
+      .filter((r) => r.market === 'KRW-BTC' && r.timeframe === 'minute1')
+      .reduce((sum, r) => sum + r.n, 0));
+    all.onerror = () => resolve(-1);
+  });
+});
+note('업비트가 통째로 죽어도 판정이 나온다', seedDone,
+  (await page.locator('#job').innerText()).slice(0, 52));
+note('미리 받아 둔 파일에서 실제로 봉이 들어온다', seedKept > 10000, `${seedKept}개`);
+const seedSaid = await page.locator('#blocked').innerText().catch(() => '');
+note('언제 값인지 숨기지 않는다', seedSaid.includes('미리 받아 둔'), seedSaid.slice(0, 46));
+// 맨 위 숫자도 비워 두지 않는다 — 받아둔 마지막 봉을 언제 값인지 적어 보여 준다.
+const seedPrice = await page.locator('#ticker-price').innerText().catch(() => '');
+note('맨 위 시세가 비어 있지 않다', /\d/.test(seedPrice), seedPrice.slice(0, 24));
+seedOn = false;
 
 // ── 6. 오프라인에서도 앱이 뜬다 (서비스 워커)
 //

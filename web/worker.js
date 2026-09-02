@@ -14,6 +14,7 @@ import {
   DEFAULT_COUNT, RATIO, analyse, analysisJson, examplesJson, withinLimit,
 } from './core/analysis.js';
 import { loadSeries, update } from './core/data.js';
+import { loadSeed } from './core/seed.js';
 import { CandleStore, IndexedDbBackend } from './core/store.js';
 import { UpbitClient, UpbitError } from './core/upbit.js';
 import { aggregate, timeframeLabel } from './core/models.js';
@@ -162,6 +163,15 @@ const FIRST_ANSWER = 2000;
 const FETCH_BUDGET_MS = 90000;
 
 /**
+ * 미리 받아 둔 파일이 들어왔을 때 업비트에 매달릴 시간.
+ *
+ * 파일이 14일치를 통째로 가져다 주므로 업비트에서 받을 게 **마지막 몇 분**밖에
+ * 없다. 그것 때문에 90초를 기다리게 하는 건 말이 안 된다 — 그 몇 분이
+ * 없어도 결과는 나오고, 화면에는 언제 값인지가 적힌다.
+ */
+const SEED_TOPUP_MS = 20000;
+
+/**
  * **하루 전과 견준 변화를 받아둔 분봉에서 계산한다.**
  *
  * 예전에는 맨 위 가격을 `/v1/ticker`로 따로 받았다. 그 주소가 전일 대비까지
@@ -197,6 +207,28 @@ async function withChange(now) {
 
 const DAY = 86400;
 
+/**
+ * 받아둔 것 중 **가장 최근 봉**으로 시세 한 줄을 만든다.
+ *
+ * 업비트가 막혔을 때 쓴다. 지금 값은 아니지만 몇 분 전 값이고, 그걸
+ * 언제 값인지 적어서 보여 주는 편이 `—`보다 낫다.
+ */
+async function lastKept(market) {
+  try {
+    const db = await ready();
+    const tail = await db.loadTailColumns(market, 'minute1', 1);
+    if (!tail?.ts?.length) return null;
+    const at = tail.ts.length - 1;
+    const row = await withChange({ market, price: tail.close[at], ts: tail.ts[at] });
+    // 언제 값인지. 화면이 이걸 보고 "N분 전"을 적는다.
+    row.at = tail.ts[at];
+    row.late = true;
+    return row;
+  } catch {
+    return null;
+  }
+}
+
 /** 업비트가 알려 준 남은 한도를 화면에 적을 문구로. 못 읽으면 빈 문자열. */
 function budget() {
   const left = client?.limiter?.remaining;
@@ -207,8 +239,51 @@ function budget() {
   return bits.length ? ` · 업비트가 남았다는 한도 ${bits.join('/')}` : '';
 }
 
+/**
+ * 미리 받아 둔 파일을 마지막으로 읽은 시각. 종목마다 따로 센다.
+ *
+ * 한 판에 한 번이면 된다 — 파일은 20분마다 갱신되므로 그보다 자주 물어봐야
+ * 같은 것을 또 받을 뿐이다. 그렇다고 앱을 켜 둔 채 몇 시간이 지나도 다시
+ * 안 읽으면, 그때는 낡은 것을 붙들고 있게 된다.
+ */
+const seedRead = new Map();
+const SEED_AGAIN = 10 * 60 * 1000;
+
+/**
+ * **미리 받아 둔 봉을 캐시에 넣는다.** 성공하면 그 파일이 만들어진 시각.
+ *
+ * 이게 이 앱이 도는 주된 길이다. 업비트가 아니라 여기가.
+ * 실패해도 던지지 않는다 — 지름길이 막혔다고 판 전체가 죽으면 안 된다.
+ */
+async function seedFrom(db, market) {
+  const last = seedRead.get(market) ?? 0;
+  if (Date.now() - last < SEED_AGAIN) return seedRead.get(`${market}:made`) ?? null;
+
+  progress('미리 받아 둔 시세를 읽는 중…');
+  const started = Date.now();
+  const got = await loadSeed(market, {
+    // 무엇을 어디서 읽었는지도 기록에 남긴다. 진단 화면이 업비트 요청과
+    // 같은 자리에 펴 주므로, 한 장으로 어느 길이 됐는지 다 보인다.
+    onTry: (url, how) => client?.log?.push({
+      at: Date.now(), route: '미리 받아둔 파일', path: url.replace(/^https?:\/\//, ''),
+      ms: Date.now() - started, how,
+    }),
+  });
+  seedRead.set(market, Date.now());
+  if (!got) {
+    seedRead.set(`${market}:made`, null);
+    return null;
+  }
+  await db.put(market, 'minute1', 60, got.candles);
+  progress(`미리 받아 둔 시세 ${got.candles.length.toLocaleString()}개를 읽었습니다`);
+  seedRead.set(`${market}:made`, got.made);
+  return got.made;
+}
+
 async function run({ market, count, fresh, similarity, fee, slippage, length, stake }) {
   const db = await ready();
+  /** 미리 받아 둔 파일이 만들어진 시각. 막혔을 때 화면이 이걸 보여준다. */
+  let seedAt = null;
   // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
   // 메시지가 그대로 통과해, 브라우저가 감당 못 할 크기를 받으러 간다.
   const bars = withinLimit(count);
@@ -226,6 +301,14 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   //
   // 업비트가 우리를 막는 이유가 요청이 잦아서이므로(아이패드 진단이 그걸
   // 보여줬다), 요청 수를 줄이는 게 가장 큰 지렛대다. 216번으로 끝난다.
+  // **미리 받아 둔 파일부터 읽는다. 업비트보다 먼저다.**
+  //
+  // 이 한 줄 순서가 이 판의 전부다. 지금까지는 업비트가 첫째였고, 업비트가
+  // 막히면 앱은 아무것도 못 했다. 이제는 파일이 첫째다 — 한 번 내려받으면
+  // 14일치가 통째로 들어온다. 업비트는 그 뒤에 최근 몇 분만 채우는,
+  // **되면 좋은** 자리로 내려간다.
+  if (fresh) seedAt = await seedFrom(db, market);
+
   // **가진 것으로 먼저 답한다.**
   //
   // 다 받을 때까지 기다리게 하지 않는다. 받아둔 것이 쓸 만하면 그걸로 바로
@@ -249,7 +332,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   }
 
   // 한 판이 끝날 시각. 이걸 넘기면 받은 만큼으로 계산하고 끝낸다.
-  const deadline = Date.now() + FETCH_BUDGET_MS;
+  const deadline = Date.now() + (seedAt ? SEED_TOPUP_MS : FETCH_BUDGET_MS);
   let ranOut = false;
 
   if (fresh) {
@@ -337,7 +420,19 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   // 계산한 결과가 '지금 시세로 판단받기'의 답인 것처럼 화면에 뜬다.
   // 몇 시간 전 데이터를 지금 것으로 읽게 만드는 셈이라, 이건 조용히
   // 넘어가면 안 되는 종류의 실패다.
-  if (blocked) say({ type: 'blocked', kind: blocked, stale: Object.keys(series).length > 0 });
+  if (blocked) {
+    say({
+      type: 'blocked',
+      kind: blocked,
+      stale: Object.keys(series).length > 0,
+      // **미리 받아 둔 파일이 언제 만들어졌는지도 같이 준다.**
+      //
+      // 업비트가 막혀도 이제 화면에는 결과가 뜬다. 그런데 그게 언제 것인지
+      // 안 적으면, 사용자는 그걸 '지금'으로 읽는다. 20분 전 값을 지금 값으로
+      // 읽게 만드는 건 조용히 넘어가면 안 되는 종류의 거짓말이다.
+      seedAt,
+    });
+  }
 
   if (!Object.keys(series).length) {
     // 받지도 못했고 가진 것도 없다. 여기서 "먼저 시세 받기를 누르세요"라고
@@ -388,17 +483,18 @@ onmessage = async (event) => {
       await ready();
       // 막혀 있는 걸 이미 안다면 두드리지 않는다. 맨 위 숫자 하나 때문에
       // 회복을 늦출 이유가 없다.
-      if (client.knownBlocked()) {
-        say({ type: 'ticker', market: message.market, rows: [] });
+      const live = client.knownBlocked() ? null : await client.getPrice(message.market).catch(() => null);
+      if (live) {
+        say({ type: 'ticker', market: message.market, rows: [await withChange(live)] });
         return;
       }
-      try {
-        const now = await client.getPrice(message.market);
-        say({ type: 'ticker', market: message.market, rows: [await withChange(now)] });
-      } catch {
-        // 맨 위 숫자는 장식이다. 안 나온다고 화면을 빨갛게 만들지 않는다.
-        say({ type: 'ticker', market: message.market, rows: [] });
-      }
+      // **업비트가 안 되면 받아둔 마지막 봉을 보여 준다.**
+      //
+      // 예전에는 여기서 빈 것을 돌려줬고, 맨 위에는 `—`만 남았다. 그런데
+      // 이제는 미리 받아 둔 파일이 있어서 몇 분 전 값이 손안에 있다.
+      // 있는 것을 안 보여 줄 이유가 없다 — 언제 값인지만 같이 적으면 된다.
+      const kept = await lastKept(message.market);
+      say({ type: 'ticker', market: message.market, rows: kept ? [kept] : [] });
       return;
     }
     if (message.type === 'summary') {
@@ -433,6 +529,10 @@ onmessage = async (event) => {
         // eslint-disable-next-line no-await-in-loop
         await db.clear(message.market, timeframe);
       }
+      // 지웠으면 미리 받아 둔 파일도 다시 읽어야 한다. 안 그러면 지운
+      // 다음에 눌러도 10분 동안은 빈 채로 업비트만 두드린다.
+      seedRead.delete(message.market);
+      seedRead.delete(`${message.market}:made`);
       analysis = null;
       say({ type: 'summary', market: message.market, cached: await summary(message.market) });
       return;
