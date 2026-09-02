@@ -339,6 +339,38 @@ check(
   (await page.locator('.keep').innerText().catch(() => '없음')).replace(/\s+/g, ' ').slice(0, 60),
 );
 
+// ── **가진 것으로 먼저 답하는가**
+//
+// 실제로 받은 화면이 이랬다: 30일치를 고르고 눌렀는데 이미 12,696개를
+// 받아 뒀는데도 나머지 3만 개를 다 채울 때까지 아무 답도 안 줬다. 화면에는
+// "다시 해 보는 중"만 몇 분씩 떴고, 사용자 눈에는 **작동을 안 하는 것과
+// 구분이 안 됐다.**
+//
+// 여기서는 훨씬 큰 기간을 골라 두고, 다 받기 전에 답이 나오는지 본다.
+// 가짜 업비트라 실패가 한 번도 없는데도 90일치는 648번이라 3분이 넘는다 —
+// 그 안에 답이 나와야 한다.
+const big = await page.locator('#in-period option').evaluateAll(
+  (options) => options.map((o) => Number(o.value)).filter((v) => v >= 129600)[0],
+);
+await page.selectOption('#in-period', String(big));
+await page.click('#btn-live');
+const early = await page.waitForFunction(
+  () => {
+    const note = document.getElementById('stale-note');
+    return !note.hidden && note.textContent.includes('먼저 계산한');
+  },
+  null, { timeout: 30000 },
+).then(() => true, () => false);
+check('다 받기 전에 가진 것으로 먼저 답한다', early,
+  (await page.locator('#stale-note').innerText()).replace(/\s+/g, ' ').slice(0, 50));
+check('그때 판정도 실제로 그려져 있다', !(await page.locator('#verdict').isHidden()));
+// 멈추기가 살아 있어야 한다 — 아직 받는 중이므로.
+check('먼저 답한 뒤에도 멈출 수 있다', !(await page.locator('#btn-stop').isHidden()));
+await page.click('#btn-stop');
+await page.waitForFunction(
+  () => !document.getElementById('btn-live').disabled, null, { timeout: 60000 },
+);
+
 // ── 업비트가 막혔을 때 무슨 말을 하는가
 expectFailures = true;
 await context.route('https://api.upbit.com/**', (route) => route.abort('failed'));

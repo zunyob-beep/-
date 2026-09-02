@@ -120,6 +120,20 @@ function handle(message) {
       // (막힘 / 못 닿음 / 끊김), 여덟 번을 더 두드릴 이유가 없다 —
       // 하필 두드리면 안 되는 때가 바로 막혀 있을 때다. 단추는 남는다.
       break;
+    case 'partial':
+      // **가진 것으로 먼저 낸 답.** 받기는 계속되므로 finish()를 부르지 않는다
+      // (멈추기 단추가 살아 있어야 하고, 곧 갱신된다).
+      //
+      // 예전에는 다 받을 때까지 아무것도 안 보여줬다. 30일치를 고르면 이미
+      // 12,696개가 있어도 나머지 3만 개를 채울 때까지 "다시 해 보는 중"만
+      // 떴고, 사용자 눈에는 작동을 안 하는 것과 구분이 안 됐다.
+      lastAnalysis = message.analysis;
+      workerHasResult = true;
+      selected = null;
+      render(message.analysis);
+      setStale(true, `아래는 <b>받아둔 ${message.have.toLocaleString()}개로 먼저 계산한</b> 결과입니다.
+        나머지를 받는 중이며, 다 받으면 숫자가 갱신됩니다.`);
+      break;
     case 'done':
       finish();
       $('job').textContent = message.stale
@@ -186,8 +200,11 @@ function showError(message) {
   box.textContent = message || '';
 }
 
-function setStale(stale) {
+const STALE_NOTE = `아래는 <b>이전 결과</b>입니다. 새로 계산하는 중이니 지금 결과로 읽지 마세요.`;
+
+function setStale(stale, note = STALE_NOTE) {
   for (const id of ['odds-panel', 'examples-panel']) $(id).classList.toggle('stale', stale);
+  $('stale-note').innerHTML = note;
   $('stale-note').hidden = !stale;
 }
 
