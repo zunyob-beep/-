@@ -72,7 +72,7 @@ const context = await browser.newContext({ viewport: { width: 1024, height: 768 
 await context.route('https://api.upbit.com/**', (route) => route.abort('failed'));
 // 직접 길이 막히면 앱이 공개 우회 서버로 돌아선다. 시험이 바깥 세상을
 // 부르면 안 되므로 그 길도 끊는다.
-for (const pattern of ['https://corsproxy.io/**', 'https://api.allorigins.win/**']) {
+for (const pattern of ['https://api.allorigins.win/**', 'https://api.codetabs.com/**']) {
   await context.route(pattern, (route) => route.abort('failed'));
 }
 const page = await context.newPage();
