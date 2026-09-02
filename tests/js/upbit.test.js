@@ -616,3 +616,63 @@ test('내 우회 주소를 적어 두면 그게 먼저다', async () => {
   // 업비트 주소가 통째로 실려 가야 한다. 안 그러면 우회 서버가 뭘 물어볼지 모른다.
   assert.ok(tried[0].includes(encodeURIComponent('https://api.upbit.com')));
 });
+
+// --------------------------------- 우회 서버가 자기 사정으로 거절할 때
+//
+// 화면에 이 오류가 떴다.
+//
+//   1분봉을 갱신하지 못했습니다: 업비트가 요청을 거부했습니다 (401):
+//   {"error":"A valid API key is required. Get one at https://console.corsproxy.io/"}
+//
+// 우회로 넘어간 것까지는 성공이다 — 요청이 거기까지 갔고 **읽을 수 있는**
+// 답이 왔다. 문제는 그 우회 서버가 유료로 바뀌었다는 것, 그리고 앱이
+// **다음 우회로 안 넘어갔다**는 것이다.
+//
+// 길 바꾸기가 네트워크 실패(catch)에서만 일어나고 있었다. 401은 성공한 HTTP
+// 응답이라 그 갈래를 안 타고 곧장 '거부'로 끝났다. 업비트 잘못도 아닌데
+// "업비트가 요청을 거부했습니다"라고 적힌 것도 그래서다.
+
+test('우회 서버가 키를 요구하면 다음 우회로 넘어간다', async () => {
+  const tried = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      const at = String(url);
+      if (at.startsWith('https://api.upbit.com')) {
+        tried.push('직접');
+        throw new TypeError('Load failed');
+      }
+      if (at.includes('allorigins')) {
+        tried.push('첫 우회');
+        // 실제로 겪은 그대로: 읽을 수 있는 401 응답
+        return {
+          status: 401,
+          async json() { return {}; },
+          async text() { return '{"error":"A valid API key is required."}'; },
+        };
+      }
+      tried.push('다음 우회');
+      return OK(candleRows(200, 1700000000));
+    },
+  });
+
+  const candles = await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.ok(candles.length > 0, '다음 우회로도 못 받았습니다');
+  assert.ok(tried.includes('다음 우회'), `다음 우회를 안 가 봤습니다: ${tried.join(', ')}`);
+  // 키를 달라는 서버를 계속 두드릴 이유가 없다. 한 번 보고 넘어가야 한다.
+  const stuck = tried.filter((t) => t === '첫 우회').length;
+  assert.ok(stuck <= 2, `키를 요구하는 서버를 ${stuck}번 두드렸습니다`);
+});
+
+test('공개 우회 서버는 키가 필요 없는 것만 쓴다', async () => {
+  const { ROUTES } = await import('../../web/core/upbit.js');
+  // corsproxy.io는 유료로 바뀌어 401을 준다. 목록에 있으면 안 된다.
+  assert.ok(
+    !ROUTES.some((r) => r.wrap('https://api.upbit.com/x').includes('corsproxy.io')),
+    '키를 요구하는 우회 서버가 목록에 남아 있습니다',
+  );
+  assert.equal(ROUTES[0].id, 'direct', '직접이 첫 번째여야 합니다');
+});

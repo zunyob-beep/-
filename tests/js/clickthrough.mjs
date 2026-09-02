@@ -74,7 +74,7 @@ const fakeCandle = (ts, market) => {
 // 막아 두면 그 순간부터 진짜 남의 서버로 요청이 나간다 — 느리고, 남에게
 // 폐가 되고, 그 서버가 죽은 날 CI가 같이 죽는다. 통째로 끊는다.
 async function blockDetours(context) {
-  for (const pattern of ['https://corsproxy.io/**', 'https://api.allorigins.win/**']) {
+  for (const pattern of ['https://api.allorigins.win/**', 'https://api.codetabs.com/**']) {
     // eslint-disable-next-line no-await-in-loop
     await context.route(pattern, (route) => route.abort('failed'));
   }

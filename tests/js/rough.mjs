@@ -69,7 +69,7 @@ const fakeCandle = (ts, market) => ({
  * 우회 주소는 업비트 주소를 통째로 싣고 있으므로, 그걸 꺼내서 같은 가짜
  * 업비트에게 물어보면 된다. 그러면 우회로 넘어가는 길목까지 그대로 시험된다.
  */
-const DETOURS = ['https://corsproxy.io/**', 'https://api.allorigins.win/**'];
+const DETOURS = ['https://api.allorigins.win/**', 'https://api.codetabs.com/**'];
 const innerUrl = (url) => {
   const asked = new URL(url);
   for (const [, value] of asked.searchParams) {

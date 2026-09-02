@@ -94,16 +94,25 @@ export const TO_FORMATS = [
 export const ROUTES = [
   { id: 'direct', label: '직접', wrap: (url) => url },
   {
-    id: 'corsproxy',
-    label: 'corsproxy.io',
-    wrap: (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  },
-  {
     id: 'allorigins',
     label: 'allorigins.win',
     wrap: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   },
+  {
+    id: 'codetabs',
+    label: 'codetabs.com',
+    wrap: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  },
 ];
+
+/**
+ * 우회 서버가 **자기 사정으로** 거절할 때 돌려주는 것들.
+ *
+ * corsproxy.io를 목록에서 뺀 이유가 이것이다 — 유료로 바뀌어 401을 준다.
+ * 업비트 공개 시세는 이 코드들을 쓰지 않으므로, 우회로 가는 중에 이게 오면
+ * 업비트가 아니라 그 우회 서버가 우리를 막는 것이다.
+ */
+export const PROXY_REFUSED = new Set([401, 402, 403, 407, 429]);
 
 /**
  * 직접 길이 이만큼 연달아 실패하면 우회로 넘어간다.
@@ -471,6 +480,27 @@ export class UpbitClient {
         // 것 때문에 아침 내내 30분씩 쉰다.
         this.markWorking();
         return payload;
+      }
+
+      // **우회 서버 자신이 거절한 것이면 다른 길로 간다.**
+      //
+      // 실제로 이걸 놓쳐서 한 번 막혔다. corsproxy.io가 유료로 바뀌면서
+      // 401 {"error":"A valid API key is required"} 를 돌려줬는데, 그건
+      // **성공한 HTTP 응답**이라 아래 '거부' 갈래로 곧장 떨어졌다. 길 바꾸기는
+      // 네트워크 실패(catch)에서만 일어나고 있었으므로, 다음 우회는 가 보지도
+      // 못하고 끝났다.
+      //
+      // 업비트는 공개 시세에 401·402·403·407을 쓰지 않는다. 우회로 가는 중에
+      // 이런 답이 오면 그건 업비트가 아니라 **그 우회 서버가** 우리를 막는
+      // 것이고, 몇 번을 다시 해도 안 뚫린다. 곧장 다음 길로 간다.
+      const mine = this.routes[this.route].id !== 'direct';
+      if (mine && (PROXY_REFUSED.has(response.status) || response.status >= 500)) {
+        if (this.nextRoute()) {
+          if (onRetry) onRetry(0, retries, this.routeLabel);
+          attempt = -1;
+          // eslint-disable-next-line no-continue
+          continue;
+        }
       }
 
       if (response.status === 429) {
