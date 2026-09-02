@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 import { launchOptions } from './launch.mjs';
+import { DEFAULT_PERIOD } from '../../web/core/analysis.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -165,7 +166,16 @@ await page.selectOption('#in-period', { index: last - 1 });   // 가장 긴 것
 await page.waitForTimeout(100);
 const noteAfter = await page.locator('#period-note').innerText();
 note('기간을 바꾸면 예상 시간이 바뀐다', noteBefore !== noteAfter, `${noteBefore} → ${noteAfter}`);
-await page.selectOption('#in-period', { index: 0 });
+
+// **원래 골라져 있던 것으로 되돌린다.**
+//
+// 예전에는 여기서 `index: 0`을 골랐다. 그때는 그게 30일치라 아무 문제가
+// 없었는데, 1일 선택지를 앞에 넣으면서 index 0이 **1,440봉**이 됐다.
+// 그걸로는 닮은 과거가 스무 개도 안 나와서 확률 표가 비는 일이 생기고,
+// 그러면 아래에서 표의 줄을 누르려다 30초를 기다리다 죽는다.
+// 실제로 CI에서 그렇게 죽었다 — 여기서는 사용자가 실제로 받는 기본값을
+// 그대로 써야 한다.
+await page.selectOption('#in-period', String(DEFAULT_PERIOD));
 
 // ── 받아서 계산 (여기서 시간이 제일 오래 걸린다)
 const started = Date.now();
@@ -190,7 +200,18 @@ if (tabs > 1) {
 }
 
 // ── 확률 표의 줄을 눌러 본다
+//
+// **줄이 없으면 여기서 멈춘다.** nth(-1)은 플레이라이트에서 '마지막 것'이
+// 되어 영영 기다리므로, 표가 비어 있다는 사실이 30초짜리 시간 초과로만
+// 드러난다. 무엇이 잘못됐는지 알 수 없는 실패는 없느니만 못하다.
 const rows = await page.locator('#odds-body tbody tr').count();
+note('확률 표에 줄이 있다', rows > 0, `${rows}줄`);
+if (rows === 0) {
+  console.log('\n확률 표가 비어 있어 나머지를 건너뜁니다.');
+  await browser.close();
+  server.close();
+  process.exit(1);
+}
 await page.locator('#odds-body tbody tr').nth(Math.min(3, rows - 1)).click();
 await page.waitForTimeout(600);
 note(
