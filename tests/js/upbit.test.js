@@ -180,20 +180,31 @@ test('한 번도 못 받은 상태에서는 조심스럽게만 다시 해 본다
   // 그렇다고 무한정 두드릴 수는 없다. 정말 막힌 주소일 수도 있고, 그때
   // 두드리면 차단만 길어진다. **한 번도 못 받았으면 조금만, 한 쪽이라도
   // 받아 봤으면 끈질기게** — 증거가 있는 만큼만 한다.
+  //
+  // 길이 여럿이 되고 나서는 **길마다** 세야 한다. 다른 길을 가 보는 것은
+  // 같은 길을 또 두드리는 것과 다르다.
   let calls = 0;
+  const perRoute = {};
   const client = new UpbitClient({
     retries: 4,
     perSecond: 100000,
+    retryPause: 1,
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') return OK([]);
       calls += 1;
+      const where = String(url).startsWith('https://api.upbit.com') ? '직접' : '우회';
+      perRoute[where] = (perRoute[where] ?? 0) + 1;
       throw new TypeError('Load failed');
     },
   });
   await client.getCandles('KRW-BTC', 'minute1', 200, 1700000000).catch(() => {});
   assert.ok(calls >= 2, `한 번도 다시 안 해 봤습니다 (${calls}번)`);
-  assert.ok(calls <= 8, `한 번도 못 받았는데 ${calls}번이나 두드렸습니다`);
+  assert.ok(
+    perRoute['직접'] <= 4,
+    `막힌 길 하나를 ${perRoute['직접']}번이나 두드렸습니다`,
+  );
+  assert.ok(perRoute['우회'] > 0, '다른 길은 가 보지도 않았습니다');
 
   // **그리고 멈춘다.** 여기가 핵심이다 — 몇 번 해 보고 안 되면 입을 다문다.
   assert.ok(client.knownBlocked(), '몇 번 실패하고도 안 멈췄습니다');
@@ -524,4 +535,84 @@ test('진단은 우리가 실제로 필요한 것을 물어본다', async () => 
     bars.length >= 2,
     `진단이 봉을 안 물어봤습니다 (봉 요청 ${bars.length}번): ${asked.join(' | ')}`,
   );
+});
+
+// ------------------------------------------- 직접 가는 길이 막혀 있을 때
+//
+// 진단표 세 장이 같은 말을 했다. 마지막 표(와이파이)에서는 **전부** 실패했다.
+//
+//   안 됨 | 봉 1개 (to 없음)      | TypeError: Load failed
+//   안 됨 | 현재가 ①②③          | TypeError: Load failed
+//   됨    | 같은 주소를 no-cors로 | 닿았습니다 (128ms)
+//
+// no-cors가 128ms에 닿는데 읽을 수 있는 요청은 다 실패한다. 그리고 5G에서
+// 와이파이로 바꿔도 똑같았다 — 우리 주소가 차단당한 게 아니다. 브라우저에서
+// **직접 부르는 길 자체가** 막힌 것이고, 그건 몇 번을 다시 해도 안 뚫린다.
+//
+// 그러면 다른 길로 가야 한다. 그게 이 시험이 지키는 것이다.
+
+test('직접 가는 길이 막히면 우회로 돌아서 받아 온다', async () => {
+  const tried = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      const direct = String(url).startsWith('https://api.upbit.com');
+      tried.push(direct ? '직접' : '우회');
+      // 직접은 무슨 짓을 해도 안 된다. 우회는 된다.
+      if (direct) throw new TypeError('Load failed');
+      return OK(candleRows(200, 1700000000));
+    },
+  });
+
+  const candles = await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.ok(candles.length > 0, '우회로도 못 받았습니다');
+  assert.ok(tried.includes('직접'), '직접부터 해 봐야 합니다');
+  assert.ok(tried.includes('우회'), `우회를 안 해 봤습니다: ${tried.join(', ')}`);
+  // 직접을 끝없이 두드리지 않는다. 몇 번 해 보고 길을 바꾼다.
+  const straight = tried.filter((t) => t === '직접').length;
+  assert.ok(straight <= 4, `직접만 ${straight}번 두드렸습니다`);
+});
+
+test('직접이 되면 아무 데도 안 거친다', async () => {
+  // 우회는 남의 서버를 거치는 것이라, 필요할 때만 써야 한다.
+  const tried = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      tried.push(String(url));
+      return OK(candleRows(200, 1700000000));
+    },
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.ok(
+    tried.every((u) => u.startsWith('https://api.upbit.com')),
+    `잘 되는데도 우회를 거쳤습니다: ${tried.join(', ')}`,
+  );
+  assert.equal(client.routeLabel, '직접');
+});
+
+test('내 우회 주소를 적어 두면 그게 먼저다', async () => {
+  // 남의 서버보다 자기 것이 낫다 — 한도도 자기 몫이고, 남이 안 본다.
+  const tried = [];
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    myProxy: 'https://my-worker.example.dev/?u={url}',
+    fetcher: async (url) => {
+      if (isPing(url)) return OK([]);
+      tried.push(String(url));
+      return OK(candleRows(200, 1700000000));
+    },
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.ok(
+    tried[0].startsWith('https://my-worker.example.dev/'),
+    `내 주소를 안 썼습니다: ${tried[0]}`,
+  );
+  // 업비트 주소가 통째로 실려 가야 한다. 안 그러면 우회 서버가 뭘 물어볼지 모른다.
+  assert.ok(tried[0].includes(encodeURIComponent('https://api.upbit.com')));
 });

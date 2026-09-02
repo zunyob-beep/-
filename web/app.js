@@ -57,10 +57,28 @@ function spawn() {
   return worker;
 }
 
+/**
+ * 사용자가 적어 둔 우회 주소. 이 기기에만 남는다.
+ *
+ * 업비트가 브라우저 요청을 막을 때 쓴다. 자기 것을 적어 두면 남의 서버를
+ * 안 거치고 한도도 자기 몫이 된다.
+ */
+const PROXY_KEY = 'gisigam.proxy';
+
+function myProxy() {
+  try {
+    return localStorage.getItem(PROXY_KEY) || null;
+  } catch {
+    return null;   // 사파리가 저장을 막아 둔 경우가 있다. 없는 셈 친다.
+  }
+}
+
 function send(message) {
   if (!worker) spawn();
   if (!worker) return;
-  worker.postMessage(message);
+  // 우회 주소는 **모든 메시지에 실어 보낸다.** 워커는 localStorage를 못 읽고,
+  // 따로 보내면 순서가 어긋나 첫 요청만 옛 주소로 나가는 일이 생긴다.
+  worker.postMessage({ ...message, myProxy: myProxy() });
 }
 
 function handle(message) {
@@ -1317,6 +1335,21 @@ function theoryRow(r, scoring) {
 $('version').textContent = VERSION;
 renderCoins();
 renderPeriods();
+
+// ── 우회 주소: 적어 두면 이 기기에 남고, 다음 요청부터 그 길로 간다
+{
+  const box = $('in-proxy');
+  box.value = myProxy() ?? '';
+  box.addEventListener('change', () => {
+    const value = box.value.trim();
+    try {
+      if (value) localStorage.setItem(PROXY_KEY, value);
+      else localStorage.removeItem(PROXY_KEY);
+    } catch { /* 저장을 막아 둔 브라우저. 이번 판에서만 쓰인다. */ }
+    // 워커가 길 목록을 새로 만들도록 알린다.
+    send({ type: 'proxy' });
+  });
+}
 spawn();
 send({ type: 'summary', market });
 

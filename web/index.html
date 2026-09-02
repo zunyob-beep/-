@@ -75,6 +75,19 @@
           <input id="in-amount" type="number" step="100000" min="0" value="1000000">
         </label>
       </div>
+      <details class="detour">
+        <summary>업비트가 브라우저 요청을 막을 때 (우회 주소)</summary>
+        <p>
+          업비트 서버는 답하는데 <b>브라우저가 그 답을 읽지 못하는</b> 경우가
+          있습니다. 그때는 이 앱이 스스로 공개 우회 서버로 돌아서 받아옵니다.
+          여기에 <b>직접 만든 우회 주소</b>를 적으면 그걸 먼저 씁니다 —
+          남의 서버를 안 거치고, 한도도 온전히 내 몫이 됩니다.
+          <span class="dim">주소 안에 <code>{url}</code>을 넣어 주세요.
+          그 자리에 업비트 주소가 들어갑니다. 만드는 법은 README에 있습니다.</span>
+        </p>
+        <input id="in-proxy" type="text" spellcheck="false" autocapitalize="off"
+               placeholder="https://내-우회주소.workers.dev/?u={url}">
+      </details>
       <div class="row actions">
         <button id="btn-live" class="primary">지금 시세로 판단받기</button>
         <button id="btn-scan">받아둔 시세로 다시 계산</button>

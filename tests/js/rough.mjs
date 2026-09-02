@@ -58,9 +58,29 @@ const fakeCandle = (ts, market) => ({
   candle_acc_trade_volume: 2 + (ts % 7) / 3,
 });
 
+/**
+ * **우회 주소도 가로챈다.**
+ *
+ * 앱은 직접 가는 길이 막히면 공개 우회 서버로 돌아선다. 그런데 시험이
+ * api.upbit.com만 막아 두면, 그 순간부터 **진짜 남의 서버로 요청이 나간다.**
+ * 시험이 바깥 세상을 부르면 안 된다 — 느리고, 남에게 폐가 되고, 그 서버가
+ * 죽은 날 CI가 같이 죽는다.
+ *
+ * 우회 주소는 업비트 주소를 통째로 싣고 있으므로, 그걸 꺼내서 같은 가짜
+ * 업비트에게 물어보면 된다. 그러면 우회로 넘어가는 길목까지 그대로 시험된다.
+ */
+const DETOURS = ['https://corsproxy.io/**', 'https://api.allorigins.win/**'];
+const innerUrl = (url) => {
+  const asked = new URL(url);
+  for (const [, value] of asked.searchParams) {
+    if (value.startsWith('https://api.upbit.com')) return value;
+  }
+  return null;
+};
+
 /** 업비트를 흉내 낸다. `mode`로 어떤 험한 상황인지 고른다. */
 async function stubUpbit(context, getMode) {
-  await context.route('https://api.upbit.com/**', async (route) => {
+  const handler = async (route) => {
     const mode = getMode();
     if (mode === 'dead') return route.abort('failed');
     if (mode === 'walled') {
@@ -100,7 +120,23 @@ async function stubUpbit(context, getMode) {
       { length: count },
       (_, i) => fakeCandle(last - i * step, url.searchParams.get('market')),
     ));
-  });
+  };
+  await context.route('https://api.upbit.com/**', handler);
+  // 우회로 넘어가도 바깥으로 나가지 않게, 안에 실린 업비트 주소를 꺼내
+  // 같은 손으로 받는다.
+  for (const pattern of DETOURS) {
+    // eslint-disable-next-line no-await-in-loop
+    await context.route(pattern, async (route) => {
+      const inner = innerUrl(route.request().url());
+      if (!inner) return route.abort('failed');
+      return handler({
+        ...route,
+        request: () => ({ url: () => inner }),
+        abort: (...a) => route.abort(...a),
+        fulfill: (...a) => route.fulfill(...a),
+      });
+    });
+  }
 }
 
 const found = [];

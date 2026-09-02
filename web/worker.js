@@ -35,10 +35,25 @@ let analysis = null;   // 마지막으로 끝낸 계산. 사례를 볼 때마다
  */
 let client = null;
 
+/**
+ * 사용자가 적어 둔 우회 주소. 화면이 보내 준다.
+ *
+ * 워커에서는 localStorage를 못 읽으므로 화면이 알려 줘야 한다. 바뀌면
+ * 클라이언트를 새로 만든다 — 길 목록이 달라지기 때문이다.
+ */
+let myProxy = null;
+
 async function ready() {
   if (!store) store = new CandleStore(await IndexedDbBackend.open());
-  if (!client) client = new UpbitClient();
+  if (!client) client = new UpbitClient({ myProxy });
   return store;
+}
+
+function setProxy(url) {
+  const next = url || null;
+  if (next === myProxy) return;
+  myProxy = next;
+  client = null;   // 길 목록이 바뀌었으니 새로 만든다
 }
 
 const say = (message) => postMessage(message);
@@ -208,6 +223,10 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
 onmessage = async (event) => {
   const message = event.data ?? {};
   try {
+    // 우회 주소는 어떤 일을 하기 전에 먼저 반영한다. 화면이 모든 메시지에
+    // 실어 보내므로, 사용자가 고치면 그다음 요청부터 바로 그 길로 간다.
+    if ('myProxy' in message) setProxy(message.myProxy);
+    if (message.type === 'proxy') return;   // 알려 주기만 하는 메시지
     // 맨 위 시세도 **여기를 거친다.**
     //
     // 예전에는 화면 쪽에 UpbitClient가 따로 있었다. 그러면 속도 제한기가
