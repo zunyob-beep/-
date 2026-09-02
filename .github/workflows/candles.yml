@@ -1,0 +1,118 @@
+# 업비트 봉을 **미리 받아 둔다.**
+#
+# 왜 이게 있는가
+# -------------
+# 브라우저에서 업비트를 직접 부르는 것은 믿을 수 없다. 업비트 REST API는
+# 서버끼리 쓰라고 만든 것이라, 거절할 때 돌려주는 응답에 브라우저가 요구하는
+# 허용 표시(CORS 헤더)가 없다. 그러면 브라우저는 그 답을 읽지도 못하고
+# 그냥 실패로 처리한다 — 인터넷이 끊긴 것과 구분이 안 된다. 게다가 한도는
+# 주소(IP) 단위라, 휴대폰 데이터에서는 남이 쓴 몫 때문에 막힌다.
+#
+# 공개 우회 서버로 돌아가 봤지만 그건 문제를 옮긴 것뿐이었다 — 우회 서버
+# 주소도 수천 명이 같이 쓰니 똑같이 막히고, 느리고, 어느 날 유료로 바뀌면
+# 그날부터 앱이 죽는다 (실제로 그랬다).
+#
+# 그래서 **브라우저가 업비트를 안 부르게 한다.** 여기서, 서버에서, 미리 받아
+# 파일로 적어 둔다. 앱은 그 파일 하나만 내려받으면 된다.
+#
+# 어디에 두는가
+# ------------
+# `data` 브랜치에 **덮어쓴다** (force push). 20분마다 커밋을 쌓으면 저장소가
+# 하루에 수십 MB씩 불어난다. 덮어쓰면 언제나 커밋 하나만 남는다.
+#
+# 앱은 raw.githubusercontent.com에서 읽는다. 거기는 아무 데서나 읽을 수 있게
+# 허용 표시를 붙여 주므로(`access-control-allow-origin: *`) 브라우저가
+# 그대로 읽는다 — 업비트와 달리.
+
+name: 봉 미리 받기
+
+on:
+  schedule:
+    # 20분마다. 예약 실행은 깃허브 사정에 따라 늦어질 수 있다(보통 몇 분).
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candles
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    name: 받아서 적기
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # **업비트가 브라우저에 문을 열어 주는가.**
+      #
+      # 이 한 줄을 확인할 방법이 없어서 몇 판을 헤맸다. 브라우저에서는
+      # 실패해도 이유를 안 알려 주기 때문이다(CORS는 그렇게 설계돼 있다).
+      # 여기서는 헤더가 그대로 보이므로 기록에 남겨 둔다.
+      - name: 업비트가 허용 표시를 붙이는지 본다
+        continue-on-error: true
+        run: |
+          echo "── Origin 없이 (서버가 부르듯)"
+          curl -sS -D - -o /dev/null --max-time 20 \
+            "https://api.upbit.com/v1/candles/minutes/1?market=KRW-BTC&count=1" \
+            | grep -iE "^(HTTP/|access-control|remaining-req|retry-after)" || echo "(허용 표시 없음)"
+          echo "── Origin 붙여서 (브라우저가 부르듯)"
+          curl -sS -D - -o /dev/null --max-time 20 \
+            -H "Origin: https://${GITHUB_REPOSITORY_OWNER}.github.io" \
+            "https://api.upbit.com/v1/candles/minutes/1?market=KRW-BTC&count=1" \
+            | grep -iE "^(HTTP/|access-control|remaining-req|retry-after)" || echo "(허용 표시 없음)"
+
+      # 지난번에 적어 둔 것을 가져온다. 있으면 이어 붙이면 되므로 한 쪽이면
+      # 끝나고, 없으면 14일치를 처음부터 받는다.
+      - name: 지난번 파일 가져오기
+        run: |
+          mkdir -p data
+          for m in KRW-BTC KRW-ETH KRW-XRP KRW-SOL; do
+            curl -fsSL --max-time 60 \
+              -o "data/$m.min1.json" \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/data/$m.min1.json" \
+              || echo "  $m: 지난번 파일 없음 (처음부터 받습니다)"
+          done
+
+      - name: 업비트에서 받기
+        run: python tools/candles.py --out data --days 14
+
+      - name: 적어 둔 것 확인
+        run: |
+          ls -la data/
+          python - <<'PY'
+          import json, pathlib, datetime
+          for p in sorted(pathlib.Path("data").glob("*.json")):
+              d = json.loads(p.read_text())
+              rows = d["rows"]
+              last = datetime.datetime.fromtimestamp(rows[-1][0], datetime.timezone.utc)
+              print(f"{p.name}: {len(rows):,}개, 마지막 {last:%Y-%m-%d %H:%M} UTC, {p.stat().st_size/1024:.0f}KB")
+              assert len(rows) > 1000, f"{p.name}: 너무 적습니다"
+          PY
+
+      # `data` 브랜치를 통째로 갈아 끼운다. 커밋은 늘 하나만 남는다.
+      - name: data 브랜치에 올리기
+        run: |
+          pub=$(mktemp -d)
+          cp data/*.json "$pub/"
+          cd "$pub"
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "봉 갱신 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" data
+          echo "올렸습니다: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/data/KRW-BTC.min1.json"

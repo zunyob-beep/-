@@ -14,6 +14,16 @@ import {
 
 const $ = (id) => document.getElementById(id);
 
+/** 유닉스 초를 "3분 전"으로. 몇 시 몇 분보다 이쪽이 먼저 읽힌다. */
+function ago(ts) {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - Number(ts || 0)));
+  if (seconds < 90) return '방금';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours}시간 전` : `${Math.round(hours / 24)}일 전`;
+}
+
 /** 화면에 그대로 찍을 글자. 기록에는 주소가 들어 있으니 반드시 거른다. */
 const escapeHtml = (text) => String(text)
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -140,7 +150,7 @@ function handle(message) {
     case 'blocked':
       // 새 시세를 못 받았다. 결과는 나올 수 있지만(받아둔 것으로) 그건
       // '지금'이 아니다. 그 사실이 결과보다 먼저 보여야 한다.
-      setBlocked(message.kind);
+      setBlocked(message.kind, message.seedAt);
       if (!message.stale) finish();
       // 예전에는 여기서 진단을 자동으로 돌렸다. 무엇 때문에 막히는지 몰랐을
       // 때는 그게 유일한 단서였다. 지금은 클라이언트가 이미 정확히 가르므로
@@ -268,10 +278,26 @@ function setStale(stale, note = STALE_NOTE) {
  * 사용자는 인터넷이 끊긴 건지, 업비트가 막은 건지, 잠깐 점검 중인지
  * 알 수가 없고, 그러면 다시 시도할지 포기할지도 정할 수 없다.
  */
-function setBlocked(kind) {
+function setBlocked(kind, seedAt = null) {
   const box = $('blocked');
   box.hidden = kind === null;
   if (kind === null) return;
+
+  // **미리 받아 둔 파일이 있으면 그 이야기부터 한다.**
+  //
+  // 이제 업비트가 막혀도 결과는 나온다 — 서버가 20분마다 받아 둔 파일로
+  // 계산하기 때문이다. 그러면 "막혔습니다"가 첫마디여서는 안 된다.
+  // 사용자에게 중요한 건 "되는가"이고, 답은 "된다, 다만 N분 전 값이다"다.
+  if (seedAt) {
+    box.innerHTML = `<b>미리 받아 둔 시세(${ago(seedAt)})로 계산했습니다.</b>
+      업비트에서 <b>가장 최근 몇 분</b>만 못 받았습니다 — 계산에 쓴 나머지는
+      그대로 있습니다.
+      <span class="dim">이 앱은 업비트를 직접 부르지 않습니다. 서버가 20분마다
+      미리 받아 둔 파일을 읽습니다. 그래서 업비트가 브라우저 요청을 막아도
+      결과는 나옵니다. 다만 <b>맨 마지막 몇 분은 빠져 있을 수 있습니다.</b></span>`;
+    attachLog(box);
+    return;
+  }
   const said = {
     offline: `<b>인터넷이 끊겨 있습니다.</b>
       연결을 확인하고 다시 눌러 주세요.
@@ -469,8 +495,13 @@ function showTicker(rows) {
   $('ticker-price').textContent = `${won(data.price)}원`;
   const rate = data.changeRate;
   const arrow = rate > 0 ? '▲' : rate < 0 ? '▼' : '·';
-  $('ticker-change').textContent =
-    `${arrow} ${won(Math.abs(data.changePrice))}  ${signed(rate)}`;
+  // **지금 값이 아니면 그렇다고 적는다.**
+  //
+  // 업비트가 막히면 받아둔 마지막 봉을 대신 띄운다. 숫자만 보여 주면
+  // 사용자는 그걸 지금 값으로 읽는다 — 그건 거짓말이다.
+  $('ticker-change').textContent = data.late
+    ? `${ago(data.at)} 값`
+    : `${arrow} ${won(Math.abs(data.changePrice))}  ${signed(rate)}`;
   // 업비트와 같은 색: 오르면 빨강, 내리면 파랑.
   $('ticker').className = `ticker ${rate > 0 ? 'up' : rate < 0 ? 'down' : 'flat'}`;
 }
