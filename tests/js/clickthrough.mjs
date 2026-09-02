@@ -30,11 +30,44 @@ const TYPES = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
+/**
+ * **미리 받아 둔 봉 파일.** 진짜 앱이 켜자마자 읽는 것이 이것이다.
+ *
+ * 깃허브 액션이 20분마다 서버에서 받아 `data` 브랜치에 적어 두고, 앱은
+ * 그걸 내려받아 캐시에 넣은 뒤에야 업비트로 마지막 몇 분을 채운다.
+ * 이걸 안 내면 시험은 실제로 아무도 안 걷는 길을 걷게 된다.
+ */
+const SEED_BARS = 20000;
+function seedFile(market) {
+  // **10분 전까지만 담는다.** 실제로도 그렇다 — 서버가 20분마다 받으므로
+  // 파일은 늘 몇 분 뒤처져 있고, 앱은 그 몇 분을 업비트로 채우러 간다.
+  // 지금까지 담아 버리면 그 길이 시험에서 통째로 안 걸린다.
+  const now = Math.floor(Date.now() / 1000 / 60) * 60 - 600;
+  const rows = [];
+  for (let i = SEED_BARS - 1; i >= 0; i -= 1) {
+    const ts = now - i * 60;
+    const c = fakeCandle(ts, market);
+    rows.push([ts, c.opening_price, c.high_price, c.low_price,
+      c.trade_price, c.candle_acc_trade_volume]);
+  }
+  return JSON.stringify({
+    market, timeframe: 'minute1', step: 60, days: 14, made: now, rows,
+  });
+}
+
 function serve() {
   const server = createServer(async (req, res) => {
     const asked = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     const rest = asked.startsWith(BASE) ? asked.slice(BASE.length) || '/' : null;
     if (rest === null) { res.writeHead(404).end(); return; }
+    // 미리 받아 둔 봉 파일. 실제 앱에서는 raw.githubusercontent.com에서 오지만
+    // 시험은 바깥으로 안 나가므로 같은 주소에서 낸다.
+    const seed = rest.match(/^\/data\/(KRW-[A-Z]+)\.min1\.json$/);
+    if (seed) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(seedFile(seed[1]));
+      return;
+    }
     const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));
     if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
     try {
@@ -287,11 +320,14 @@ note('자동 갱신을 끌 수 있다', !(await page.isChecked('#in-auto')));
 
 // ── 종목 바꾸기 (남은 표가 그대로 있으면 다른 코인 숫자를 잘못 읽는다)
 await page.locator('.coin').nth(1).click();
+// **곧바로** 본다. 미리 받아 둔 파일 덕분에 새 종목 결과가 몇백 밀리초면
+// 나오므로, 기다렸다 보면 '앞 종목이 남은 것'과 '새 종목이 벌써 나온 것'을
+// 구분할 수 없다. 지켜야 할 것은 누른 순간 앞 종목 것이 치워지는 것이다.
+const cleared = await page.evaluate(() => document.getElementById('verdict').hidden
+  || document.getElementById('verdict-headline').textContent.length === 0);
 await page.waitForTimeout(500);
 const code = await page.locator('#ticker-code').innerText();
 note('종목을 바꾸면 맨 위가 따라 바뀐다', code === 'KRW-ETH', code);
-const cleared = await page.evaluate(() => document.getElementById('verdict').hidden
-  || document.getElementById('verdict-headline').textContent.length === 0);
 note('종목을 바꾸면 앞 종목 결과가 남지 않는다', cleared);
 
 // ── 멈추기

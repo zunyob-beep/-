@@ -92,7 +92,11 @@ export const TO_FORMATS = [
  * **직접이 먼저다.** 되면 아무 데도 안 거친다. 안 될 때만 돌아간다.
  */
 export const ROUTES = [
-  { id: 'direct', label: '직접', wrap: (url) => url },
+  // **직접 가는 길은 분당 6번이다.** 업비트가 브라우저 요청을 `origin`
+  // 묶음에 넣기 때문이다 (ORIGIN_PER_SECOND에 증거를 적어 뒀다).
+  // 우회로 가면 우회 서버가 대신 부르므로 서버 몫(분당 600)을 쓴다 —
+  // 같은 앱에서 길에 따라 100배가 갈린다.
+  { id: 'direct', label: '직접', pace: 6 / 60, wrap: (url) => url },
   {
     id: 'allorigins',
     label: 'allorigins.win',
@@ -262,9 +266,47 @@ export function parseRemaining(header) {
 export const LOW_SEC = 2;
 export const LOW_MIN = 30;
 
+/**
+ * **브라우저에서 부르면 분당 6번이다.** 이걸 몰라서 이 앱은 며칠을 헤맸다.
+ *
+ * 업비트가 헤더로 대놓고 말하고 있었는데 우리가 안 읽었다. 깃허브 액션에서
+ * 같은 주소를 두 번 불러 보면 이렇게 나온다.
+ *
+ *     Origin 없이 (서버가 부르듯)
+ *       HTTP/2 200
+ *       remaining-req: group=candles; min=600; sec=9
+ *
+ *     Origin 붙여서 (브라우저가 부르듯)
+ *       HTTP/2 200
+ *       remaining-req: group=origin; min=6; sec=0
+ *       access-control-allow-origin: *
+ *
+ * 같은 주소인데 **한도 묶음이 다르다.** 브라우저에는 허용 표시(CORS)를 붙여
+ * 주지만, 대신 `origin` 묶음에 넣어 **분당 6번**으로 묶는다. 서버는 분당
+ * 600번이다 — 100배 차이다.
+ *
+ * 우리는 초당 3번을 보내고 있었다. 허용치의 30배다. 8 → 5 → 3으로 낮춘 것이
+ * 아무 소용 없었던 이유가 이것이다. 6번/분은 **초당 0.1번**이라, 우리가 고른
+ * 숫자들은 전부 한참 위였다. 와이파이로 바꿔도 똑같았던 이유도 같다 — 망
+ * 문제가 아니라 이 묶음 하나였다.
+ *
+ * 그래서 브라우저에서 직접 부르는 길은 여기에 맞춘다. 200개씩 받으므로
+ * 분당 1,200봉이고, 마지막 몇 분을 채우는 데는 넉넉하다. 많은 양은 미리
+ * 받아 둔 파일이 가져온다(core/seed.js).
+ */
+export const ORIGIN_PER_SECOND = 6 / 60;
+
+/** 우회로 가면 우회 서버가 대신 부르므로 `candles` 묶음(분당 600)에 든다. */
+export const DETOUR_PER_SECOND = PER_SECOND;
+
+/** 남은 분 한도가 이보다 적으면, 남은 만큼을 1분에 고르게 펴서 쓴다. */
+export const TIGHT_MIN = 20;
+
 export class RateLimiter {
   constructor(perSecond = PER_SECOND) {
-    this.perSecond = Math.max(0.5, perSecond);
+    // 아래끝을 0.5로 두고 있었다. 그러면 분당 6번(=0.1)을 아예 표현할 수가
+    // 없어서, 업비트가 그렇게 하라고 말해도 다섯 배 빠르게 보내게 된다.
+    this.perSecond = Math.max(0.02, perSecond);
     this.next = 0;
     /** 업비트가 마지막으로 알려 준 남은 한도. 화면이 이걸 보여준다. */
     this.remaining = null;
@@ -282,6 +324,21 @@ export class RateLimiter {
     if (!left) return null;
     this.remaining = left;
     const now = Date.now();
+
+    // **어느 묶음에 들어 있는지가 속도를 정한다.**
+    //
+    // `origin`은 브라우저에서 직접 부를 때 들어가는 묶음이고 분당 6번이다.
+    // 이걸 안 읽어서 초당 3번(허용치의 30배)을 보내고 있었다.
+    if (left.group === 'origin') this.slowTo(ORIGIN_PER_SECOND);
+
+    // **남은 분 한도가 적으면 그만큼으로 늦춘다.**
+    //
+    // 묶음 이름을 모르는 경우까지 덮는다. 남은 게 6개면 1분에 6번이
+    // 우리가 쓸 수 있는 전부다 — 그보다 빠르면 나머지는 전부 거절이다.
+    if (Number.isFinite(left.min) && left.min <= TIGHT_MIN) {
+      this.slowTo(Math.max(left.min, 1) / 60);
+    }
+
     // 초 한도가 바닥나 가면 다음 초까지 쉰다.
     if (Number.isFinite(left.sec) && left.sec <= LOW_SEC) {
       this.next = Math.max(this.next, now + 1000);
@@ -291,6 +348,11 @@ export class RateLimiter {
       this.next = Math.max(this.next, now + 5000);
     }
     return left;
+  }
+
+  /** **늦추기만 한다.** 빨라지는 쪽으로는 절대 안 움직인다. */
+  slowTo(perSecond) {
+    if (perSecond > 0 && perSecond < this.perSecond) this.perSecond = perSecond;
   }
 
   /** 요청 사이 최소 간격(밀리초). */
@@ -318,6 +380,10 @@ export class UpbitClient {
     this.retryPause = retryPause;
     this.quietSteps = quietSteps;
     this.limiter = new RateLimiter(perSecond);
+    /** 길에 따로 적힌 속도가 없을 때 쓰는 속도. */
+    this.basePace = this.limiter.perSecond;
+    /** 길마다, 업비트가 헤더로 알려 줘서 배운 속도. */
+    this.learned = new Map();
     // 테스트에서 갈아끼울 수 있게 둔다. 진짜 업비트를 부르는 테스트는
     // 만들 수 없다 — 값이 매번 달라서 무엇과도 대조할 수 없다.
     this.fetch = fetcher ?? ((...args) => globalThis.fetch(...args));
@@ -377,6 +443,28 @@ export class UpbitClient {
     // (맨 위 시세는 이 길을 안 거치므로 '밤새 조용히'는 그대로다.)
     this.blockedUntil = 0;
     this.banLevel = 0;
+  }
+
+  /**
+   * 지금 가는 길에 맞게 속도를 맞춘다.
+   *
+   * 길에 `pace`가 적혀 있으면 그걸 쓰고, 없으면 처음 속도로 되돌린다.
+   * 되돌리는 쪽이 중요하다 — 직접 길에서 분당 6번까지 내려간 채로 우회에
+   * 넘어가면, 분당 600번을 쓸 수 있는 길에서 100배 느리게 받게 된다.
+   *
+   * 업비트가 헤더로 더 낮추라고 하면 그건 slowTo가 다시 잡는다.
+   */
+  paceForRoute() {
+    const written = this.routes[this.route]?.pace;
+    // 부르는 쪽이 **기본보다 빠르게** 달라고 했으면 그건 "속도 제한을 끄고
+    // 싶다"는 뜻이다 (시험이 그렇게 한다). 그때는 길 속도를 안 씌운다.
+    const wanted = written && this.basePace <= PER_SECOND
+      ? Math.min(written, this.basePace)
+      : this.basePace;
+    // 업비트가 헤더로 더 낮추라고 한 적이 있으면 그 값이 이긴다. 길마다
+    // 따로 기억한다 — 직접에서 배운 것이 우회에 옮아붙으면 안 된다.
+    const learned = this.learned.get(this.route);
+    this.limiter.perSecond = Math.min(wanted, learned ?? Infinity);
   }
 
   /** 지금 어느 길로 가고 있는지. 화면이 이걸 보여준다. */
@@ -484,6 +572,10 @@ export class UpbitClient {
       }
       if (toSeconds !== null) url.searchParams.set('to', TO_FORMATS[0](toSeconds));
 
+      // **길마다 속도가 다르다.** 직접은 분당 6번(origin 묶음), 우회는
+      // 우회 서버가 대신 부르므로 서버 몫을 쓴다. 같은 앱에서 100배가
+      // 갈리므로, 길을 바꿀 때마다 속도도 같이 바꿔야 한다.
+      this.paceForRoute();
       await this.limiter.acquire();
       let response = null;
       const startedAt = Date.now();
@@ -576,6 +668,8 @@ export class UpbitClient {
       // **업비트가 남은 한도를 알려 주면 그대로 따른다.**
       // 헤더를 못 읽는 경우(브라우저가 안 열어 주면)에는 아무 일도 안 한다.
       this.limiter.observe(response.headers?.get?.('Remaining-Req'));
+      // 배운 속도는 **그 길에** 적어 둔다. 다음 요청에서 다시 씌운다.
+      this.learned.set(this.route, this.limiter.perSecond);
 
       if (response.status < 400) {
         let payload;
