@@ -246,7 +246,9 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
       const already = await db.count(market, timeframe);
       // 개수는 아래 진행 막대가 맡는다. 여기 문구는 **무슨 일이 벌어지는지**만
       // 말한다 — 같은 숫자를 두 군데 적으면 읽는 데 방해만 된다.
-      const at = (done) => already + done;
+      //
+      // **여기서 개수를 더하지 않는다.** update()가 이미 절대값으로 준다.
+      // 예전에는 여기서 already를 또 더해서 두 배로 부푼 숫자가 떴다.
       progress(`${label} 받는 중…`, already, wanted);
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -258,7 +260,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
               // 멈춘 것으로 보이고, 사용자는 앱을 닫는다.
               progress(
                 `업비트가 막고 있습니다 — ${info.waitLeft}초 뒤에 이어서 받습니다`,
-                at(done), wanted,
+                done, total,
               );
               return;
             }
@@ -269,7 +271,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
               // 앱이 죽은 것과 구분이 안 되고, 실제로 그렇게 보였다.
               progress(
                 `업비트가 거절해서 다시 해 보는 중입니다 (${info.retrying}/${info.of})`,
-                at(done), wanted,
+                done, total,
               );
               return;
             }
@@ -285,7 +287,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
                 // 지금 속도와, 업비트가 알려 준 남은 한도를 같이 적는다.
                 // 이 숫자들이 보이면 "왜 거절당하나"를 추측할 필요가 없다.
                 : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${budget()}`,
-              at(done), wanted,
+              done, total,
             );
           },
         });
@@ -320,7 +322,18 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   }
 
   analysis = analyse(market, series, {
-    similarity, fee, slippage, length, stake, onStep: progress,
+    similarity,
+    fee,
+    slippage,
+    length,
+    stake,
+    // **계산 단계는 개수를 건드리지 않는다.**
+    //
+    // analyse()는 onStep(문구, 1, 3)처럼 '세 간격 중 몇 번째'를 알린다.
+    // 그걸 그대로 넘겼더니 화면이 그 숫자를 **받은 개수로** 그렸다 —
+    // 10,080개를 받아 놓고 "3 / 3개 받았습니다"가 떴다. 통로는 같아도
+    // 뜻이 다르므로, 여기서는 문구만 바꾼다.
+    onStep: (text) => progress(text),
   });
   say({ type: 'done', analysis: analysisJson(analysis), stale: blocked !== null });
 }

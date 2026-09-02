@@ -88,6 +88,13 @@ async function stubUpbit(context, getMode) {
       return route.fulfill({ status: 429, body: '', headers: {} });
     }
     if (mode === 'dead') return route.abort('failed');
+    // **실제 조건.** 업비트가 가끔 거절한다 — 세 번에 한 번. 거절 응답에는
+    // 허용 표시가 없으므로 브라우저가 막고, 앱은 TypeError만 본다.
+    // 이 상태에서 **끝까지 받아지는지**가 진짜 물음이다.
+    if (mode === 'flaky') {
+      flaky += 1;
+      if (flaky % 3 === 0) return route.fulfill({ status: 429, body: '', headers: {} });
+    }
     if (mode === 'walled') {
       // **실제로 겪은 그 상태를 그대로 흉내 낸다.**
       //
@@ -146,6 +153,8 @@ async function stubUpbit(context, getMode) {
     });
   }
 }
+
+let flaky = 0;
 
 const found = [];
 const ok = [];
@@ -287,6 +296,50 @@ await page.waitForTimeout(500);
 const copyLabel = await page.locator('#btn-diag-copy').innerText().catch(() => '');
 note('결과 복사가 눌린다', copyLabel.length > 0 || (await page.locator('.diag-text').count()) > 0,
   copyLabel);
+
+// ── 5-4. **거절이 섞인 실제 조건에서 끝까지 받아지는가**
+//
+// "전혀 작동을 안 한다"는 말을 듣고 만든 것이다. 여태 시험은 업비트가
+// 완벽하거나 완벽히 막힌 두 극단만 봤다. 진짜 조건은 그 사이다 — 가끔
+// 거절당하면서 조금씩 쌓이는 것.
+//
+// 그리고 **화면에 뜬 개수가 실제로 저장된 개수와 같은지**까지 본다.
+// "총 개수도 틀리다"는 지적이 정확히 이 자리였다.
+mode = 'flaky';
+await page.evaluate(() => { document.getElementById('btn-forget')?.click(); });
+await page.waitForTimeout(1000);
+await page.click('#btn-live');
+await page.waitForFunction(
+  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  null, { timeout: 300000 },
+);
+const shown = await page.evaluate(() => {
+  const seen = document.getElementById('progress-count')?.textContent?.match(/([\d,]+) \/ ([\d,]+)/);
+  return seen ? [Number(seen[1].replace(/,/g, '')), Number(seen[2].replace(/,/g, ''))] : null;
+});
+const stored = await page.evaluate(async () => {
+  const db = await new Promise((resolve, reject) => {
+    const open = indexedDB.open('gisigam');
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  return new Promise((resolve) => {
+    const tx = db.transaction('index', 'readonly');
+    const all = tx.objectStore('index').getAll();
+    all.onsuccess = () => resolve(
+      all.result
+        .filter((r) => r.market === 'KRW-BTC' && r.timeframe === 'minute1')
+        .reduce((sum, r) => sum + r.n, 0),   // 색인 칸 이름은 n이다
+    );
+    all.onerror = () => resolve(-1);
+  });
+});
+const jobText = (await page.locator('#job').innerText()).slice(0, 40);
+note('거절이 섞여도 끝까지 받아 온다', stored > 1000,
+  `실제로 저장된 봉 ${stored}개 · ${jobText}`);
+note('화면에 뜬 개수가 실제 저장된 개수와 같다',
+  shown !== null && Math.abs(shown[0] - stored) <= 5,
+  shown ? `화면 ${shown[0].toLocaleString()} / ${shown[1].toLocaleString()} · 실제 ${stored.toLocaleString()}` : '못 읽음');
 
 // ── 6. 오프라인에서도 앱이 뜬다 (서비스 워커)
 //

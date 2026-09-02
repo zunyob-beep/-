@@ -193,7 +193,10 @@ function finish() {
  */
 function showProgress(done, total) {
   const box = $('progress');
-  if (!(total > 0)) { box.hidden = true; return; }
+  // 개수가 없는 알림(계산 단계 등)은 막대를 **건드리지 않는다.** 지우면
+  // 다 받아 놓고 마지막에 숫자가 사라지고, 0으로 그리면 거짓말이 된다.
+  // 막대를 치우는 것은 한 판이 끝났을 때(finish)뿐이다.
+  if (!(total > 0)) return;
   box.hidden = false;
   const at = Math.min(done, total);
   const pct = Math.min(100, (at / total) * 100);
