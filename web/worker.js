@@ -138,6 +138,16 @@ async function buildSeries(db, market, bars) {
  */
 const FIRST_ANSWER = 2000;
 
+/** 업비트가 알려 준 남은 한도를 화면에 적을 문구로. 못 읽으면 빈 문자열. */
+function budget() {
+  const left = client?.limiter?.remaining;
+  if (!left) return '';
+  const bits = [];
+  if (Number.isFinite(left.sec)) bits.push(`초 ${left.sec}`);
+  if (Number.isFinite(left.min)) bits.push(`분 ${left.min}`);
+  return bits.length ? ` · 업비트가 남았다는 한도 ${bits.join('/')}` : '';
+}
+
 async function run({ market, count, fresh, similarity, fee, slippage, length, stake }) {
   const db = await ready();
   // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
@@ -225,7 +235,9 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
                 ? `${label} 잠시 걸렸습니다 — ${info.waitLeft}초 뒤 이어서 받습니다${kept}`
                 // 지금 속도를 같이 적는다. 느릴 때 왜 느린지 보이지 않으면
                 // 멈춘 건지 기다리는 건지 알 수가 없다.
-                : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${kept}`,
+                // **업비트가 알려 준 남은 한도를 그대로 적는다.**
+                // 이 숫자가 보이면 "왜 거절당하나"를 추측할 필요가 없다.
+                : `${label} 받는 중… 초당 ${client.limiter.perSecond.toFixed(1)}회${budget()}${kept}`,
               done, total,
             );
           },

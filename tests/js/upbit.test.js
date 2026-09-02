@@ -709,3 +709,77 @@ test('공개 우회 서버는 키가 필요 없는 것만 쓴다', async () => {
   );
   assert.equal(ROUTES[0].id, 'direct', '직접이 첫 번째여야 합니다');
 });
+
+// ------------------------------------------------- 왜 거절당하는가
+//
+// 지금까지는 "거절당하면 어떻게 할까"만 고쳤다. 정작 물어야 할 것은
+// **왜 거절당하나**였다. 세어 보니 우리가 스스로 한도를 어기고 있었다.
+
+test('업비트로 나가는 요청은 하나도 빠짐없이 줄을 선다', async () => {
+  // 실제로 재 보니 실패할 때마다 **1밀리초 안에 세 개**가 한꺼번에 나갔다 —
+  // 진단의 확인 요청 셋(봉 확인 + 현재가 확인 + no-cors)이 속도 제한기를
+  // 통째로 건너뛰고 있었다. 초당 제한에 정확히 걸리는 모양이고, 걸리면 또
+  // 진단이 돌아서 또 터진다. 우리가 만든 되먹임이었다.
+  const at = [];
+  const client = new UpbitClient({
+    perSecond: 20,          // 간격 50ms
+    retries: 0,
+    retryPause: 1,
+    routes: [{ id: 'direct', label: '직접', wrap: (url) => url }],
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      at.push(Date.now());
+      if (init?.mode === 'no-cors') return OK([]);
+      throw new TypeError('Load failed');
+    },
+  });
+
+  await client.getCandles('KRW-BTC', 'minute1', 200).catch(() => {});
+  assert.ok(at.length >= 3, `요청이 ${at.length}개뿐입니다 — 진단이 안 돌았습니다`);
+  const gaps = at.slice(1).map((t, i) => t - at[i]);
+  assert.ok(
+    gaps.every((g) => g >= 35),
+    `제한기를 건너뛴 요청이 있습니다: ${gaps.join(', ')}ms`,
+  );
+});
+
+test('업비트가 알려 주는 남은 한도를 읽고 따른다', async () => {
+  // 지금까지 초당 몇 회가 안전할지 **추측만** 했다 — 8 → 5 → 3으로 내려오면서
+  // 매번 "이번엔 되겠지" 했고 매번 틀렸다. 서버가 직접 말해 주는 숫자가
+  // 헤더에 있는데 그걸 놔두고 감으로 맞춘 셈이다.
+  const limiter = new RateLimiter(20);
+  assert.equal(limiter.observe('group=candles; min=600; sec=9').sec, 9);
+  // 여유가 있으면 아무것도 안 한다
+  assert.ok(limiter.next - Date.now() < 100, '여유가 있는데 쉬었습니다');
+
+  // 초 한도가 바닥나 가면 다음 초까지 쉰다
+  limiter.observe('group=candles; min=600; sec=1');
+  assert.ok(limiter.next - Date.now() > 800, '초 한도가 바닥인데 안 쉬었습니다');
+
+  // 분 한도가 바닥나 가면 더 크게 쉰다 — 이건 초 단위로 못 만회한다
+  const slow = new RateLimiter(20);
+  slow.observe('group=candles; min=5; sec=9');
+  assert.ok(slow.next - Date.now() > 4000, '분 한도가 바닥인데 안 쉬었습니다');
+
+  // 헤더를 못 읽으면(브라우저가 안 열어 주면) 아무 일도 안 일어난다
+  const plain = new RateLimiter(20);
+  assert.equal(plain.observe(null), null);
+  assert.equal(plain.observe(undefined), null);
+  assert.ok(plain.next - Date.now() < 100, '헤더도 없는데 쉬었습니다');
+});
+
+test('받은 응답의 남은 한도를 실제로 챙겨 본다', async () => {
+  // 헤더가 와도 안 읽으면 없는 것과 같다. get()이 실제로 보는지 확인한다.
+  const client = new UpbitClient({
+    perSecond: 100000,
+    fetcher: async (url) => (isPing(url) ? OK([]) : {
+      status: 200,
+      headers: { get: (name) => (name === 'Remaining-Req' ? 'group=candles; min=598; sec=8' : null) },
+      async json() { return candleRows(2); },
+      async text() { return ''; },
+    }),
+  });
+  await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.equal(client.limiter.remaining?.min, 598, '남은 한도를 안 읽었습니다');
+  assert.equal(client.limiter.remaining?.sec, 8);
+});

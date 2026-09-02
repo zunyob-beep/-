@@ -234,10 +234,63 @@ export const DIAGNOSIS_TTL = 5000;
  * 이제 다음 요청 시각을 미리 잡아 둔다. **기다리기 전에** 잡으므로, 여러
  * 곳에서 동시에 불러도 서로 겹치지 않고 줄을 선다.
  */
+/**
+ * 업비트가 응답 헤더로 알려 주는 **남은 한도**를 읽는다.
+ *
+ *     Remaining-Req: group=candles; min=600; sec=9
+ *
+ * 지금까지 우리는 이걸 안 읽고 초당 몇 회가 안전할지 **추측만** 했다.
+ * 8 → 5 → 3으로 내려오면서 매번 "이번엔 되겠지" 했고 매번 틀렸다.
+ * 서버가 직접 말해 주는 숫자가 있는데 그걸 놔두고 감으로 맞춘 셈이다.
+ *
+ * 브라우저에서 이 헤더를 읽으려면 업비트가 Access-Control-Expose-Headers에
+ * 넣어 줘야 한다. 안 넣어 줬으면 null이 나온다 — 그때는 지금처럼 정해진
+ * 속도로 간다. **읽히면 그대로 따르고, 안 읽히면 손해 볼 것이 없다.**
+ */
+export function parseRemaining(header) {
+  if (!header) return null;
+  const out = { group: null, min: null, sec: null };
+  for (const part of String(header).split(';')) {
+    const [key, value] = part.split('=').map((x) => x.trim());
+    if (key === 'group') out.group = value;
+    if (key === 'min' || key === 'sec') out[key] = Number(value);
+  }
+  return Number.isFinite(out.sec) || Number.isFinite(out.min) ? out : null;
+}
+
+/** 남은 한도가 이보다 적으면 숨을 고른다. */
+export const LOW_SEC = 2;
+export const LOW_MIN = 30;
+
 export class RateLimiter {
   constructor(perSecond = PER_SECOND) {
     this.perSecond = Math.max(0.5, perSecond);
     this.next = 0;
+    /** 업비트가 마지막으로 알려 준 남은 한도. 화면이 이걸 보여준다. */
+    this.remaining = null;
+  }
+
+  /**
+   * 업비트가 알려 준 남은 한도를 반영한다.
+   *
+   * **늦추기만 한다.** 여유가 있다고 빨라지지는 않는다 — 우리가 아끼는 만큼이
+   * 실제로 덜 막히는 쪽으로 돌아오고, 빨라져서 얻는 것보다 막혀서 잃는 것이
+   * 훨씬 크다는 걸 이 앱은 이미 여러 번 겪었다.
+   */
+  observe(header) {
+    const left = parseRemaining(header);
+    if (!left) return null;
+    this.remaining = left;
+    const now = Date.now();
+    // 초 한도가 바닥나 가면 다음 초까지 쉰다.
+    if (Number.isFinite(left.sec) && left.sec <= LOW_SEC) {
+      this.next = Math.max(this.next, now + 1000);
+    }
+    // 분 한도가 바닥나 가면 더 크게 쉰다. 이건 초 단위로 못 만회한다.
+    if (Number.isFinite(left.min) && left.min <= LOW_MIN) {
+      this.next = Math.max(this.next, now + 5000);
+    }
+    return left;
   }
 
   /** 요청 사이 최소 간격(밀리초). */
@@ -495,6 +548,10 @@ export class UpbitClient {
         throw last;
       }
 
+      // **업비트가 남은 한도를 알려 주면 그대로 따른다.**
+      // 헤더를 못 읽는 경우(브라우저가 안 열어 주면)에는 아무 일도 안 한다.
+      this.limiter.observe(response.headers?.get?.('Remaining-Req'));
+
       if (response.status < 400) {
         let payload;
         try {
@@ -665,6 +722,13 @@ export class UpbitClient {
   /** 그 주소가 되는가. 던지지 않고 참·거짓으로만 답한다. */
   async works(path, params) {
     try {
+      // **확인 요청도 줄을 선다.**
+      //
+      // 이게 없어서 실패할 때마다 1밀리초 안에 세 개가 한꺼번에 나갔다
+      // (봉 확인 + 현재가 확인 + no-cors). 초당 제한에 정확히 걸리는 모양이고,
+      // 걸리면 또 진단이 돌아서 또 터진다 — 우리가 만든 되먹임이었다.
+      // 업비트로 나가는 것은 **하나도 빠짐없이** 이 줄을 거쳐야 한다.
+      await this.limiter.acquire();
       const url = new URL(this.base + path);
       for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
       // **지금 쓰는 길로 물어본다.** 직접으로만 물어보면, 우회로 잘 받고
@@ -699,6 +763,7 @@ export class UpbitClient {
   /** 업비트에 닿기는 하는가. 내용은 못 읽어도 답이 왔는지는 알 수 있다. */
   async reaches() {
     try {
+      await this.limiter.acquire();
       await this.fetch(`${this.base}/v1/ticker?markets=KRW-BTC`, {
         mode: 'no-cors', cache: 'no-store',
       });
