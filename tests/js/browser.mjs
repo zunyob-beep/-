@@ -212,13 +212,37 @@ await page.click('#btn-live');
 // 개수가 **올라가는지**를 본다. 0이 떠 있는 것만으로는 실시간이 아니다.
 const growing = await page.waitForFunction(
   () => {
-    const seen = document.getElementById('job').textContent.match(/([\d,]+) \/ [\d,]+개/);
+    const seen = document.getElementById('progress-count').textContent.match(/([\d,]+) \//);
     return seen ? Number(seen[1].replace(/,/g, '')) > 0 : false;
   },
   null, { timeout: 60000 },
 ).then(() => true, () => false);
 check('받는 동안 개수가 실시간으로 올라간다', growing,
-  (await page.locator('#job').innerText()).slice(0, 46));
+  (await page.locator('#progress-count').innerText()));
+
+// 막대도 실제로 차야 한다. 예전에는 2픽셀짜리라 있으나 마나였고, 분모가
+// 이번에 받을 조각 수여서 다 차도 뜻이 없었다.
+// 막대에는 0.25초짜리 전환이 걸려 있다. 자라는 도중에 재면 0이 나온다 —
+// 실제로 그렇게 한 번 헛짚었다. 다 자란 뒤에 잰다.
+await page.waitForTimeout(600);
+const bar = await page.evaluate(() => {
+  const box = document.getElementById('progress');
+  const fill = document.getElementById('progress-bar');
+  return {
+    shown: !box.hidden,
+    tall: document.querySelector('.progress-track').getBoundingClientRect().height,
+    wide: fill.getBoundingClientRect().width,
+    track: document.querySelector('.progress-track').getBoundingClientRect().width,
+    pct: document.getElementById('progress-pct').textContent,
+    // 실제로 칠해진 너비와 **적어 넣은 너비**를 같이 본다. 둘 다 봐야
+    // '전환 중이라 0'과 '진짜로 0'을 구분할 수 있다.
+    said: fill.style.width,
+  };
+});
+check('진행 막대가 눈에 보인다', bar.shown && bar.tall >= 4, `높이 ${bar.tall}px`);
+check('진행 막대가 실제로 찬다', bar.wide > 0 && bar.wide < bar.track,
+  `${Math.round(bar.wide)} / ${Math.round(bar.track)}px · 적힌 너비 ${bar.said} · ${bar.pct}`);
+check('몇 퍼센트인지 적혀 있다', /%$/.test(bar.pct), bar.pct);
 
 const startedAt = Date.now();
 await page.waitForFunction(

@@ -292,10 +292,25 @@ label.check input[type="checkbox"]:checked::after {
 label.check input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); }
 
 .job { color: var(--dim); font-size: 12.5px; }
-.progress {
-  height: 2px; background: var(--line); margin-top: 14px; overflow: hidden;
+/* 얼마나 왔는가.
+ *
+ * 예전에는 2픽셀짜리 실선이었다. 있으나 마나였고, 아이패드 화면에서는
+ * 아예 안 보였다. 진행은 받는 동안 사용자가 유일하게 붙들 수 있는
+ * 정보라, 숫자와 함께 제대로 보여야 한다. */
+.progress { margin-top: 14px; }
+.progress-track {
+  height: 6px; background: var(--line); border-radius: 3px; overflow: hidden;
 }
-.progress > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+.progress-track > div {
+  height: 100%; width: 0; background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+.progress-say {
+  display: flex; justify-content: space-between; gap: 12px;
+  margin-top: 6px; color: var(--dim); font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+#progress-pct { color: var(--accent); }
 
 .error, .offline, .stale-note {
   margin: 14px 0 0; padding: 12px 14px;

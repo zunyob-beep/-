@@ -184,14 +184,22 @@ function finish() {
   }
 }
 
+/**
+ * 얼마나 왔는지 보여준다. `done`과 `total`은 **절대값**이다 — 지금까지
+ * 받아둔 전체 개수와 목표 개수.
+ *
+ * 막대만으로는 부족하다. 29%가 3만 개 중 8천 개인지 100개 중 29개인지
+ * 알 수 없고, 받는 동안 사용자가 붙들 수 있는 건 이 숫자뿐이다.
+ */
 function showProgress(done, total) {
-  const bar = $('progress');
-  if (total > 0) {
-    bar.hidden = false;
-    $('progress-bar').style.width = `${Math.min(100, (done / total) * 100)}%`;
-  } else {
-    bar.hidden = true;
-  }
+  const box = $('progress');
+  if (!(total > 0)) { box.hidden = true; return; }
+  box.hidden = false;
+  const at = Math.min(done, total);
+  const pct = Math.min(100, (at / total) * 100);
+  $('progress-bar').style.width = `${pct}%`;
+  $('progress-count').textContent = `${at.toLocaleString()} / ${total.toLocaleString()}개 받았습니다`;
+  $('progress-pct').textContent = `${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
 }
 
 function showError(message) {
