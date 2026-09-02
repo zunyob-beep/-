@@ -137,6 +137,18 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
               );
               return;
             }
+            if (info?.retrying) {
+              // **거절당해서 다시 해 보는 중이라는 걸 말한다.**
+              //
+              // 이게 없을 때 화면에는 "받는 중…"만 몇 분씩 떠 있었다.
+              // 앱이 죽은 것과 구분이 안 되고, 실제로 그렇게 보였다.
+              progress(
+                `업비트가 거절해서 다시 해 보는 중입니다 (${info.retrying}/${info.of})`
+                + ` — 받아둔 ${(already + done).toLocaleString()}개는 그대로입니다`,
+                done, total,
+              );
+              return;
+            }
             progress(
               info?.stalled
                 ? `${label} 잠시 걸렸습니다 — ${info.waitLeft}초 뒤 이어서 받습니다${kept}`
