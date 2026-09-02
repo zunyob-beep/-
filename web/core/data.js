@@ -47,12 +47,28 @@ export async function update(store, market, timeframe, wanted, options = {}) {
   const save = async (candles) => {
     if (!candles.length) return;
     saved += await store.put(market, timeframe, step, candles);
+    report();
   };
+
+  /**
+   * **진행은 여기서만 센다.** 늘 같은 뜻이다 — `(지금 가진 개수, 목표 개수)`.
+   *
+   * 예전에는 세 곳이 제각각이었다. 캐시가 빌 때는 상대값, 새 봉을 채울 때는
+   * 분모가 `missing`(3 같은 수), 과거를 채울 때는 절대값. 그런데 부르는 쪽
+   * (워커)은 셋 다 상대값인 줄 알고 이미 가진 개수를 **또** 더했다.
+   *
+   * 그래서 화면에 "12,699 / 3개"나 두 배로 부푼 숫자가 떴다. 총 개수가
+   * 틀렸던 게 이것이다. 세 곳이 각자 세는 대신, 한 곳에서만 센다.
+   */
+  const report = (info) => {
+    if (onProgress) onProgress(have + saved, wanted, info);
+  };
+  const relay = (done, total, info) => report(info);
 
   // 1) 아무것도 없다 — 처음부터
   if (!span || have === 0) {
     await client.collect(market, timeframe, wanted, {
-      onProgress, shouldStop, onBatch: save, retain: false,
+      onProgress: relay, shouldStop, onBatch: save, retain: false,
     });
     return saved;
   }
@@ -72,7 +88,7 @@ export async function update(store, market, timeframe, wanted, options = {}) {
   if (missing > 0) {
     await client.collect(market, timeframe, missing, {
       stopAt: lastTs - step * REFRESH_TAIL,
-      onProgress,
+      onProgress: relay,
       shouldStop,
       onBatch: save,
       retain: false,
@@ -90,7 +106,7 @@ export async function update(store, market, timeframe, wanted, options = {}) {
   if (filled && total < wanted) {
     await client.collect(market, timeframe, wanted - total, {
       end: filled[0] - step,
-      onProgress: onProgress ? (done) => onProgress(total + done, wanted) : null,
+      onProgress: relay,
       shouldStop,
       onBatch: save,
       retain: false,

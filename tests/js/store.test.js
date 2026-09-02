@@ -358,3 +358,53 @@ test('배열로 읽는 것과 봉으로 읽는 것이 같은 답을 낸다', asy
   const none = await store.loadTailColumns('KRW-ETH', 'minute1', 100);
   assert.equal(none.length, 0, '없는 종목은 빈 배열이어야 합니다');
 });
+
+// ------------------------------------------------- 진행 숫자가 맞는가
+//
+// "총 개수도 틀리고"라는 말을 듣고 파 보니, 진행을 보고하는 곳이 셋인데
+// **서로 다른 뜻**이었다.
+//
+//   캐시가 빔      (받은 수, wanted)      상대값
+//   새 봉 채우기   (받은 수, missing)     분모가 3 같은 수
+//   과거 채우기    (total + done, wanted) 절대값
+//
+// 그런데 부르는 쪽은 셋 다 상대값인 줄 알고 이미 가진 개수를 **또** 더했다.
+// 화면에 "12,699 / 3개"나 두 배로 부푼 숫자가 뜬 것이 이것이다.
+
+test('진행 숫자는 어느 단계에서나 (가진 개수, 목표 개수)다', async () => {
+  const store = freshStore();
+  const seen = [];
+  const client = fakeUpbit(3000);
+
+  // 1) 캐시가 비었을 때
+  await update(store, 'KRW-BTC', 'minute1', 600, {
+    client,
+    onProgress: (done, total) => seen.push([done, total]),
+  });
+  assert.ok(seen.length, '진행을 한 번도 안 알렸습니다');
+  assert.ok(seen.every(([, total]) => total === 600), `분모가 600이 아닙니다: ${JSON.stringify(seen)}`);
+  assert.ok(
+    seen.every(([done]) => done >= 0 && done <= 600),
+    `개수가 목표를 넘거나 음수입니다: ${JSON.stringify(seen)}`,
+  );
+  // 마지막에 알린 개수가 실제로 저장된 개수와 같아야 한다.
+  assert.equal(seen[seen.length - 1][0], await store.count('KRW-BTC', 'minute1'));
+
+  // 2) 이미 가진 상태에서 더 받을 때 — 여기서 두 배로 부풀었다
+  const before = await store.count('KRW-BTC', 'minute1');
+  seen.length = 0;
+  await update(store, 'KRW-BTC', 'minute1', 1200, {
+    client,
+    onProgress: (done, total) => seen.push([done, total]),
+  });
+  assert.ok(seen.every(([, total]) => total === 1200), `분모가 1200이 아닙니다: ${JSON.stringify(seen)}`);
+  assert.ok(
+    seen.every(([done]) => done >= before && done <= 1200),
+    `가진 개수(${before})보다 적거나 목표를 넘습니다: ${JSON.stringify(seen)}`,
+  );
+  assert.equal(
+    seen[seen.length - 1][0],
+    await store.count('KRW-BTC', 'minute1'),
+    '마지막에 알린 개수가 실제 저장된 개수와 다릅니다',
+  );
+});
