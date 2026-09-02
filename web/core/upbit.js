@@ -293,6 +293,27 @@ export class UpbitClient {
     this.routeMisses = 0;
   }
 
+  /**
+   * **직접 길부터 다시 해 본다.**
+   *
+   * 한 번 우회로 넘어가면 계속 거기 머물렀다. 그런데 직접 길이 막히는 건
+   * 대개 한때이고, 다시 열리면 우회를 거칠 이유가 없다 — 남의 서버를
+   * 거치는 것이고 더 느리다. 새로 받기 시작할 때마다 직접부터 확인한다.
+   *
+   * 받고 있는 중이면 건드리지 않는다. 잘 되고 있는 길을 중간에 바꾸면
+   * 남은 쪽들이 통째로 다시 막힐 수 있다.
+   */
+  resetRoute() {
+    if (this.recentlyWorked()) return;
+    this.route = 0;
+    this.routeMisses = 0;
+    // 사람이 직접 누른 것이다. 쉬라고 잡아 둔 시간도 여기서 푼다 — 안 그러면
+    // 눌러도 아무 일이 안 일어나고, 사용자는 앱이 죽은 줄 안다.
+    // (맨 위 시세는 이 길을 안 거치므로 '밤새 조용히'는 그대로다.)
+    this.blockedUntil = 0;
+    this.banLevel = 0;
+  }
+
   /** 지금 어느 길로 가고 있는지. 화면이 이걸 보여준다. */
   get routeLabel() {
     return this.routes[this.route]?.label ?? '직접';
@@ -382,7 +403,14 @@ export class UpbitClient {
     // 예전에는 여기가 없어서, 막힌 걸 뻔히 알면서도 일단 보내고 실패했다.
     // 그 한 번이 차단을 연장시킨다. 보내지 않는 것이 지금 할 수 있는 유일한
     // 일이므로, 확인을 요청보다 **앞**에 둔다.
-    if (this.knownBlocked()) throw this.stillBlocked();
+    // **한 길이 막혔다고 앱 전체가 입을 다물면 안 된다.**
+    //
+    // 이걸 놓쳐서 크게 헛돌았다. 직접 길에서 막혀 조용히 있는 동안, 통하는
+    // 우회가 바로 옆에 있는데도 **아무 길로도 안 보냈다.** 진단표는 "우회로
+    // 받을 수 있습니다"라고 하는데 정작 버튼을 누르면 아무 일도 안 일어났다.
+    //
+    // 쉬는 건 그 길에서 쉬는 것이다. 안 가 본 길이 남아 있으면 그리로 간다.
+    if (this.knownBlocked() && !this.nextRoute()) throw this.stillBlocked();
 
     for (let attempt = 0; ; attempt += 1) {
       const url = new URL(this.base + path);
@@ -493,8 +521,15 @@ export class UpbitClient {
       // 업비트는 공개 시세에 401·402·403·407을 쓰지 않는다. 우회로 가는 중에
       // 이런 답이 오면 그건 업비트가 아니라 **그 우회 서버가** 우리를 막는
       // 것이고, 몇 번을 다시 해도 안 뚫린다. 곧장 다음 길로 간다.
-      const mine = this.routes[this.route].id !== 'direct';
-      if (mine && (PROXY_REFUSED.has(response.status) || response.status >= 500)) {
+      // **길을 옮겨서 해결되는 답이면 옮긴다.** 어느 길에 있든 마찬가지다.
+      //
+      // 처음에는 우회 중일 때만 이렇게 했는데, 그게 부족했다. 직접 길에서
+      // 429(한도 초과)를 받으면 곧장 포기했다 — 그런데 한도는 **주소마다**
+      // 걸리는 것이라, 우회로 가면 남의 주소로 나가서 풀린다. 한도에 걸렸을
+      // 때야말로 우회가 필요한 순간인데 정확히 그때 안 쓰고 있었다.
+      //
+      // 400(잘못된 요청)은 여기 없다. 그건 길을 바꿔도 똑같이 잘못됐다.
+      if (PROXY_REFUSED.has(response.status) || response.status >= 500) {
         if (this.nextRoute()) {
           if (onRetry) onRetry(0, retries, this.routeLabel);
           attempt = -1;
@@ -736,6 +771,7 @@ export class UpbitClient {
     end = null, onProgress = null, stopAt = null, onBatch = null, shouldStop = null,
     retain = true,
   } = {}) {
+    this.resetRoute();
     const collected = retain ? new Map() : null;
     let cursor = end;
     let got = 0;

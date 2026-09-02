@@ -80,8 +80,13 @@ const innerUrl = (url) => {
 
 /** 업비트를 흉내 낸다. `mode`로 어떤 험한 상황인지 고른다. */
 async function stubUpbit(context, getMode) {
-  const handler = async (route) => {
+  const handler = async (route, viaDetour = false) => {
     const mode = getMode();
+    // **직접만 막힌 상태.** 실제로 겪은 그것이다 — 브라우저에서 직접 부르는
+    // 길은 막혔는데 우회로는 받아진다. 앱이 스스로 돌아서는지 보는 자리다.
+    if (mode === 'direct-walled' && !viaDetour) {
+      return route.fulfill({ status: 429, body: '', headers: {} });
+    }
     if (mode === 'dead') return route.abort('failed');
     if (mode === 'walled') {
       // **실제로 겪은 그 상태를 그대로 흉내 낸다.**
@@ -121,7 +126,10 @@ async function stubUpbit(context, getMode) {
       (_, i) => fakeCandle(last - i * step, url.searchParams.get('market')),
     ));
   };
-  await context.route('https://api.upbit.com/**', handler);
+  // 플레이라이트는 처리기를 (route, request)로 부른다. handler를 그대로
+  // 넘기면 두 번째 인자(Request)가 viaDetour 자리에 들어가 **늘 참**이 된다 —
+  // '직접만 막힘' 흉내가 통째로 안 먹었다. 인자를 우리가 정해서 넘긴다.
+  await context.route('https://api.upbit.com/**', (route) => handler(route, false));
   // 우회로 넘어가도 바깥으로 나가지 않게, 안에 실린 업비트 주소를 꺼내
   // 같은 손으로 받는다.
   for (const pattern of DETOURS) {
@@ -134,7 +142,7 @@ async function stubUpbit(context, getMode) {
         request: () => ({ url: () => inner }),
         abort: (...a) => route.abort(...a),
         fulfill: (...a) => route.fulfill(...a),
-      });
+      }, true);
     });
   }
 }
@@ -231,7 +239,10 @@ mode = 'walled';
 await page.click('#btn-diag');
 await page.waitForSelector('#btn-diag-copy', { timeout: 60000 });
 const said = await page.locator('.diag-said').innerText();
-note('막힌 상태를 진단이 제대로 읽는다', said.includes('막고 있'), said.slice(0, 46));
+// 어느 길로도 못 받으면 그렇다고 말하고, **무엇을 하면 되는지**까지 말해야
+// 한다. "막혔습니다"로 끝나면 사용자는 할 수 있는 게 없다.
+note('어느 길로도 못 받으면 그렇다고 말한다', said.includes('못 받고'), said.slice(0, 40));
+note('그때 무엇을 하면 되는지 알려준다', said.includes('우회 주소'), said.slice(0, 40));
 // ── 5-2. 현재가는 되는데 봉만 막히는 상태
 //
 // 이 표를 사용자가 보내 왔다 — 현재가 49ms 성공, 봉은 to 없이 1개짜리도 실패.
@@ -245,6 +256,32 @@ const barsSaid = await page.locator('.diag-said').innerText();
 note('현재가는 되고 봉만 막힌 것을 가려낸다', barsSaid.includes('봉'), barsSaid.slice(0, 46));
 note('기다리면 된다고 하지 않는다', !barsSaid.includes('닿고 있'), barsSaid.slice(0, 46));
 
+// ── 5-3. **직접만 막히고 우회는 되는 상태** — 실제로 겪은 그것
+//
+// 여기가 이 앱의 마지막 방어선이다. 직접 길이 막혀도 우회로 받아지면
+// 사용자는 아무것도 안 해도 된다. 진단이 그걸 말해 줘야 하고, 무엇보다
+// **실제로 받아져야** 한다.
+mode = 'direct-walled';
+await page.click('#btn-diag');
+await page.waitForSelector('#btn-diag-copy', { timeout: 90000 });
+const detourSaid = await page.locator('.diag-said').innerText();
+note('우회가 되면 "받을 수 있다"고 말한다',
+  detourSaid.includes('받을 수 있습니다'), detourSaid.slice(0, 40));
+
+
+// 그리고 진짜로 받아 온다. 말만 하고 안 받아지면 아무 소용이 없다.
+await page.evaluate(() => { document.getElementById('btn-forget')?.click(); });
+await page.waitForTimeout(1000);
+await page.click('#btn-live');
+await page.waitForFunction(
+  () => document.getElementById('job')?.textContent?.includes('마쳤'),
+  null, { timeout: 300000 },
+);
+const viaDetourText = await page.locator('#coverage').innerText();
+note('직접이 막혀도 우회로 실제로 받아 온다', /\d[\d,]*개/.test(viaDetourText),
+  viaDetourText.split('\n').slice(0, 2).join(' ').slice(0, 46));
+
+mode = 'walled';
 await page.click('#btn-diag-copy');
 await page.waitForTimeout(500);
 const copyLabel = await page.locator('#btn-diag-copy').innerText().catch(() => '');

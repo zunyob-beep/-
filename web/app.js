@@ -9,7 +9,7 @@ import { MARKETS, marketLabel } from './core/models.js';
 import { VERSION } from './version.js';
 import { DEFAULT_PERIOD, MAX_BARS, PERIODS } from './core/analysis.js';
 import {
-  API_BASE, ENDPOINTS, PAGE, PER_SECOND, TO_FORMATS,
+  API_BASE, ENDPOINTS, PAGE, PER_SECOND, ROUTES, TO_FORMATS,
 } from './core/upbit.js';
 
 const $ = (id) => document.getElementById(id);
@@ -71,6 +71,20 @@ function myProxy() {
   } catch {
     return null;   // 사파리가 저장을 막아 둔 경우가 있다. 없는 셈 친다.
   }
+}
+
+/**
+ * 진단이 물어볼 길들. 내 우회 주소를 적어 뒀으면 그것도 넣는다 —
+ * 정작 자기가 적어 둔 주소가 되는지 확인할 방법이 없으면 곤란하다.
+ */
+function routes() {
+  const mine = myProxy();
+  if (!mine) return ROUTES;
+  return [
+    ...ROUTES.filter((r) => r.id === 'direct'),
+    { id: 'mine', label: '내 주소', wrap: (url) => mine.replace('{url}', encodeURIComponent(url)) },
+    ...ROUTES.filter((r) => r.id !== 'direct'),
+  ];
 }
 
 function send(message) {
@@ -1017,94 +1031,45 @@ async function probe(label, url, init = {}) {
  */
 function conclude(done) {
   const okOf = (rows) => rows.filter((r) => r.ok);
-  const bars = done.filter((r) => r.label.startsWith('봉'));
-  const tickers = done.filter((r) => r.label.startsWith('현재가'));
-  const plain = bars.filter((r) => r.label.includes('to 없음'));
-  const withTo = done.filter((r) => r.label.includes('+ to'));
+  const bars = done.filter((r) => r.label.includes('봉') && !r.label.includes('no-cors'));
+  const direct = bars.filter((r) => r.label.startsWith('직접'));
+  const detour = bars.filter((r) => !r.label.startsWith('직접'));
   const nocors = done.find((r) => r.label.includes('no-cors'));
 
-  // **봉은 하나도 안 되는데 현재가는 계속 된다.**
+  // **어느 길이든 통하면 그게 결론이다.**
   //
-  // 이건 차단이 아니다. 차단이라면 현재가도 같이 막힌다. 봉을 맨 앞에 놓고
-  // 현재가를 중간에 끼워 넣은 이유가 이걸 가리기 위해서다 — 순서 때문이
-  // 아니라는 것이 이 표로 증명된다.
-  //
-  // 기다려서 풀릴 문제가 아니므로, 기다리라고 말하면 안 된다.
-  if (bars.length && !okOf(bars).length && okOf(tickers).length >= 2) {
-    return ['업비트가 <b>봉 주소만</b> 브라우저에 안 열어 줍니다.',
-      `현재가는 ${okOf(tickers).length}번 다 됐는데 봉은 ${bars.length}번 다 안 됩니다 — `
-      + '봉을 <b>맨 앞에</b> 물어봤는데도 안 됐으니 순서나 속도 문제가 아니고, '
-      + '현재가가 계속 되니 주소가 막힌 것도 아닙니다. 남는 설명은 하나입니다: '
-      + '업비트가 <b>봉 주소에는 브라우저용 허용 표시(CORS)를 안 붙입니다.</b> '
-      + '<b>기다려도 풀리지 않습니다.</b> 이 경우 브라우저만으로는 과거 봉을 받을 수 '
-      + '없고, 파이썬 판으로 받아야 합니다(README의 <b>파이썬으로 쓰기</b>). '
-      + '받아둔 시세가 있다면 <b>받아둔 시세로 다시 계산</b>은 그대로 됩니다.'];
+  // 예전 진단은 직접 길만 보고 "막혔습니다"라고 했다. 그런데 앱은 이미
+  // 우회로 돌아설 줄 안다 — 직접이 다 빨개도 우회가 초록이면 **받을 수 있다.**
+  // 사용자가 알아야 할 것은 '막혔나'가 아니라 '받을 수 있나'다.
+  const working = okOf(detour);
+  if (!okOf(direct).length && working.length) {
+    const names = [...new Set(working.map((r) => r.label.split(' · ')[0]))].join(', ');
+    return ['<b>받을 수 있습니다.</b> 직접 가는 길만 막혀 있습니다.',
+      `${names} 로는 봉이 받아집니다. 앱은 직접 길이 몇 번 막히면 이 길로 `
+      + '스스로 돌아서므로, <b>그냥 지금 시세로 판단받기를 누르시면 됩니다.</b> '
+      + '직접 길이 다시 열리면 앱이 알아서 그쪽으로 돌아갑니다.'];
   }
 
-  // **첫 요청 하나만 통과했다.**
-  //
-  // 순서상 첫 번째만 되고 나머지가 전부 안 되면, 그건 주소의 문제가 아니라
-  // 지금 우리 몫이 그만큼밖에 안 남았다는 뜻이다. 기다리면 풀린다.
-  const first = done[0];
-  const rest = done.slice(1).filter((r) => !r.label.includes('no-cors'));
-  if (first?.ok && rest.length && !okOf(rest).length) {
-    return ['첫 요청 하나만 통과하고 그 뒤로 다 막힙니다.',
-      '주소의 문제가 아니라 <b>지금 우리 몫이 거의 안 남은</b> 상태입니다. '
-      + '앱은 이제 막히면 두드리지 않고 1 → 2 → 5 → 10 → 20 → 30분으로 늘려 가며 '
-      + '조용히 기다립니다. <b>앱을 닫고 30분쯤 두었다가</b> 열어 보세요. '
-      + '휴대폰 데이터(5G)는 한 주소를 여러 사람이 나눠 쓰기 때문에 더 자주 걸립니다 — '
-      + '<b>와이파이에서 해 보시면</b> 달라질 수 있습니다.'];
+  if (okOf(direct).length) {
+    return ['<b>직접 가는 길이 됩니다.</b>',
+      '우회를 거치지 않고 업비트에서 바로 받습니다. 아까 안 됐다면 잠시 '
+      + '걸린 것이니 다시 눌러 보세요.'];
   }
 
-  // **no-cors 결과를 먼저 본다.** 이게 가장 강한 증거다.
-  //
-  // 처음에는 이 갈래를 맨 아래에 뒀는데, 그래서 실제로 틀린 말을 했다 —
-  // no-cors가 124ms 만에 성공했는데도 화면에는 "업비트에 아예 못 닿고
-  // 있습니다"라고 떴다. 닿았는데 못 닿았다고 한 것이다.
-  //
-  // no-cors가 되면 요청은 업비트까지 갔고 답도 왔다. 그런데 보통 요청이
-  // 전부 실패한다면, 그 답에 브라우저가 요구하는 허용 표시(CORS)가 없다는
-  // 뜻이다. 정상 응답에는 붙고 **거절 응답에는 안 붙는다** — 즉 지금
-  // 업비트가 우리 요청을 거절하고 있다.
-  if (nocors?.ok && !okOf(plain).length) {
-    return ['업비트가 지금 우리 요청을 막고 있습니다.',
-      '업비트까지는 갔고 답도 왔습니다(no-cors로는 됨). 다만 그 답에 브라우저가 '
-      + '요구하는 허용 표시가 없습니다 — 거절 응답일 때 그렇습니다. '
-      + '이건 <b>브라우저에서 직접 부르는 길</b>이 막힌 것이라, 기다리거나 속도를 '
-      + '낮춰서 뚫리는 종류가 아닙니다(와이파이로 바꿔도 같았습니다). '
-      + '그래서 앱은 직접 길이 몇 번 막히면 <b>우회 서버로 스스로 돌아섭니다</b> — '
-      + '이 진단표는 직접 길만 물어본 것이니, 여기가 다 빨개도 받기는 될 수 있습니다. '
-      + '그래도 안 되면 조작부 아래 <b>업비트가 브라우저 요청을 막을 때</b>를 펼쳐 '
-      + '직접 만든 우회 주소를 넣어 주세요(README에 만드는 법이 있습니다).'];
-  }
-  if (!okOf(plain).length) {
-    return ['업비트에 아예 못 닿고 있습니다.', '과거뿐 아니라 지금 시세도 못 받습니다. '
-      + '요청이 업비트까지 가지도 못했습니다(no-cors도 실패). '
-      + '망(회사·학교 와이파이, 일부 VPN)이 막고 있을 수 있습니다.'];
-  }
-  if (okOf(withTo).length === withTo.length) {
-    return ['지금은 과거 요청도 다 됩니다.', '아까 멈춘 건 일시적이었을 수 있습니다. '
-      + '<b>지금 시세로 판단받기</b>를 다시 눌러 이어서 받아 보세요.'];
-  }
-  const small = withTo.find((r) => r.label.includes('봉 1개'));
-  const big = withTo.filter((r) => r.label.includes('200개'));
-  if (small?.ok && !okOf(big).length) {
-    return ['한 번에 많이 달라고 할 때만 거절당합니다.',
-      '개수를 줄여서 받도록 앱이 스스로 바꿉니다. 다시 눌러 주세요.'];
-  }
-  if (okOf(withTo).length) {
-    const works = okOf(withTo).map((r) => r.label).join(', ');
-    return ['일부 방식만 통합니다.', `이건 됩니다: ${works}. 앱이 통하는 쪽으로 맞춥니다.`];
-  }
+  // 여기부터는 어느 길로도 봉을 못 받은 경우다.
   if (nocors?.ok) {
-    return ['업비트는 답했지만 브라우저가 그 답을 못 읽습니다.',
-      '요청 자체는 업비트까지 갔고 답도 돌아왔는데, 그 답에 브라우저가 요구하는 '
-      + '허용 표시(CORS)가 없습니다. 오류 응답일 때 그런 경우가 많습니다 — '
-      + '즉 <b>업비트가 이 요청을 거절하고 있고, 그 거절 이유를 우리가 볼 수 없는</b> 상태입니다.'];
+    return ['<b>어느 길로도 봉을 못 받고 있습니다.</b>',
+      '업비트 서버는 답합니다(no-cors로는 닿음). 직접 길은 브라우저가 그 답을 '
+      + '읽지 못하고, 공개 우회 서버들도 지금은 안 됩니다 — 무료라 자주 바뀌고 '
+      + '한도가 있습니다. <b>직접 만든 우회 주소를 넣으시면 확실합니다</b> — '
+      + '조작부 아래 <b>업비트가 브라우저 요청을 막을 때</b>를 펼치세요. '
+      + '만드는 법은 README에 있습니다(클라우드플레어 워커, 5분, 무료). '
+      + '받아둔 시세로는 <b>받아둔 시세로 다시 계산</b>이 그대로 됩니다.'];
   }
-  return ['과거를 달라는 요청만 업비트에 닿지 못합니다.',
-    '지금 시세는 되는데 과거 요청만 안 됩니다. 같은 주소를 no-cors로 불러도 '
-    + '안 되는 것으로 보아, 중간에서 그 요청만 끊고 있을 수 있습니다.'];
+
+  return ['<b>업비트에 아예 못 닿고 있습니다.</b>',
+    '요청이 업비트까지 가지도 못했습니다(no-cors도 실패). 인터넷이 끊겼거나, '
+    + '쓰고 계신 망(회사·학교 와이파이, 일부 VPN)이 막고 있을 수 있습니다.'];
 }
 
 async function runDiagnosis() {
@@ -1123,31 +1088,27 @@ async function runDiagnosis() {
   };
   const withTo = candles({ count: 200, to: TO_FORMATS[0](at) });
 
-  // **순서를 번갈아 놓는다.** 이게 이 표의 핵심이다.
+  // **길마다 물어본다.** 이게 이제 이 표의 핵심이다.
   //
-  // 예전에는 현재가를 맨 앞에 한 번만 뒀다. 그랬더니 이런 표가 나왔다 —
-  // 현재가만 49ms에 성공하고 봉은 전부 실패. 그런데 그 표로는 **두 가지를
-  // 구분할 수 없다.**
+  // 예전 표는 직접 가는 길만 물어봤다. 그런데 v30부터 앱은 직접이 막히면
+  // 우회로 돌아선다 — 그러면 이 표가 온통 빨개도 **받기는 될 수 있고**,
+  // 반대로 표만 보고 "안 되는구나" 하고 포기하게 된다. 실제로 진단표를
+  // 세 번 주고받는 동안 정작 알아야 할 것(어느 길이 통하는가)은 한 번도
+  // 안 나왔다.
   //
-  //   ㄱ. 업비트가 봉 주소만 브라우저에 안 열어 준다 (기다려도 안 됨)
-  //   ㄴ. 첫 요청 하나만 통과하고 그 뒤로 막힌다 (기다리면 됨)
-  //
-  // 둘은 할 일이 정반대다. ㄱ이면 이 앱은 브라우저에서 봉을 받을 수 없고,
-  // ㄴ이면 천천히 하면 된다. 그래서 봉을 **맨 앞에** 놓고, 현재가를 중간에
-  // 세 번 끼워 넣는다.
-  //
-  //   봉이 처음부터 실패 + 현재가는 두 번째·세 번째에도 성공  → ㄱ
-  //   첫 요청만 성공하고 그 뒤로 전부 실패                    → ㄴ
-  const plan = [
-    ['봉 1개 (to 없음)', candles({ count: 1 }), {}],
-    ['현재가 ①', `${API_BASE}/v1/ticker?markets=${market}`, {}],
-    ['봉 200개 (to 없음)', candles({ count: 200 }), {}],
-    ['현재가 ②', `${API_BASE}/v1/ticker?markets=${market}`, {}],
-    ['봉 200개 + to (…00Z)', withTo, {}],
-    ['현재가 ③', `${API_BASE}/v1/ticker?markets=${market}`, {}],
-    ['봉 1개 + to', candles({ count: 1, to: TO_FORMATS[0](at) }), {}],
-    ['같은 주소를 no-cors로', withTo, { mode: 'no-cors' }],
-  ];
+  // 이제 길마다 같은 질문을 한다. **한 줄이라도 초록이면 그 길로 받을 수
+  // 있다.** 표 한 장으로 끝난다.
+  const ticker = `${API_BASE}/v1/ticker?markets=${market}`;
+  const plan = [];
+  for (const route of routes()) {
+    const via = route.id === 'direct' ? '직접' : `우회 ${route.label}`;
+    plan.push([`${via} · 봉 1개`, route.wrap(candles({ count: 1 })), {}]);
+    plan.push([`${via} · 봉 200개 + to`, route.wrap(withTo), {}]);
+    if (route.id === 'direct') plan.push([`${via} · 현재가`, route.wrap(ticker), {}]);
+  }
+  // 마지막은 늘 no-cors다. 업비트 서버가 살아 있는지만 보는 것이라,
+  // 위가 전부 빨개도 이게 초록이면 '못 닿은 것'은 아니라는 뜻이다.
+  plan.push(['같은 주소를 no-cors로 (직접)', withTo, { mode: 'no-cors' }]);
 
   const done = [];
   const draw = (running) => {

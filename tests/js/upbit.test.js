@@ -401,12 +401,20 @@ test('판 번호와 캐시 이름이 어긋나지 않는다', async () => {
 //
 // 두드리지 않는 것 말고 우리가 할 수 있는 일이 없다. 그래서 이 셋을 묶는다.
 
-test('막힌 걸 알면 업비트로 한 번도 안 보낸다', async () => {
-  // 예전에는 여기서 1번이 나갔다. 보내고 실패하는 게 아니라 안 보내야 한다.
+test('길이 다 막히면 그 뒤로는 한 번도 안 보낸다', async () => {
+  // 예전 이 시험은 "막힌 걸 알면 0번"이었다. 길이 하나였을 때는 그게 맞았다.
+  // 지금은 아니다 — 한 길에서 쉬는 동안에도 **안 가 본 길이 남아 있으면
+  // 그리로 가야** 한다. 이걸 안 해서 크게 헛돌았다: 진단표는 "우회로 받을 수
+  // 있습니다"라고 하는데, 버튼을 누르면 아무 일도 안 일어났다. 조용히 있는
+  // 시간이 길 전체에 걸려 있었기 때문이다.
+  //
+  // 그래서 지키는 것을 바꾼다. **길이 다 떨어진 뒤에는 0번.** 그게 원래
+  // 지키려던 것이다 — 안 통하는 곳을 계속 두드리지 않는 것.
   let calls = 0;
   const client = new UpbitClient({
     retries: 0,
     perSecond: 100000,
+    retryPause: 1,
     fetcher: async (url, init) => {
       if (isPing(url)) return OK([]);
       if (init?.mode === 'no-cors') { calls += 1; return OK([]); }
@@ -415,14 +423,39 @@ test('막힌 걸 알면 업비트로 한 번도 안 보낸다', async () => {
     },
   });
 
-  await client.getTicker('KRW-BTC').catch(() => {});
+  // 길이 다 떨어질 때까지 부른다
+  for (let i = 0; i < 10; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.getTicker('KRW-BTC').catch(() => {});
+  }
   assert.ok(client.knownBlocked(), '막힌 걸 기억해야 합니다');
 
   calls = 0;
   const failure = await client.getTicker('KRW-BTC').then(() => null, (error) => error);
-  assert.equal(calls, 0, `막힌 걸 아는데 ${calls}번을 보냈습니다`);
+  assert.equal(calls, 0, `길이 다 막혔는데 ${calls}번을 보냈습니다`);
   assert.equal(failure.kind, 'throttled');
   assert.ok(failure.message.includes('막고'), '왜 안 보냈는지 말해야 합니다');
+});
+
+test('한 길이 쉬는 중이어도 안 가 본 길은 가 본다', async () => {
+  // 실제로 겪은 그것이다. 직접 길에서 막혀 조용히 있는 동안, 통하는 우회가
+  // 바로 옆에 있는데도 아무 길로도 안 보냈다.
+  const client = new UpbitClient({
+    perSecond: 100000,
+    retryPause: 1,
+    fetcher: async (url, init) => {
+      if (isPing(url)) return OK([]);
+      if (init?.mode === 'no-cors') return OK([]);
+      if (String(url).startsWith('https://api.upbit.com')) throw new TypeError('Load failed');
+      return OK(candleRows(200, 1700000000));   // 우회는 된다
+    },
+  });
+  // 직접 길이 막혔다고 못을 박아 둔다
+  client.markBlocked();
+  assert.ok(client.knownBlocked());
+
+  const candles = await client.getCandles('KRW-BTC', 'minute1', 200);
+  assert.ok(candles.length > 0, '쉬는 중이라고 우회까지 안 갔습니다');
 });
 
 test('막힐수록 더 길게 입을 다물고, 한 번 통하면 처음으로 돌아간다', () => {
