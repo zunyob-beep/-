@@ -104,6 +104,40 @@ async function summary(market) {
  * `fresh`가 거짓이면 업비트에 가지 않고 가진 것만으로 다시 센다. 설정만
  * 바꿔 보는데 매번 받으러 가면 느리고, 받을 것도 없다.
  */
+/**
+ * 받아둔 1분봉을 읽어 계산에 쓸 세 간격을 만든다.
+ *
+ * 3·5분봉은 1분봉을 묶어서 만든다 — 업비트가 주는 것과 같은 값이고 요청은
+ * 하나도 더 안 쓴다.
+ */
+async function buildSeries(db, market, bars) {
+  const series = {};
+  const base = await loadSeries(db, market, 'minute1', bars);
+  if (!base.length) return series;
+  series.minute1 = base;
+  for (const [timeframe, factor] of [['minute3', 3], ['minute5', 5]]) {
+    const made = aggregate(base, factor);
+    if (made.length) series[timeframe] = made;
+  }
+  return series;
+}
+
+/**
+ * **가진 것으로 먼저 답하기에 충분한 봉 수.**
+ *
+ * 왜 이게 필요한가 — 30일치(43,200봉)를 고르고 누르면, 이미 12,696개를
+ * 받아 뒀는데도 나머지 3만 개를 다 채울 때까지 아무 답도 안 줬다. 그 사이
+ * 화면에는 "다시 해 보는 중"만 몇 분씩 떴고, 사용자 눈에는 작동을 안 하는
+ * 것과 구분이 안 됐다. 실제로 그런 화면을 받았다.
+ *
+ * 이미 8.8일치가 있는데 답을 못 줄 이유가 없다. 먼저 답하고, 더 받으면
+ * 다시 답한다.
+ *
+ * 2,000봉(약 1.4일)을 문턱으로 둔다. 그보다 적으면 닮은 과거가 스무 개도
+ * 안 나와서 "표본이 모자랍니다"만 보여 주게 되고, 그건 답이 아니다.
+ */
+const FIRST_ANSWER = 2000;
+
 async function run({ market, count, fresh, similarity, fee, slippage, length, stake }) {
   const db = await ready();
   // 상한은 **여기서** 건다. 화면 쪽만 막으면 낡은 화면이나 손으로 보낸
@@ -123,6 +157,28 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   //
   // 업비트가 우리를 막는 이유가 요청이 잦아서이므로(아이패드 진단이 그걸
   // 보여줬다), 요청 수를 줄이는 게 가장 큰 지렛대다. 216번으로 끝난다.
+  // **가진 것으로 먼저 답한다.**
+  //
+  // 다 받을 때까지 기다리게 하지 않는다. 받아둔 것이 쓸 만하면 그걸로 바로
+  // 계산해서 보여 주고, 받기는 뒤에서 계속한다. 다 받으면 다시 계산해서
+  // 덮어쓴다 — 숫자는 그때 정확해진다.
+  if (fresh) {
+    const have = await db.count(market, 'minute1');
+    if (have >= FIRST_ANSWER) {
+      progress(`받아둔 ${have.toLocaleString()}개로 먼저 계산합니다…`);
+      const early = await buildSeries(db, market, bars);
+      if (Object.keys(early).length) {
+        analysis = analyse(market, early, { similarity, fee, slippage, length, stake });
+        say({
+          type: 'partial',
+          analysis: analysisJson(analysis),
+          have,
+          want: Math.floor(bars / RATIO.minute1),
+        });
+      }
+    }
+  }
+
   if (fresh) {
     for (const timeframe of ['minute1']) {
       if (blocked) break;
@@ -187,17 +243,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   }
 
   progress('받아둔 시세를 읽는 중…');
-  const series = {};
-  const base = await loadSeries(db, market, 'minute1', bars);
-  if (base.length) {
-    series.minute1 = base;
-    // 받아둔 1분봉으로 3·5분봉을 만든다. 업비트가 주는 것과 같은 값이고,
-    // 요청은 하나도 더 쓰지 않는다.
-    for (const [timeframe, factor] of [['minute3', 3], ['minute5', 5]]) {
-      const made = aggregate(base, factor);
-      if (made.length) series[timeframe] = made;
-    }
-  }
+  const series = await buildSeries(db, market, bars);
 
   // **못 받았다는 사실을 반드시 말한다.**
   //
