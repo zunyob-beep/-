@@ -57,6 +57,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      # **정말 압축해서 오는가.** 파일은 1.2MB인데 압축하면 220KB다.
+      # 5배 넘게 차이나므로, 이게 안 되면 4년치가 10MB가 아니라 58MB다.
+      # 짐작으로 두지 않고 여기서 확인해 기록에 남긴다.
+      - name: 내려받을 때 압축돼 오는지 본다
+        continue-on-error: true
+        run: |
+          curl -sS -D - -o /dev/null --compressed --max-time 60 \
+            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/data/tail/KRW-BTC.json" \
+            | grep -iE "^(HTTP/|content-encoding|content-length)" || echo "(아직 파일이 없습니다)"
+
       # 지난번에 적어 둔 것을 가져온다. 있으면 이어 붙이면 되므로 한 쪽이면
       # 끝나고, 없으면 처음부터 받는다.
       - name: 지난번 파일 가져오기
