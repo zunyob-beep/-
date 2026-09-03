@@ -273,10 +273,20 @@ async function seedFrom(db, market, wanted) {
   const span = await db.span(market, 'minute1');
   let stored = await db.count(market, 'minute1');
 
+  // **가진 구간이 성긴지 본다.**
+  //
+  // `oldest`는 "여기부터는 이미 있다"는 뜻으로 쓰인다. 그런데 저장된 것이
+  // 듬성듬성하면(예전에 업비트로 조금씩 받다 만 자국) 시작만 오래됐을 뿐
+  // 속은 비어 있는데, 그걸 믿고 조각을 통째로 건너뛰면 **영영 안 채워진다.**
+  // 화면에는 아무 말도 안 뜨고 개수만 안 는다.
+  const should = span ? Math.floor((span[1] - span[0]) / 60) + 1 : 0;
+  const solid = should > 0 && stored >= should * 0.9;
+
   const got = await loadSeed(market, {
     wanted,
     // 이미 가진 구간은 건너뛴다. 지나간 봉은 안 변하므로 다시 받을 이유가 없다.
-    oldest: span ? span[0] : null,
+    // 다만 성긴 경우에는 안 건너뛴다 — 위를 보라.
+    oldest: solid ? span[0] : null,
     // 무엇을 어디서 읽었는지도 기록에 남긴다. 진단 화면이 업비트 요청과
     // 같은 자리에 펴 주므로, 한 장으로 어느 길이 됐는지 다 보인다.
     onTry: (url, how) => client?.log?.push({
@@ -497,7 +507,14 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   //
   // 조용히 끝내면 사용자는 다 받은 줄 안다. 다시 누르면 이어서 받는다는
   // 것도 같이 말해야, 누를수록 쌓인다는 걸 알고 다시 누른다.
-  const more = ranOut ? { have: await db.count(market, 'minute1'), want: bars } : null;
+  // **모자라면 모자란다고 말한다 — 시간에 걸렸든 아니든.**
+  //
+  // 예전에는 `ranOut`(시간 초과)일 때만 알렸다. 그런데 미리 받아 둔 파일이
+  // 목표에 못 미치는 경우가 있다(4년치를 골랐는데 과거가 1년까지만 채워진
+  // 때). 그때는 시간에 걸리지도 않으므로 아무 말 없이 끝났고, 사용자는
+  // 4년치로 계산한 줄 알았다. 그건 조용히 넘어가면 안 되는 종류의 일이다.
+  const have = await db.count(market, 'minute1');
+  const more = have < bars * 0.99 ? { have, want: bars, ranOut } : null;
   say({ type: 'done', analysis: analysisJson(analysis), stale: blocked !== null, more });
 }
 

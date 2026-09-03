@@ -20,8 +20,15 @@
 바뀌는 것과 안 바뀌는 것을 나눈다. 이게 이 파일의 설계 전부다.
 
   ``tail/<종목>.json``     최근 2일. **10분마다** 새로 적는다.
-  ``month/<종목>.json``    이번 달. **한 시간에 한 번쯤** 새로 적는다.
+  ``recent/<종목>.json``   최근 31일. **한 시간에 한 번쯤** 새로 적는다.
   ``<종목>/<YYYY-MM>.json`` 지나간 달. **한 번 적고 다시 안 건드린다.**
+
+가운데를 '이번 달'이 아니라 **최근 31일**로 잡은 이유가 있다. 달로 자르면
+1일 0시에 그 파일이 몇 줄로 줄어드는데, 지난달 조각은 과거 채우기가 돌기
+전까지 아직 없다. 그 사이에 30일치를 고른 사람은 이틀치밖에 못 받는다 —
+한 달에 한 번, 몇 시간짜리 구멍이다. 31일 창으로 두면 지난달을 늘 덮으므로
+그 구멍이 아예 안 생긴다. 지나간 달 조각과 겹치는 건 아무 해가 없다
+(같은 봉은 같은 자리에 저장된다).
 
 앞의 둘은 `data` 브랜치에 덮어쓴다(force push). 늘 커밋 하나만 남으므로
 저장소가 안 불어난다. 지나간 달은 `history` 브랜치에 쌓는다 — 다시 안
@@ -33,8 +40,8 @@
 
 쓰는 법::
 
-    python tools/candles.py --mode tail    --out data
-    python tools/candles.py --mode history --out history --years 4
+    python -m tools.candles --mode tail    --out data
+    python -m tools.candles --mode history --out history --years 4
 """
 
 from __future__ import annotations
@@ -56,8 +63,11 @@ MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"]
 #: 꼬리에 담을 날 수. 10분마다 새로 적으므로 작아야 한다.
 TAIL_DAYS = 2
 
-#: 이번 달 파일을 이보다 오래 안 건드렸으면 새로 적는다 (초).
-MONTH_STALE = 3600
+#: 가운데 파일이 담는 날 수. 지난달을 늘 덮도록 31일로 둔다.
+RECENT_DAYS = 31
+
+#: 가운데 파일을 이보다 오래 안 건드렸으면 새로 적는다 (초).
+RECENT_STALE = 3600
 
 #: 몇 년치까지 거슬러 올라가는가.
 DEFAULT_YEARS = 4
@@ -147,30 +157,31 @@ def fetch_span(client: UpbitClient, market: str, start: datetime, end: datetime,
 
 # ------------------------------------------------------------ 꼬리와 이번 달
 def do_tail(client: UpbitClient, out: Path, markets: list[str]) -> list[str]:
-    """최근 2일과 이번 달. **자주 바뀌는 쪽**이다."""
+    """최근 2일과 최근 31일. **자주 바뀌는 쪽**이다."""
     now = datetime.now(timezone.utc)
-    month_start, month_end = month_range(now)
     failed = []
 
     for market in markets:
         tail_path = out / "tail" / f"{market}.json"
-        month_path = out / "month" / f"{market}.json"
+        recent_path = out / "recent" / f"{market}.json"
         try:
             since = now - timedelta(days=TAIL_DAYS)
             rows = fetch_span(client, market, since, now, read_rows(tail_path))
             count = write_rows(tail_path, market, rows)
             print(f"  {market} 꼬리: {count:,}개 ({since:%m-%d %H:%M} → 지금)")
 
-            # **이번 달은 자주 안 건드린다.** 1.3MB짜리를 10분마다 새로 올리면
-            # 얻는 것 없이 오르내리는 양만 커진다. 한 시간쯤 묵었을 때만 손댄다.
-            have = read_rows(month_path)
+            # **가운데 파일은 자주 안 건드린다.** 1.2MB짜리를 10분마다 새로
+            # 올리면 얻는 것 없이 오르내리는 양만 커진다. 한 시간쯤 묵었을
+            # 때만 손댄다.
+            have = read_rows(recent_path)
             fresh = max(have) if have else 0
-            if now.timestamp() - fresh < MONTH_STALE:
-                print(f"  {market} 이번 달: 아직 새것입니다 ({len(have):,}개)")
+            if now.timestamp() - fresh < RECENT_STALE:
+                print(f"  {market} 최근 31일: 아직 새것입니다 ({len(have):,}개)")
                 continue
-            rows = fetch_span(client, market, month_start, min(now, month_end), have)
-            count = write_rows(month_path, market, rows)
-            print(f"  {market} 이번 달: {count:,}개 ({month_start:%Y-%m})")
+            since = now - timedelta(days=RECENT_DAYS)
+            rows = fetch_span(client, market, since, now, have)
+            count = write_rows(recent_path, market, rows)
+            print(f"  {market} 최근 31일: {count:,}개 ({since:%m-%d} → 지금)")
         except (UpbitError, OSError) as error:
             print(f"  {market}: 실패 — {error}", file=sys.stderr)
             failed.append(market)
@@ -179,20 +190,31 @@ def do_tail(client: UpbitClient, out: Path, markets: list[str]) -> list[str]:
 
 # ---------------------------------------------------------------- 지나간 달
 def do_history(client: UpbitClient, out: Path, markets: list[str],
-               years: int, budget: int, now: datetime | None = None) -> list[str]:
-    """지나간 달을 **새것부터** 채운다. 한 번 적은 달은 다시 안 건드린다."""
+               years: int, budget: int, now: datetime | None = None) -> tuple[int, list[str]]:
+    """지나간 달을 **새것부터** 채운다. 한 번 적은 달은 다시 안 건드린다.
+
+    `(새로 적은 조각 수, 실패 목록)`을 돌려준다. 실패를 세는 것만으로는
+    부족하다 — 100조각 중 하나가 실패해도 나머지 99를 올려야 하기 때문이다.
+    """
     now = now or datetime.now(timezone.utc)
     wanted = months_back(years, now)
-    failed = []
+    failed: list[str] = []
+    # 상장 전 구간에 닿은 종목. 더 내려가 봐야 빈 달만 나온다.
+    done: set[str] = set()
     made = 0
 
     for name in wanted:
         if made >= budget:
             print(f"이번 판은 {budget}조각까지입니다. 남은 달은 다음 판에서 채웁니다.")
             break
+        if len(done) == len(markets):
+            print("모든 종목이 상장 전 구간에 닿았습니다. 여기까지입니다.")
+            break
         start = datetime.strptime(name, "%Y-%m").replace(tzinfo=timezone.utc)
         _, end = month_range(start)
         for market in markets:
+            if market in done:
+                continue
             path = out / market / f"{name}.json"
             if path.is_file():
                 continue
@@ -203,14 +225,20 @@ def do_history(client: UpbitClient, out: Path, markets: list[str],
                 failed.append(f"{market}/{name}")
                 continue
             if not rows:
-                # 상장 전이면 빈 달이 나온다. 그때는 더 내려가도 없다.
+                # **상장 전이다. 이 종목은 더 안 내려간다.**
+                #
+                # 예전에는 여기서 그냥 넘어가서, 2년 전에 상장한 종목도
+                # 4년치를 다 훑었다 — 빈 달마다 요청이 한 번씩 나가고
+                # 아무것도 안 얻는다. 주석은 "더 내려가도 없다"고 적혀
+                # 있었는데 코드가 그 말을 안 지키고 있었다.
                 print(f"  {market} {name}: 봉이 없습니다 (상장 전으로 봅니다)")
+                done.add(market)
                 continue
             count = write_rows(path, market, rows)
             size = path.stat().st_size / 1024
             print(f"  {market} {name}: {count:,}개, {size:.0f}KB")
             made += 1
-    return failed
+    return made, failed
 
 
 def write_manifest(out: Path, markets: list[str]) -> None:
@@ -245,13 +273,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.mode == "tail":
         failed = do_tail(client, out, args.markets)
-    else:
-        failed = do_history(client, out, args.markets, args.years, args.budget)
-        write_manifest(out, args.markets)
+        if failed and len(failed) >= len(args.markets):
+            print("전부 실패했습니다. 옛 파일을 그대로 둡니다.", file=sys.stderr)
+            return 1
+        return 0
 
-    if failed and len(failed) >= len(args.markets):
-        print("전부 실패했습니다. 옛 파일을 그대로 둡니다.", file=sys.stderr)
+    # **하나라도 적었으면 성공으로 끝낸다.**
+    #
+    # 여기서 1을 돌려주면 판이 죽고, 그러면 뒤따르는 '올리기' 단계가 아예
+    # 안 돈다 — 192조각 중 4개가 실패했다고 나머지 188조각을 통째로 버리는
+    # 셈이다. 한 시간 넘게 받아 놓고 그걸 버릴 이유가 없다.
+    made, failed = do_history(client, out, args.markets, args.years, args.budget)
+    write_manifest(out, args.markets)
+    if failed:
+        print(f"{len(failed)}조각이 실패했습니다: {', '.join(failed[:5])}"
+              f"{' …' if len(failed) > 5 else ''}", file=sys.stderr)
+    if made == 0 and failed:
+        print("한 조각도 못 적었습니다.", file=sys.stderr)
         return 1
+    print(f"이번 판에 {made}조각을 새로 적었습니다.")
     return 0
 
 

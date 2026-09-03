@@ -138,7 +138,7 @@ test('짧은 기간이면 꼬리 하나로 끝난다', async () => {
   assert.ok(asked[0].includes('tail/'), asked[0]);
 });
 
-test('모자라면 이번 달과 지나간 달까지 내려간다', async () => {
+test('모자라면 최근 31일과 지나간 달까지 내려간다', async () => {
   const asked = [];
   const chunks = [];
   const got = await loadSeed('KRW-BTC', {
@@ -156,7 +156,7 @@ test('모자라면 이번 달과 지나간 달까지 내려간다', async () => 
   assert.equal(got.got, 9000);
   assert.deepEqual(chunks, [3000, 3000, 3000]);
   assert.ok(asked.some((u) => u.includes('tail/')), '꼬리를 안 봤습니다');
-  assert.ok(asked.some((u) => u.includes('month/')), '이번 달을 안 봤습니다');
+  assert.ok(asked.some((u) => u.includes('recent/')), '최근 31일을 안 봤습니다');
   assert.ok(asked.some((u) => u.includes('2026-01')), '지나간 달을 안 봤습니다');
 });
 
@@ -290,4 +290,40 @@ test('만들어진 시각을 알려 준다', async () => {
     where: LOCAL, wanted: 10, fetcher: async () => ok(packed('KRW-BTC', { n: 5, made: 1700009999 })),
   });
   assert.equal(got.made, 1700009999);
+});
+
+
+test('통했던 자리를 기억해서 안 되는 데를 다시 안 물어본다', async () => {
+  // **4년치를 받을 때 이게 없으면 조각 48개마다 404가 한 번씩 더 난다.**
+  //
+  // 깃허브 페이지에는 `./data/`가 없다 — 파일은 raw 쪽에 산다. 그런데
+  // 순서가 늘 같으면 조각마다 없는 자리를 먼저 물어보게 된다.
+  const asked = [];
+  await loadSeed('KRW-BTC', {
+    where: PAGES,
+    wanted: 100000,
+    fetcher: async (url) => {
+      asked.push(url);
+      if (url.includes('github.io')) return missing;
+      if (url.includes('manifest')) {
+        return ok({ months: { 'KRW-BTC': ['2025-10', '2025-11', '2025-12'] } });
+      }
+      return ok(packed('KRW-BTC', { n: 200 }));
+    },
+  });
+  const wasted = asked.filter((u) => u.includes('github.io')).length;
+  assert.ok(wasted <= 1, `안 되는 자리를 ${wasted}번이나 물어봤습니다`);
+  assert.ok(asked.length >= 5, `자리를 아예 안 물어봤습니다 (${asked.length}번)`);
+});
+
+test('중간에 끊긴 파일은 안 쓴다', async () => {
+  // 칸이 짧으면 undefined가 NaN이 되어 조용히 흘러든다. 가격에 NaN이
+  // 섞이면 계산은 그대로 돌고 화면에도 숫자가 찍히는데, 그게 무엇을
+  // 뜻하는지는 아무도 모른다.
+  const whole = packed('KRW-BTC', { n: 10 });
+  for (const key of ['c', 'o', 'h', 'l', 'v']) {
+    const cut = { ...whole, [key]: whole[key].slice(0, 5) };
+    assert.equal(unpackSeed(cut), null, `${key} 칸이 짧은데 읽었습니다`);
+  }
+  assert.equal(unpackSeed(whole).length, 10, '멀쩡한 것까지 버렸습니다');
 });

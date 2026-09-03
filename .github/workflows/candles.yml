@@ -15,8 +15,12 @@
 #
 # 무엇을 적는가
 # ------------
-#   tail/<종목>.json    최근 2일   ~90KB    매번
-#   month/<종목>.json   이번 달    ~1.3MB   한 시간에 한 번쯤
+#   tail/<종목>.json    최근 2일    ~90KB    매번
+#   recent/<종목>.json  최근 31일   ~1.2MB   한 시간에 한 번쯤
+#
+# 가운데를 달로 자르지 않고 31일 창으로 둔다. 달로 자르면 1일 0시에 그
+# 파일이 몇 줄로 줄어드는데 지난달 조각은 아직 없어서, 그 사이에 30일치를
+# 고른 사람이 이틀치밖에 못 받는다.
 #
 # 지나간 달은 여기서 안 건드린다 — history.yml이 맡는다. 안 바뀌는 것을
 # 자주 바뀌는 것과 섞어 두면, 10분마다 4년치를 통째로 오르내리게 된다.
@@ -71,9 +75,9 @@ jobs:
       # 끝나고, 없으면 처음부터 받는다.
       - name: 지난번 파일 가져오기
         run: |
-          mkdir -p data/tail data/month
+          mkdir -p data/tail data/recent
           for m in KRW-BTC KRW-ETH KRW-XRP KRW-SOL; do
-            for kind in tail month; do
+            for kind in tail recent; do
               curl -fsSL --max-time 120 \
                 -o "data/$kind/$m.json" \
                 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/data/$kind/$m.json" \
