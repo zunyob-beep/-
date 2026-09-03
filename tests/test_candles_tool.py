@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -202,3 +204,31 @@ def test_앱이_아는_종목과_같다():
 def test_꼬리는_짧게_담는다():
     """10분마다 새로 올리는 파일이라 작아야 한다. 이번 달은 따로 담는다."""
     assert tool.TAIL_DAYS <= 3, "꼬리가 너무 깁니다 — 10분마다 그만큼을 올리게 됩니다"
+
+
+def test_워크플로가_부르는_방식으로_돌아간다():
+    """**이걸 안 해서 판이 한 번 죽었다.**
+
+    `python tools/candles.py`로 부르면 파이썬이 저장소 뿌리가 아니라
+    `tools/`를 경로에 넣는다. 그러면 `from tools.pack import ...`이
+    `ModuleNotFoundError`로 터진다 — 로컬에서 PYTHONPATH를 붙여 돌리면
+    안 보이는 종류의 실패다.
+
+    그래서 워크플로가 실제로 쓰는 그 명령을, 아무것도 안 붙이고 돌려 본다.
+    """
+    root = Path(__file__).resolve().parents[1]
+    made = subprocess.run(
+        [sys.executable, "-m", "tools.candles", "--help"],
+        cwd=root, capture_output=True, text=True, check=False,
+    )
+    assert made.returncode == 0, f"돌지 않습니다:\n{made.stderr}"
+    assert "--mode" in made.stdout
+
+
+def test_워크플로가_부르는_명령이_실제로_그것이다():
+    """시험은 `-m`으로 도는데 워크플로가 스크립트로 부르면 아무 소용이 없다."""
+    root = Path(__file__).resolve().parents[1]
+    for name in ("candles.yml", "history.yml"):
+        text = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "python -m tools.candles" in text, f"{name}이 -m으로 안 부릅니다"
+        assert "python tools/candles.py" not in text, f"{name}이 스크립트로 부릅니다"

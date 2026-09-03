@@ -77,7 +77,7 @@ jobs:
 
       - name: 업비트에서 받기
         run: |
-          python tools/candles.py --mode history --out history \
+          python -m tools.candles --mode history --out history \
             --years "${{ inputs.years || '4' }}" \
             --budget "${{ inputs.budget || '24' }}"
 
