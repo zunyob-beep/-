@@ -94,7 +94,7 @@ self.addEventListener('fetch', (event) => {
   //
   // 못 받아도 손해가 없다. 한 번 읽은 봉은 이미 이 기기 안(IndexedDB)에
   // 있으므로, 인터넷이 없어도 계산은 그대로 된다.
-  if (url.pathname.includes('/data/')) return;
+  if (/\/(data|history)\//.test(url.pathname)) return;
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);

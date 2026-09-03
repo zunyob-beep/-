@@ -2,36 +2,39 @@
 
 왜 이게 필요한가
 ---------------
-브라우저에서 업비트를 직접 부르는 것은 믿을 수 없다. 업비트의 REST API는
-서버끼리 쓰라고 만든 것이라, 거절할 때(한도 초과 같은) 돌려주는 응답에는
-브라우저가 요구하는 허용 표시(CORS 헤더)가 없다. 그러면 브라우저는 그 답을
-**읽지도 못하고** 그냥 "실패"로 처리한다 — 인터넷이 끊긴 것과 구분이 안 된다.
+브라우저에서 업비트를 직접 부르면 **분당 6번**밖에 못 받는다. 업비트가
+브라우저 요청(Origin 헤더가 붙은 요청)을 `origin`이라는 별도 한도 묶음에
+넣기 때문이다 — 서버에서 부르면 같은 주소가 분당 600번이다. 100배 차이고,
+헤더에 대놓고 적혀 있다::
 
-여기에 더해 한도는 **주소(IP) 단위**로 걸린다. 휴대폰 데이터(5G)는 수백 명이
-한 주소를 나눠 쓰므로, 내가 아무것도 안 해도 남이 쓴 몫 때문에 막힌다.
+    Origin 없이   → remaining-req: group=candles; min=600; sec=9
+    Origin 붙여서 → remaining-req: group=origin;  min=6;   sec=0
 
-그래서 공개 우회 서버로 돌아가게 만들었는데, 그건 문제를 옮긴 것뿐이었다.
-우회 서버의 주소도 수천 명이 같이 쓰므로 똑같이 막히고, 게다가 느리고,
-어느 날 유료로 바뀌면(실제로 그랬다) 그날부터 앱이 죽는다.
+분당 6번이면 7일치(51번)를 받는 데 8분, 4년치(10,512번)는 **29시간**이다.
+브라우저에서 받는 건 애초에 될 일이 아니었다.
 
-그러니 **브라우저가 업비트를 안 부르게 한다.** 이 스크립트가 깃허브 액션
-위에서 — 서버에서, CORS도 없고 한도도 넉넉한 자리에서 — 미리 받아 파일로
-적어 둔다. 앱은 그 파일 하나만 내려받으면 된다. 요청 한 번, 몇백 KB,
-CORS 없음, 한도 없음.
+그래서 여기서 받는다. 서버에는 CORS도 없고 한도도 100배 넉넉하다.
 
-파일 모양
---------
-한 종목에 한 파일. 자리를 아끼려고 봉 하나를 배열 하나로 적는다::
+무엇을 어디에 적는가
+------------------
+바뀌는 것과 안 바뀌는 것을 나눈다. 이게 이 파일의 설계 전부다.
 
-    {"market": "KRW-BTC", "timeframe": "minute1", "step": 60,
-     "made": 1788330000, "days": 14,
-     "rows": [[ts, 시가, 고가, 저가, 종가, 거래량], ...]}
+  ``tail/<종목>.json``     최근 2일. **10분마다** 새로 적는다.
+  ``month/<종목>.json``    이번 달. **한 시간에 한 번쯤** 새로 적는다.
+  ``<종목>/<YYYY-MM>.json`` 지나간 달. **한 번 적고 다시 안 건드린다.**
 
-`rows`는 **오래된 것부터**다. 시각은 유닉스 초.
+앞의 둘은 `data` 브랜치에 덮어쓴다(force push). 늘 커밋 하나만 남으므로
+저장소가 안 불어난다. 지나간 달은 `history` 브랜치에 쌓는다 — 다시 안
+바뀌므로 쌓여도 각 파일이 딱 한 번씩만 올라간다.
+
+앱은 **고른 기간만큼만** 내려받는다. 7일이면 꼬리 하나(90KB), 1년이면
+열두 조각, 4년이면 마흔여덟 조각. 한 번 받은 조각은 그 기기에 남으므로
+다시 안 받는다.
 
 쓰는 법::
 
-    python tools/candles.py --out web/data --days 14
+    python tools/candles.py --mode tail    --out data
+    python tools/candles.py --mode history --out history --years 4
 """
 
 from __future__ import annotations
@@ -45,140 +48,208 @@ from typing import Any
 
 from patternscan.models import Candle
 from patternscan.upbit import UpbitClient, UpbitError
+from tools.pack import pack, unpack
 
 #: 미리 받아 둘 종목. 앱의 MARKETS와 같아야 한다 (web/core/models.js).
 MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"]
 
-#: 며칠치를 담을지. 1분봉은 하루가 1,440개다.
-#:
-#: 14일이면 20,160개, 파일 하나가 1MB 남짓이고 압축하면 300KB쯤 된다.
-#: 앱의 기본값(7일)을 넉넉히 덮으면서 5G에서도 몇 초면 받아진다.
-DEFAULT_DAYS = 14
+#: 꼬리에 담을 날 수. 10분마다 새로 적으므로 작아야 한다.
+TAIL_DAYS = 2
+
+#: 이번 달 파일을 이보다 오래 안 건드렸으면 새로 적는다 (초).
+MONTH_STALE = 3600
+
+#: 몇 년치까지 거슬러 올라가는가.
+DEFAULT_YEARS = 4
 
 STEP = 60
-
-
-def _round(value: float) -> float:
-    """소수점 끝의 부동소수 찌꺼기를 자른다.
-
-    0.30000000000000004 같은 것이 파일에 그대로 들어가면 자리만 먹는다.
-    가격은 원 단위라 소수 둘이면 충분하고, 거래량은 여덟 자리까지 남긴다.
-    """
-    return round(value, 8)
+MINUTE = 60
 
 
 def _row(candle: Candle) -> list[float]:
     return [
         int(candle.ts.timestamp()),
-        _round(candle.open),
-        _round(candle.high),
-        _round(candle.low),
-        _round(candle.close),
-        _round(candle.volume),
+        float(candle.open), float(candle.high),
+        float(candle.low), float(candle.close), float(candle.volume),
     ]
 
 
-def read_existing(path: Path) -> dict[int, list[float]]:
-    """이미 적어 둔 것을 읽는다. 없거나 깨졌으면 빈 것으로 친다.
-
-    **매번 14일치를 처음부터 받지 않기 위한 것이다.** 20분마다 도는데
-    그때마다 101쪽씩 받으면 업비트에 폐가 되고, 우리도 느리다. 지난번
-    파일에 이어 붙이면 보통 한 쪽이면 끝난다.
-    """
+def read_rows(path: Path) -> dict[int, list[float]]:
+    """적어 둔 파일을 되읽는다. 없거나 깨졌으면 빈 것으로 친다."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    rows = payload.get("rows")
-    if not isinstance(rows, list):
+    try:
+        rows = unpack(payload)
+    except (KeyError, TypeError, ValueError, IndexError):
         return {}
-    out: dict[int, list[float]] = {}
-    for row in rows:
-        if isinstance(row, list) and len(row) == 6 and all(isinstance(v, (int, float)) for v in row):
-            out[int(row[0])] = [int(row[0]), *(float(v) for v in row[1:])]
+    return {int(r[0]): r for r in rows}
+
+
+def write_rows(path: Path, market: str, rows: dict[int, list[float]]) -> int:
+    ordered = [rows[ts] for ts in sorted(rows)]
+    made = int(datetime.now(timezone.utc).timestamp())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 줄바꿈도 공백도 없이 붙여 쓴다. 2만 줄짜리 파일에서 그건 자리만 먹는다.
+    path.write_text(
+        json.dumps(pack(market, ordered, STEP, made), separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return len(ordered)
+
+
+def month_range(when: datetime) -> tuple[datetime, datetime]:
+    """그 달의 시작과 다음 달의 시작 (UTC)."""
+    start = when.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    following = (start + timedelta(days=32)).replace(day=1)
+    return start, following
+
+
+def months_back(years: int, now: datetime) -> list[str]:
+    """이번 달을 빼고, 지나간 달을 **새것부터** 늘어놓는다."""
+    out = []
+    cursor, _ = month_range(now)
+    for _ in range(years * 12):
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        out.append(f"{cursor:%Y-%m}")
     return out
 
 
-def fetch(client: UpbitClient, market: str, have: dict[int, list[float]], days: int,
-          say: Any = print) -> dict[int, list[float]]:
-    """모자란 만큼만 받아서 합친다."""
-    now = datetime.now(timezone.utc)
-    oldest_wanted = now - timedelta(days=days)
-    want = days * 24 * 60
+def fetch_span(client: UpbitClient, market: str, start: datetime, end: datetime,
+               have: dict[int, list[float]] | None = None) -> dict[int, list[float]]:
+    """`start` 이상 `end` 미만을 받아서 `have`에 합친다.
 
-    # 가진 것 중 오래된 것은 버린다. 안 그러면 파일이 끝없이 자란다.
-    merged = {ts: row for ts, row in have.items() if ts >= oldest_wanted.timestamp()}
+    이미 가진 것이 있으면 **그 뒤로만** 받는다. 10분마다 도는데 매번
+    처음부터 받으면 업비트에 폐가 되고 우리도 느리다.
+    """
+    merged = dict(have or {})
+    inside = [ts for ts in merged if start.timestamp() <= ts < end.timestamp()]
+    merged = {ts: merged[ts] for ts in inside}
 
-    # 어디까지 받아야 하는가. 가진 게 있으면 그 뒤로만, 없으면 전부.
-    stop_at = None
+    stop_at = start
     if merged:
-        newest = max(merged)
-        # 마지막 몇 개는 다시 받는다 — 그 분이 끝나기 전에 받은 봉은
-        # 아직 확정된 값이 아니다.
-        stop_at = datetime.fromtimestamp(newest - STEP * 3, tz=timezone.utc)
-        need = int((now.timestamp() - newest) / STEP) + 5
-    else:
-        need = want
+        # 마지막 몇 개는 다시 받는다 — 그 분이 끝나기 전에 받은 봉은 아직
+        # 확정된 값이 아니다.
+        stop_at = max(start, datetime.fromtimestamp(max(merged) - STEP * 3, tz=timezone.utc))
 
-    need = max(1, min(need, want))
-    say(f"  {market}: 가진 것 {len(merged):,}개, 받을 것 {need:,}개")
+    need = int((end.timestamp() - stop_at.timestamp()) / STEP) + 5
+    if need <= 0:
+        return merged
 
-    candles = client.collect(market, "minute1", need, stop_at=stop_at)
-    for candle in candles:
-        row = _row(candle)
-        merged[row[0]] = row
-
-    # 다시 한 번 자른다 — 방금 받은 것 때문에 늘어났을 수 있다.
-    merged = {ts: row for ts, row in merged.items() if ts >= oldest_wanted.timestamp()}
+    got = client.collect(market, "minute1", need, end=end, stop_at=stop_at)
+    for candle in got:
+        ts = int(candle.ts.timestamp())
+        if start.timestamp() <= ts < end.timestamp():
+            merged[ts] = _row(candle)
     return merged
 
 
-def write(path: Path, market: str, rows: dict[int, list[float]], days: int) -> int:
-    ordered = [rows[ts] for ts in sorted(rows)]
-    payload = {
-        "market": market,
-        "timeframe": "minute1",
-        "step": STEP,
-        "days": days,
-        "made": int(datetime.now(timezone.utc).timestamp()),
-        "rows": ordered,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 줄바꿈 없이 붙여 쓴다. 2만 줄짜리 파일에서 들여쓰기는 자리만 먹는다.
-    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    return len(ordered)
+# ------------------------------------------------------------ 꼬리와 이번 달
+def do_tail(client: UpbitClient, out: Path, markets: list[str]) -> list[str]:
+    """최근 2일과 이번 달. **자주 바뀌는 쪽**이다."""
+    now = datetime.now(timezone.utc)
+    month_start, month_end = month_range(now)
+    failed = []
+
+    for market in markets:
+        tail_path = out / "tail" / f"{market}.json"
+        month_path = out / "month" / f"{market}.json"
+        try:
+            since = now - timedelta(days=TAIL_DAYS)
+            rows = fetch_span(client, market, since, now, read_rows(tail_path))
+            count = write_rows(tail_path, market, rows)
+            print(f"  {market} 꼬리: {count:,}개 ({since:%m-%d %H:%M} → 지금)")
+
+            # **이번 달은 자주 안 건드린다.** 1.3MB짜리를 10분마다 새로 올리면
+            # 얻는 것 없이 오르내리는 양만 커진다. 한 시간쯤 묵었을 때만 손댄다.
+            have = read_rows(month_path)
+            fresh = max(have) if have else 0
+            if now.timestamp() - fresh < MONTH_STALE:
+                print(f"  {market} 이번 달: 아직 새것입니다 ({len(have):,}개)")
+                continue
+            rows = fetch_span(client, market, month_start, min(now, month_end), have)
+            count = write_rows(month_path, market, rows)
+            print(f"  {market} 이번 달: {count:,}개 ({month_start:%Y-%m})")
+        except (UpbitError, OSError) as error:
+            print(f"  {market}: 실패 — {error}", file=sys.stderr)
+            failed.append(market)
+    return failed
+
+
+# ---------------------------------------------------------------- 지나간 달
+def do_history(client: UpbitClient, out: Path, markets: list[str],
+               years: int, budget: int, now: datetime | None = None) -> list[str]:
+    """지나간 달을 **새것부터** 채운다. 한 번 적은 달은 다시 안 건드린다."""
+    now = now or datetime.now(timezone.utc)
+    wanted = months_back(years, now)
+    failed = []
+    made = 0
+
+    for name in wanted:
+        if made >= budget:
+            print(f"이번 판은 {budget}조각까지입니다. 남은 달은 다음 판에서 채웁니다.")
+            break
+        start = datetime.strptime(name, "%Y-%m").replace(tzinfo=timezone.utc)
+        _, end = month_range(start)
+        for market in markets:
+            path = out / market / f"{name}.json"
+            if path.is_file():
+                continue
+            try:
+                rows = fetch_span(client, market, start, end)
+            except (UpbitError, OSError) as error:
+                print(f"  {market} {name}: 실패 — {error}", file=sys.stderr)
+                failed.append(f"{market}/{name}")
+                continue
+            if not rows:
+                # 상장 전이면 빈 달이 나온다. 그때는 더 내려가도 없다.
+                print(f"  {market} {name}: 봉이 없습니다 (상장 전으로 봅니다)")
+                continue
+            count = write_rows(path, market, rows)
+            size = path.stat().st_size / 1024
+            print(f"  {market} {name}: {count:,}개, {size:.0f}KB")
+            made += 1
+    return failed
+
+
+def write_manifest(out: Path, markets: list[str]) -> None:
+    """어느 달이 있는지 적어 둔다. 앱이 404를 더듬지 않게."""
+    have: dict[str, Any] = {}
+    for market in markets:
+        months = sorted(p.stem for p in (out / market).glob("*.json")) if (out / market).is_dir() else []
+        if months:
+            have[market] = months
+    (out / "manifest.json").write_text(
+        json.dumps({"made": int(datetime.now(timezone.utc).timestamp()), "months": have},
+                   separators=(",", ":")),
+        encoding="utf-8",
+    )
+    for market, months in have.items():
+        print(f"  {market}: {len(months)}조각 ({months[0]} → {months[-1]})")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="업비트 봉을 미리 받아 파일로 적는다")
+    parser.add_argument("--mode", choices=["tail", "history"], default="tail")
     parser.add_argument("--out", default="data", help="파일을 적을 폴더")
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="며칠치를 담을지")
-    parser.add_argument("--markets", nargs="*", default=MARKETS, help="종목")
+    parser.add_argument("--years", type=int, default=DEFAULT_YEARS, help="몇 년치까지")
+    parser.add_argument("--budget", type=int, default=12, help="한 판에 채울 조각 수")
+    parser.add_argument("--markets", nargs="*", default=MARKETS)
     args = parser.parse_args(argv)
 
     out = Path(args.out)
-    client = UpbitClient(per_second=5)
-    failed: list[str] = []
+    out.mkdir(parents=True, exist_ok=True)
+    # 서버에서 부르므로 분당 600번을 쓸 수 있다. 8로 두면 여유가 넉넉하다.
+    client = UpbitClient(per_second=8)
 
-    for market in args.markets:
-        path = out / f"{market}.min1.json"
-        try:
-            rows = fetch(client, market, read_existing(path), args.days)
-        except (UpbitError, OSError) as error:
-            # **한 종목이 실패해도 나머지는 적는다.** 전부 실패했을 때만
-            # 판을 실패로 끝낸다 — 그래야 옛 파일이 그대로 남는다.
-            print(f"  {market}: 실패 — {error}", file=sys.stderr)
-            failed.append(market)
-            continue
-        if not rows:
-            failed.append(market)
-            continue
-        count = write(path, market, rows, args.days)
-        first = datetime.fromtimestamp(min(rows), tz=timezone.utc)
-        last = datetime.fromtimestamp(max(rows), tz=timezone.utc)
-        print(f"  {market}: {count:,}개 적었습니다 ({first:%m-%d %H:%M} → {last:%m-%d %H:%M} UTC)")
+    if args.mode == "tail":
+        failed = do_tail(client, out, args.markets)
+    else:
+        failed = do_history(client, out, args.markets, args.years, args.budget)
+        write_manifest(out, args.markets)
 
-    if len(failed) == len(args.markets):
+    if failed and len(failed) >= len(args.markets):
         print("전부 실패했습니다. 옛 파일을 그대로 둡니다.", file=sys.stderr)
         return 1
     return 0

@@ -258,27 +258,45 @@ const SEED_AGAIN = 10 * 60 * 1000;
  * 이게 이 앱이 도는 주된 길이다. 업비트가 아니라 여기가.
  * 실패해도 던지지 않는다 — 지름길이 막혔다고 판 전체가 죽으면 안 된다.
  */
-async function seedFrom(db, market) {
+async function seedFrom(db, market, wanted) {
   const last = seedRead.get(market) ?? 0;
-  if (Date.now() - last < SEED_AGAIN) return seedRead.get(`${market}:made`) ?? null;
+  const before = seedRead.get(`${market}:wanted`) ?? 0;
+  // 시간이 안 지났어도 **더 긴 기간을 골랐으면** 다시 읽는다. 7일을 보고
+  // 나서 1년을 고르면 조각을 더 받아야 하는데, 시간만 보면 10분 동안
+  // 아무것도 안 받고 "7일치뿐입니다"만 답하게 된다.
+  if (Date.now() - last < SEED_AGAIN && before >= wanted) {
+    return seedRead.get(`${market}:made`) ?? null;
+  }
 
   progress('미리 받아 둔 시세를 읽는 중…');
   const started = Date.now();
+  const span = await db.span(market, 'minute1');
+  let stored = await db.count(market, 'minute1');
+
   const got = await loadSeed(market, {
+    wanted,
+    // 이미 가진 구간은 건너뛴다. 지나간 봉은 안 변하므로 다시 받을 이유가 없다.
+    oldest: span ? span[0] : null,
     // 무엇을 어디서 읽었는지도 기록에 남긴다. 진단 화면이 업비트 요청과
     // 같은 자리에 펴 주므로, 한 장으로 어느 길이 됐는지 다 보인다.
     onTry: (url, how) => client?.log?.push({
       at: Date.now(), route: '미리 받아둔 파일', path: url.replace(/^https?:\/\//, ''),
       ms: Date.now() - started, how,
     }),
+    // **조각마다 그때그때 저장한다.** 다 모아 뒀다가 한 번에 넣으면 4년치
+    // 210만 봉이 통째로 메모리에 쌓여 아이패드에서 브라우저가 죽는다.
+    onChunk: async (candles) => {
+      stored += await db.put(market, 'minute1', 60, candles);
+      progress('미리 받아 둔 시세를 읽는 중…', stored, wanted);
+    },
   });
+
   seedRead.set(market, Date.now());
-  if (!got) {
+  seedRead.set(`${market}:wanted`, wanted);
+  if (!got.got) {
     seedRead.set(`${market}:made`, null);
     return null;
   }
-  await db.put(market, 'minute1', 60, got.candles);
-  progress(`미리 받아 둔 시세 ${got.candles.length.toLocaleString()}개를 읽었습니다`);
   seedRead.set(`${market}:made`, got.made);
   return got.made;
 }
@@ -311,7 +329,7 @@ async function run({ market, count, fresh, similarity, fee, slippage, length, st
   // 14일치가 통째로 들어온다. 업비트는 그 뒤에 최근 몇 분만 채우는,
   // **되면 좋은** 자리로 내려간다.
   if (fresh) {
-    seedAt = await seedFrom(db, market);
+    seedAt = await seedFrom(db, market, Math.floor(bars / RATIO.minute1));
     if (seedAt) {
       // 막대가 여기서부터 보여야 한다. 파일 하나로 목표의 거의 전부가
       // 들어오므로, 이 한 줄이 없으면 사용자는 아무 일도 안 일어난 줄 안다.

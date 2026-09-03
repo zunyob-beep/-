@@ -1,0 +1,114 @@
+# **4년치 과거를 미리 채워 둔다** — 안 바뀌는 쪽.
+#
+# 지나간 달의 봉은 다시 안 변한다. 그러니 한 번 적고 다시 안 건드리면 된다.
+# 그게 이 판을 candles.yml과 나눈 이유다 — 안 바뀌는 것을 10분마다 오르내리게
+# 하면 4년치(한 종목 70MB)를 하루 144번씩 옮기게 된다.
+#
+# 어디에 적는가
+# ------------
+# `history` 브랜치에 **쌓는다**(덮어쓰지 않는다). 파일이 안 바뀌므로 각각
+# 딱 한 번씩만 올라가고, 그 뒤로는 아무 비용이 없다.
+#
+#     <종목>/<YYYY-MM>.json   그 달 1분봉 (~1.3MB)
+#     manifest.json           어느 달이 있는지 (앱이 404를 안 더듬게)
+#
+# 얼마나 걸리나
+# ------------
+# 한 달이 43,200봉이고 200개씩 받으므로 216번, 초당 8번이면 27초다.
+# 4년(48달) × 4종목 = 192조각이면 87분. 한 판에 다 하면 길고 실패했을 때
+# 통째로 날아가므로, **한 판에 24조각씩** 끊어서 여러 날에 걸쳐 채운다.
+# 다 차고 나면 매달 1일에 지난달 하나만 추가된다.
+#
+# 급하면 손으로 여러 번 돌려도 된다 — 이미 있는 조각은 건너뛴다.
+
+name: 봉 과거 채우기
+
+on:
+  schedule:
+    # 매일 새벽. 다 채워지면 할 일이 없어 몇 초 만에 끝난다.
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "이번 판에 채울 조각 수"
+        default: "24"
+      years:
+        description: "몇 년치까지"
+        default: "4"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candles-history
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    name: 과거 채우기
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # 이미 채워 둔 조각을 통째로 가져온다. 있는 건 건너뛰기 위한 것이라
+      # 얕게(depth 1) 가져오면 충분하다.
+      - name: 지금까지 채운 것 가져오기
+        run: |
+          if git clone --depth 1 --branch history \
+               "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" history; then
+            echo "지금까지 $(find history -name '*.json' | wc -l)조각 있습니다"
+          else
+            echo "처음입니다. 새로 시작합니다."
+            mkdir -p history
+            git -C history init -q -b history
+          fi
+
+      - name: 업비트에서 받기
+        run: |
+          python tools/candles.py --mode history --out history \
+            --years "${{ inputs.years || '4' }}" \
+            --budget "${{ inputs.budget || '24' }}"
+
+      - name: 적어 둔 것 확인
+        run: |
+          python - <<'PY'
+          import json, pathlib, datetime, sys
+          from tools.pack import unpack
+          bad = 0
+          total = 0
+          for p in sorted(pathlib.Path("history").glob("KRW-*/*.json")):
+              rows = unpack(json.loads(p.read_text()))
+              if len(rows) < 1000:
+                  print(f"{p}: {len(rows)}개밖에 없습니다", file=sys.stderr)
+                  bad += 1
+              total += len(rows)
+          size = sum(p.stat().st_size for p in pathlib.Path("history").rglob("*.json"))
+          print(f"모두 {total:,}봉, {size/1024/1024:.0f}MB")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: history 브랜치에 쌓기
+        run: |
+          cd history
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "새로 채운 것이 없습니다. 다 차 있습니다."
+            exit 0
+          fi
+          git commit -qm "과거 채우기 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" HEAD:history
+          echo "올렸습니다: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/history/manifest.json"

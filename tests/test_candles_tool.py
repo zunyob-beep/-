@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-
-import pytest
+from pathlib import Path
 
 from patternscan.models import Candle
 from tools import candles as tool
+from tools.pack import unpack
 
 
 def _candle(ts: int, close: float = 100.0) -> Candle:
@@ -30,130 +30,175 @@ def _candle(ts: int, close: float = 100.0) -> Candle:
 class FakeClient:
     """업비트 대신 답한다. 진짜를 부르는 시험은 만들 수 없다 — 값이 매번 다르다."""
 
-    def __init__(self, rows: list[Candle]) -> None:
-        self.rows = rows
-        self.asked: list[tuple[int, datetime | None]] = []
+    def __init__(self, rows: list[Candle] | None = None) -> None:
+        self.rows = rows or []
+        self.asked: list[tuple[int, datetime | None, datetime | None]] = []
 
-    def collect(self, market, timeframe, count, stop_at=None, **_):
-        self.asked.append((count, stop_at))
-        return self.rows[-count:] if count < len(self.rows) else list(self.rows)
+    def collect(self, market, timeframe, count, end=None, stop_at=None, **_):
+        self.asked.append((count, end, stop_at))
+        return list(self.rows)
 
 
+def _minutes(first: int, n: int) -> list[Candle]:
+    return [_candle(first + i * 60, 100 + i) for i in range(n)]
+
+
+# ------------------------------------------------------------------ 왕복
 def test_적은_것을_다시_읽으면_같다(tmp_path):
-    path = tmp_path / "KRW-BTC.min1.json"
+    path = tmp_path / "KRW-BTC.json"
     now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    rows = {ts: tool._row(_candle(ts, 100 + i)) for i, ts in enumerate(range(now - 600, now, 60))}
+    rows = {ts: [ts, 99.0, 102.0, 98.0, 100.0, 1.5] for ts in range(now - 600, now, 60)}
 
-    tool.write(path, "KRW-BTC", rows, days=14)
-    again = tool.read_existing(path)
+    tool.write_rows(path, "KRW-BTC", rows)
+    again = tool.read_rows(path)
 
-    assert again == rows
+    assert sorted(again) == sorted(rows)
+    for ts in rows:
+        assert again[ts][4] == rows[ts][4]
 
 
 def test_파일_모양이_앱이_읽는_모양이다(tmp_path):
-    """앱(web/core/seed.js)이 이 다섯 칸을 그대로 읽는다."""
-    path = tmp_path / "KRW-BTC.min1.json"
+    """앱(web/core/seed.js)의 unpackSeed가 이 칸들을 그대로 읽는다."""
+    path = tmp_path / "KRW-BTC.json"
     now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    rows = {ts: tool._row(_candle(ts)) for ts in range(now - 300, now, 60)}
-    tool.write(path, "KRW-BTC", rows, days=14)
+    rows = {ts: [ts, 99.0, 102.0, 98.0, 100.0, 1.5] for ts in range(now - 300, now, 60)}
+    tool.write_rows(path, "KRW-BTC", rows)
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["market"] == "KRW-BTC"
-    assert payload["timeframe"] == "minute1"
+    for key in ("m", "step", "from", "n", "scale", "made", "t", "c", "o", "h", "l", "v"):
+        assert key in payload, f"{key} 칸이 없습니다"
+    assert payload["m"] == "KRW-BTC"
     assert payload["step"] == 60
-    assert isinstance(payload["made"], int)
-    # 봉 하나는 [시각, 시가, 고가, 저가, 종가, 거래량] 여섯 칸
-    assert all(len(row) == 6 for row in payload["rows"])
     # 오래된 것부터
-    stamps = [row[0] for row in payload["rows"]]
+    stamps = [r[0] for r in unpack(payload)]
     assert stamps == sorted(stamps)
 
 
 def test_깨진_파일은_없는_셈_친다(tmp_path):
-    path = tmp_path / "KRW-BTC.min1.json"
+    path = tmp_path / "KRW-BTC.json"
     path.write_text("{이건 JSON이 아니다", encoding="utf-8")
-    assert tool.read_existing(path) == {}
+    assert tool.read_rows(path) == {}
 
 
+# -------------------------------------------------------------- 이어 받기
 def test_가진_게_있으면_모자란_만큼만_받는다():
     """**여기가 이 도구의 핵심이다.**
 
-    20분마다 도는데 매번 14일치(101쪽)를 처음부터 받으면 업비트에 폐가 되고,
-    우리도 느리다. 지난번 파일에 이어 붙이면 보통 한 쪽이면 끝난다.
+    10분마다 도는데 매번 처음부터 받으면 업비트에 폐가 되고 우리도 느리다.
+    지난번 파일에 이어 붙이면 보통 한 쪽이면 끝난다.
     """
-    now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    have = {ts: tool._row(_candle(ts)) for ts in range(now - 3600, now - 300, 60)}
-    client = FakeClient([_candle(ts) for ts in range(now - 360, now, 60)])
+    now = datetime.now(timezone.utc)
+    have = {int((now - timedelta(minutes=i)).timestamp()) // 60 * 60:
+            [0, 1.0, 1.0, 1.0, 1.0, 1.0] for i in range(30, 120)}
+    for ts in list(have):
+        have[ts][0] = ts
+    client = FakeClient(_minutes(int(now.timestamp()) - 3600, 10))
 
-    tool.fetch(client, "KRW-BTC", have, days=14, say=lambda *_: None)
+    tool.fetch_span(client, "KRW-BTC", now - timedelta(days=2), now, have)
 
-    count, stop_at = client.asked[0]
-    assert count < 100, f"이어 받아야 하는데 {count}개를 달라고 했습니다"
+    count, _, stop_at = client.asked[0]
+    assert count < 200, f"이어 받아야 하는데 {count}개를 달라고 했습니다"
     assert stop_at is not None, "어디까지 받을지 안 알려 줬습니다"
 
 
-def test_가진_게_없으면_전부_받는다():
-    now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    client = FakeClient([_candle(ts) for ts in range(now - 600, now, 60)])
-
-    tool.fetch(client, "KRW-BTC", {}, days=2, say=lambda *_: None)
-
-    count, stop_at = client.asked[0]
-    assert count == 2 * 24 * 60
-    assert stop_at is None
+def test_가진_게_없으면_구간을_전부_받는다():
+    now = datetime.now(timezone.utc)
+    client = FakeClient(_minutes(int(now.timestamp()) - 600, 10))
+    tool.fetch_span(client, "KRW-BTC", now - timedelta(days=2), now, {})
+    count, _, stop_at = client.asked[0]
+    assert count >= 2 * 24 * 60
+    assert stop_at == now - timedelta(days=2)
 
 
-def test_오래된_것은_버린다():
-    """안 버리면 파일이 끝없이 자란다. 20분마다 도는 것이라 금세 티가 난다."""
-    now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    old = now - int(timedelta(days=40).total_seconds())
-    have = {ts: tool._row(_candle(ts)) for ts in range(old, old + 600, 60)}
-    client = FakeClient([_candle(ts) for ts in range(now - 600, now, 60)])
-
-    merged = tool.fetch(client, "KRW-BTC", have, days=14, say=lambda *_: None)
-
-    assert all(ts > now - 15 * 86400 for ts in merged), "14일보다 오래된 것이 남았습니다"
-
-
-def test_한_종목이_실패해도_나머지는_적는다(tmp_path, monkeypatch):
-    """전부 실패했을 때만 판을 실패로 끝낸다 — 그래야 옛 파일이 그대로 남는다."""
-    now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    good = [_candle(ts) for ts in range(now - 600, now, 60)]
-
-    def fake_fetch(client, market, have, days, say=print):
-        if market == "KRW-ETH":
-            raise tool.UpbitError("막혔습니다")
-        return {int(c.ts.timestamp()): tool._row(c) for c in good}
-
-    monkeypatch.setattr(tool, "fetch", fake_fetch)
-    code = tool.main(["--out", str(tmp_path), "--markets", "KRW-BTC", "KRW-ETH"])
-
-    assert code == 0
-    assert (tmp_path / "KRW-BTC.min1.json").is_file()
-    assert not (tmp_path / "KRW-ETH.min1.json").exists()
+def test_구간_밖의_봉은_안_담는다():
+    """달 조각에 옆 달 봉이 섞이면 조각끼리 겹쳐서 두 번 저장된다."""
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    inside = int(start.timestamp()) + 600
+    client = FakeClient([
+        _candle(int(start.timestamp()) - 600),   # 앞 달
+        _candle(inside),
+        _candle(int(end.timestamp()) + 600),     # 다음 달
+    ])
+    rows = tool.fetch_span(client, "KRW-BTC", start, end)
+    assert list(rows) == [inside]
 
 
-def test_전부_실패하면_실패로_끝낸다(tmp_path, monkeypatch):
-    def always_fails(*_args, **_kwargs):
-        raise tool.UpbitError("막혔습니다")
+# ------------------------------------------------------------------ 달 나누기
+def test_달_경계를_제대로_짚는다():
+    start, following = tool.month_range(datetime(2026, 5, 17, 13, 5, tzinfo=timezone.utc))
+    assert start == datetime(2026, 5, 1, tzinfo=timezone.utc)
+    assert following == datetime(2026, 6, 1, tzinfo=timezone.utc)
+    # 12월에서 넘어가는 자리
+    start, following = tool.month_range(datetime(2026, 12, 31, 23, 59, tzinfo=timezone.utc))
+    assert following == datetime(2027, 1, 1, tzinfo=timezone.utc)
 
-    monkeypatch.setattr(tool, "fetch", always_fails)
-    assert tool.main(["--out", str(tmp_path), "--markets", "KRW-BTC"]) == 1
+
+def test_지나간_달을_새것부터_늘어놓는다():
+    months = tool.months_back(4, datetime(2026, 3, 15, tzinfo=timezone.utc))
+    assert months[0] == "2026-02", "이번 달이 섞여 있습니다"
+    assert months[1] == "2026-01"
+    assert months[2] == "2025-12"
+    assert len(months) == 48
+    assert months == sorted(months, reverse=True)
 
 
+# ------------------------------------------------------------------ 과거 채우기
+def test_이미_있는_조각은_건너뛴다(tmp_path, monkeypatch):
+    """한 번 적은 달은 다시 안 건드린다 — 지나간 봉은 변하지 않는다."""
+    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    (tmp_path / "KRW-BTC").mkdir()
+    (tmp_path / "KRW-BTC" / "2026-02.json").write_text("{}", encoding="utf-8")
+
+    asked = []
+
+    def fake_span(client, market, start, end, have=None):
+        asked.append((market, f"{start:%Y-%m}"))
+        return {int(start.timestamp()): [int(start.timestamp()), 1, 1, 1, 1, 1]}
+
+    monkeypatch.setattr(tool, "fetch_span", fake_span)
+    tool.do_history(FakeClient(), tmp_path, ["KRW-BTC"], years=1, budget=3, now=now)
+
+    assert ("KRW-BTC", "2026-02") not in asked, "이미 있는 달을 또 받았습니다"
+    assert ("KRW-BTC", "2026-01") in asked
+
+
+def test_한_판에_정해진_만큼만_채운다(tmp_path, monkeypatch):
+    """4년치 192조각을 한 판에 다 하면 90분이고, 실패하면 통째로 날아간다."""
+    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+
+    def fake_span(client, market, start, end, have=None):
+        return {int(start.timestamp()): [int(start.timestamp()), 1, 1, 1, 1, 1]}
+
+    monkeypatch.setattr(tool, "fetch_span", fake_span)
+    tool.do_history(FakeClient(), tmp_path, ["KRW-BTC"], years=4, budget=5, now=now)
+
+    made = list(tmp_path.rglob("*.json"))
+    assert len(made) == 5, f"{len(made)}조각을 만들었습니다"
+
+
+def test_목록에_어느_달이_있는지_적는다(tmp_path):
+    """앱이 404를 더듬지 않게 하려는 것이다."""
+    (tmp_path / "KRW-BTC").mkdir()
+    for name in ["2026-01", "2025-12", "2025-11"]:
+        (tmp_path / "KRW-BTC" / f"{name}.json").write_text("{}", encoding="utf-8")
+
+    tool.write_manifest(tmp_path, ["KRW-BTC", "KRW-ETH"])
+
+    payload = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert payload["months"]["KRW-BTC"] == ["2025-11", "2025-12", "2026-01"]
+    assert "KRW-ETH" not in payload["months"], "없는 종목을 있다고 적었습니다"
+
+
+# ------------------------------------------------------------------ 그 밖
 def test_앱이_아는_종목과_같다():
     """web/core/models.js의 MARKETS와 어긋나면 그 종목만 조용히 안 된다."""
-    from pathlib import Path
-
     source = Path(__file__).resolve().parents[1] / "web" / "core" / "models.js"
     text = source.read_text(encoding="utf-8")
     for market in tool.MARKETS:
         assert f"'{market}'" in text, f"{market}이 앱에 없습니다"
 
 
-@pytest.mark.parametrize("days", [1, 7, 14])
-def test_며칠치를_달라는지_그대로_센다(days):
-    now = int(datetime.now(timezone.utc).timestamp() // 60 * 60)
-    client = FakeClient([_candle(ts) for ts in range(now - 600, now, 60)])
-    tool.fetch(client, "KRW-BTC", {}, days=days, say=lambda *_: None)
-    assert client.asked[0][0] == days * 24 * 60
+def test_꼬리는_짧게_담는다():
+    """10분마다 새로 올리는 파일이라 작아야 한다. 이번 달은 따로 담는다."""
+    assert tool.TAIL_DAYS <= 3, "꼬리가 너무 깁니다 — 10분마다 그만큼을 올리게 됩니다"
