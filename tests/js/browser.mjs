@@ -369,6 +369,44 @@ check(
 await page.fill('#in-amount', '1000000');
 
 check('예상 그림이 그려졌다', (await page.locator('#ahead-chart polyline').count()) > 0);
+
+// ── 예상 그림이 **읽을 수 있는 그림인가**
+//
+// 화면을 실제로 찍어 보고 나서야 알았다. 셋이 겹쳐 있었다.
+//
+//   1. 눈금자가 없어서 띠가 ±0.1%인지 ±10%인지 알 방법이 아예 없었다.
+//   2. 경로 하나가 -1.5%까지 내려가 자를 정하는 바람에, 정작 봐야 할
+//      띠(±0.3%)가 화면 가운데 납작하게 눌려 가운뎃값이 직선으로 보였다.
+//   3. 띠가 두 겹뿐이라 어디가 빽빽한지 안 보였다.
+//
+// 그림이 예쁜지는 시험이 못 본다. 대신 **저 셋이 되돌아오지 않았는지**는
+// 볼 수 있다.
+const chart = await page.evaluate(() => {
+  const box = document.getElementById('ahead-chart');
+  const rect = box.getBoundingClientRect();
+  const view = (box.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+  const texts = [...box.querySelectorAll('text')].map((t) => t.textContent.trim());
+  const median = [...box.querySelectorAll('polyline')].pop();
+  // 가운뎃값 선이 실제로 오르내리는가 — 점들의 y가 다 같으면 직선이다.
+  const ys = (median?.getAttribute('points') || '').split(' ')
+    .map((pt) => Number(pt.split(',')[1])).filter(Number.isFinite);
+  return {
+    bands: box.querySelectorAll('polygon').length,
+    percents: texts.filter((t) => /%$/.test(t)).length,
+    minutes: texts.filter((t) => /분$/.test(t)).length,
+    wiggle: ys.length ? Math.max(...ys) - Math.min(...ys) : 0,
+    clipped: box.querySelectorAll('clipPath').length,
+    // viewBox가 실제 크기와 같아야 글자가 안 찌그러진다
+    stretch: view.length === 4 && rect.width
+      ? Math.abs((view[2] / rect.width) / (view[3] / rect.height) - 1) : 9,
+  };
+});
+check('띠를 여러 겹으로 그린다', chart.bands >= 4, `${chart.bands}겹`);
+check('세로 눈금에 숫자가 적힌다', chart.percents >= 3, `${chart.percents}개`);
+check('가로 눈금에 몇 분 뒤인지 적힌다', chart.minutes >= 3, `${chart.minutes}개`);
+check('가운뎃값이 직선이 아니다', chart.wiggle > 3, `높낮이 ${chart.wiggle.toFixed(1)}px`);
+check('삐져나간 경로는 잘라 낸다', chart.clipped > 0, `${chart.clipped}개`);
+check('글자가 찌그러지지 않는다', chart.stretch < 0.02, `가로세로 비 ${chart.stretch.toFixed(3)}`);
 check('사례가 그려졌다', (await page.locator('.example').count()) > 0);
 
 // ── 다시 눌렀을 때 과거를 다시 받지 않는가 (이 앱의 핵심 약속)

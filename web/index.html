@@ -144,15 +144,21 @@
     <section id="ahead-panel" class="panel" hidden>
       <h3>앞으로 <span class="hint">닮았던 과거들이 그 다음에 실제로 간 길</span></h3>
       <div class="ahead-wrap">
-        <div class="svg-box tall"><svg id="ahead-chart" viewBox="0 0 640 260"
-             preserveAspectRatio="none"></svg></div>
+        <!-- viewBox는 그릴 때 실제 크기로 맞춘다 (app.js). 640×260에 못 박고
+             늘려 그리면 가로세로가 다른 비율로 늘어나 글자가 찌그러진다. -->
+        <div class="svg-box tall"><svg id="ahead-chart" viewBox="0 0 640 300"></svg></div>
         <div id="ahead-legend" class="ahead-legend"></div>
       </div>
       <p class="footnote">
         <b>선 하나로 그리지 않았습니다.</b> 실제로 일어날 일은 하나지만, 우리가 아는 건
         비슷했던 과거들이 <b>제각각 흩어졌다</b>는 사실뿐입니다. 가운데 굵은 선이
-        중앙값, 진한 띠가 절반이 들어간 범위(25~75%), 옅은 띠가 10~90%입니다.
-        <b>띠가 넓으면 그건 모른다는 뜻</b>이고, 그게 보이도록 그렸습니다.
+        중앙값이고, 띠는 안쪽부터 <b>40~60% · 25~75% · 10~90% · 5~95%</b>입니다 —
+        진할수록 과거가 빽빽하게 모였던 자리입니다.
+        <span class="dim">얇은 선들은 닮았던 과거가 <b>실제로 간 길</b>입니다. 톱니처럼
+        꺾이는 게 진짜 모습이고, 띠 밖으로 나간 것은 잘려 보입니다 — 그 하나 때문에
+        눈금자가 흔들리면 정작 봐야 할 띠가 납작해지기 때문입니다.</span>
+        <b>크기는 오른쪽 눈금으로 읽으세요.</b> 띠가 화면을 가득 채운다고 넓은 게
+        아닙니다 — 눈금이 ±0.1%면 좁은 것이고, ±3%면 넓은 것입니다.
       </p>
     </section>
 

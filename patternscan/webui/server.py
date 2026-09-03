@@ -681,6 +681,7 @@ def _projection_json(forward: Projection, series: Series | None = None) -> dict[
         "high": forward.high,
         "worst": forward.worst,
         "best": forward.best,
+        "fan": forward.fan,
         "spread": forward.spread,
     }
 

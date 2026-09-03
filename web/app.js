@@ -964,6 +964,21 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 // 선 하나로 그리면 거짓말이 된다. 실제로 일어날 일은 하나지만 우리가 아는
 // 건 "비슷했던 과거들이 제각각 흩어졌다"뿐이다. 그래서 띠로 그린다.
 // 띠가 넓으면 그건 모른다는 뜻이고, 그게 눈에 보여야 한다.
+/**
+ * 화면 크기가 바뀌면 다시 그린다.
+ *
+ * 이제 viewBox를 실제 크기에 맞추므로(글자가 안 찌그러지게), 창을 돌리거나
+ * 넓히면 자가 어긋난 채로 남는다. 연달아 오는 이벤트마다 다시 그리면
+ * 낭비이므로 잠깐 모았다 한 번만 그린다.
+ */
+let redrawTimer = null;
+addEventListener('resize', () => {
+  clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(() => {
+    if (lastAnalysis && !$('ahead-panel').hidden) renderAhead(lastAnalysis);
+  }, 150);
+});
+
 function renderAhead(analysis) {
   const all = analysis.projection || {};
   const codes = Object.keys(all);
@@ -974,26 +989,88 @@ function renderAhead(analysis) {
   drawAhead(all[aheadPick], analysis);
 }
 
+/**
+ * 눈금을 **읽을 수 있는 간격**으로 끊는다.
+ *
+ * 1분봉 움직임은 0.03% 남짓이라 자릿수가 상황마다 다르다. 0.1%, 0.05%,
+ * 0.02%처럼 사람이 아는 수로 떨어져야 축이 읽힌다.
+ */
+function niceStep(range, want = 4) {
+  if (!(range > 0)) return 1;
+  const raw = range / want;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  return (norm >= 5 ? 5 : norm >= 2 ? 2 : 1) * mag;
+}
+
+/**
+ * **앞으로 어떻게 될지를 그린다.**
+ *
+ * 왜 다시 썼는가 — 화면을 찍어 보니 가운뎃값이 직선 하나로 보였다.
+ * 세 가지가 겹쳐 있었다.
+ *
+ *   1. **눈금자가 없었다.** 띠가 ±0.1%인지 ±10%인지 알 방법이 아예 없었다.
+ *      크기를 모르면 그림은 아무 말도 안 한 것과 같다.
+ *   2. **경로 하나가 자를 정했다.** 실제로 그린 것 중 하나가 -1.5%까지
+ *      내려가서, 정작 봐야 할 띠(±0.3%)가 화면 가운데 납작하게 눌렸다.
+ *   3. **띠가 두 겹뿐이었다.** 네모 두 개로는 어디가 빽빽한지 안 보인다.
+ *
+ * 그래서 자는 띠가 정하고, 밖으로 나가는 경로는 잘라 낸다. 대신 **오른쪽에
+ * 눈금 숫자를 적는다** — 띠가 넓은지 좁은지는 픽셀이 아니라 그 숫자로
+ * 판단해야 한다. 그게 이 그림이 지켜야 할 정직함이다.
+ */
 function drawAhead(p, analysis) {
-  const W = 640;
-  const H = 260;
-  const PAD = 8;
+  const box = $('ahead-chart');
+  // **자를 화면 크기에 맞춘다.** viewBox를 640×260에 못 박고 늘려 그리면
+  // 가로세로가 다른 비율로 늘어나 글자가 찌그러진다. 실제 크기를 재서
+  // 그 위에 그리면 선도 글자도 있는 그대로 나온다.
+  const rect = box.getBoundingClientRect();
+  const W = Math.max(320, Math.round(rect.width) || 640);
+  const H = Math.max(200, Math.round(rect.height) || 300);
+  box.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const L = 8;
+  const R = 52;          // 오른쪽 눈금 숫자 자리
+  const T = 10;
+  const B = 20;          // 아래 시각 자리
   const past = p.recent || [];
   const ahead = p.median.length;
-  // 지나온 길과 앞으로를 같은 자 위에 놓는다. 그래야 이어져 보인다.
   const total = past.length + ahead - 1;
-  const x = (i) => PAD + (i / Math.max(1, total - 1)) * (W - PAD * 2);
+  const x = (i) => L + (i / Math.max(1, total - 1)) * (W - L - R);
   const split = past.length - 1;
 
+  // ── 자: 띠와 지나온 봉만 본다. 경로는 넣지 않는다.
+  const fan = (p.fan && p.fan.length) ? p.fan : [{ lo: p.worst, hi: p.best }];
+  const outer = fan[0];
   const every = [
     ...past.flatMap((k) => [k.h, k.l]),
-    ...p.worst, ...p.best, ...p.walks.flat(),
+    ...outer.lo, ...outer.hi, 0, analysis.cost || 0,
   ];
-  const y = scaleTo(every, H, PAD);
+  let low = Math.min(...every);
+  let high = Math.max(...every);
+  if (!(high > low)) { high = low + 0.001; low -= 0.001; }
+  const margin = (high - low) * 0.12;
+  low -= margin;
+  high += margin;
+  const y = (v) => T + (1 - (v - low) / (high - low)) * (H - T - B);
 
-  // ── 지나온 길: 진짜 봉으로 그린다. 종가 선만 그으면 꼬리가 사라져
-  //    밋밋해지고, 실제 차트로 안 보인다.
-  const width = Math.max(1.4, ((W - PAD * 2) / Math.max(1, total)) * 0.62);
+  // ── 눈금선과 숫자
+  const step = niceStep(high - low);
+  const digits = Math.max(0, Math.min(3, Math.ceil(-Math.log10(step * 100))));
+  const grid = [];
+  for (let v = Math.ceil(low / step) * step; v <= high; v += step) {
+    const at = y(v).toFixed(1);
+    const zero = Math.abs(v) < step / 1000;
+    grid.push(`<line x1="${L}" y1="${at}" x2="${W - R}" y2="${at}"
+        stroke="${zero ? '#3f7a5c' : '#1c2a22'}" stroke-width="1"
+        ${zero ? 'stroke-dasharray="4 4"' : ''} vector-effect="non-scaling-stroke"/>
+      <text x="${W - R + 6}" y="${(Number(at) + 3.5).toFixed(1)}" fill="${zero ? '#7fd8a6' : '#5d6f65'}"
+        font-size="10" font-family="ui-monospace, monospace">${
+  (v >= 0 ? '+' : '') + (v * 100).toFixed(digits)}%</text>`);
+  }
+
+  // ── 지나온 길: 진짜 봉으로 그린다. 종가 선만 그으면 꼬리가 사라진다.
+  const width = Math.max(1.4, ((W - L - R) / Math.max(1, total)) * 0.62);
   const bars = past.map((k, i) => {
     const up = k.c >= k.o;
     const colour = up ? '#ff5566' : '#4aa3ff';   // 업비트와 같은 색
@@ -1010,14 +1087,15 @@ function drawAhead(p, analysis) {
                   fill="${colour}" fill-opacity="0.85"/>`;
   }).join('');
 
-  // ── 앞으로: 띠 + 실제로 갔던 길 몇 개 + 중앙값
+  // ── 앞으로: 겹겹이 쌓은 띠 + 실제로 갔던 길 + 가운뎃값
   const at = (i) => x(split + i);
-  const band = (lo, hi, fill) => {
+  const band = (lo, hi, alpha) => {
     const up = lo.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`);
     const down = hi.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`).reverse();
-    return `<polygon points="${up.concat(down).join(' ')}" fill="${fill}" stroke="none"/>`;
+    return `<polygon points="${up.concat(down).join(' ')}"
+             fill="rgba(0,255,102,${alpha})" stroke="none"/>`;
   };
-  const path = (values, colour, stroke, alpha) => {
+  const line = (values, colour, stroke, alpha) => {
     const pts = values.map((v, i) => `${at(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
     return `<polyline points="${pts}" fill="none" stroke="${colour}"
              stroke-width="${stroke}" stroke-opacity="${alpha}"
@@ -1025,28 +1103,52 @@ function drawAhead(p, analysis) {
              vector-effect="non-scaling-stroke"/>`;
   };
 
-  const zero = y(0).toFixed(1);
   const cost = analysis.cost || 0;
   const edge = x(split).toFixed(1);
+  // 바깥일수록 옅게. 겹치면서 진해지므로 안쪽이 저절로 도드라진다.
+  const bands = fan.map((b, i) => band(b.lo, b.hi, 0.05 + i * 0.045)).join('');
 
-  $('ahead-chart').innerHTML = band(p.worst, p.best, 'rgba(0,255,102,0.06)')
-    + band(p.low, p.high, 'rgba(0,255,102,0.14)')
-    // 실제로 갔던 길. 톱니처럼 꺾이는 게 진짜 모습이다 — 중앙값은
+  // 밖으로 나가는 경로는 잘라 낸다. 자를 흔들지 않으면서 톱니 모양은 남는다.
+  const clip = `ahead-clip-${Math.random().toString(36).slice(2, 8)}`;
+
+  // ── 몇 분 뒤인지. 어디가 5분이고 어디가 20분인지 못 읽으면 축이 반쪽이다.
+  const perBar = ahead > 1 ? p.minutes / (ahead - 1) : 1;
+  const ticks = [];
+  for (const frac of [0.25, 0.5, 0.75, 1]) {
+    const k = Math.round((ahead - 1) * frac);
+    if (k <= 0) continue;
+    const cx = at(k);
+    ticks.push(`<line x1="${cx.toFixed(1)}" y1="${H - B}" x2="${cx.toFixed(1)}" y2="${H - B + 4}"
+        stroke="#3a4a41" stroke-width="1" vector-effect="non-scaling-stroke"/>
+      <text x="${cx.toFixed(1)}" y="${H - B + 14}" fill="#5d6f65" font-size="10"
+        text-anchor="middle" font-family="ui-monospace, monospace">${
+  Math.round(k * perBar)}분</text>`);
+  }
+  if (past.length > 1) {
+    ticks.push(`<text x="${L}" y="${H - B + 14}" fill="#5d6f65" font-size="10"
+      font-family="ui-monospace, monospace">−${Math.round(past.length * perBar)}분</text>`);
+  }
+
+  box.innerHTML = `<defs><clipPath id="${clip}">
+      <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/>
+    </clipPath></defs>`
+    + grid.join('')
+    + `<g clip-path="url(#${clip})">${bands}`
+    // 실제로 갔던 길. 톱니처럼 꺾이는 게 진짜 모습이다 — 가운뎃값은
     // 100개의 중앙값이라 매끄러울 수밖에 없고, 그것만 보면
     // "앞으로 미끄러지듯 간다"로 읽힌다.
-    + p.walks.map((w) => path(w, '#00ff66', 1, 0.28)).join('')
-    + `<line x1="${PAD}" y1="${zero}" x2="${W - PAD}" y2="${zero}"
-             stroke="#3f7a5c" stroke-width="1" stroke-dasharray="4 4"
-             vector-effect="non-scaling-stroke"/>`
-    + `<line x1="${edge}" y1="${y(cost).toFixed(1)}" x2="${W - PAD}" y2="${y(cost).toFixed(1)}"
+    + p.walks.map((w) => line(w, '#00ff66', 1, 0.3)).join('')
+    + '</g>'
+    + `<line x1="${edge}" y1="${y(cost).toFixed(1)}" x2="${W - R}" y2="${y(cost).toFixed(1)}"
              stroke="#d8ff6b" stroke-width="1" stroke-dasharray="2 5"
              stroke-opacity="0.85" vector-effect="non-scaling-stroke"/>`
-    + bars
+    + `<g clip-path="url(#${clip})">${bars}</g>`
     // 지금 자리. 왼쪽은 일어난 일, 오른쪽은 아직 아닌 일이다.
-    + `<line x1="${edge}" y1="${PAD}" x2="${edge}" y2="${H - PAD}"
+    + `<line x1="${edge}" y1="${T}" x2="${edge}" y2="${H - B}"
              stroke="#00ff66" stroke-width="1" stroke-opacity="0.5"
              stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`
-    + path(p.median, '#00ff66', 2.4, 1);
+    + ticks.join('')
+    + `<g clip-path="url(#${clip})">${line(p.median, '#00ff66', 2.4, 1)}</g>`;
 
   const end = p.median[p.median.length - 1];
   const lo = p.low[p.low.length - 1];
