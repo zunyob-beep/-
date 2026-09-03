@@ -847,10 +847,27 @@ def test_a_long_window_is_named_as_the_thing_to_change(client):
 
 
 def test_with_nothing_at_all_it_still_advises(client):
+    """줄이 하나도 없어도 **무엇을 바꾸면 되는지**는 말해야 한다."""
     from patternscan.webui.server import _why_nothing_matched
 
     said = _why_nothing_matched([])
-    assert said and any("직전 몇 개 봉" in line for line in said)
+    assert said, "아무 말도 안 했습니다"
+    assert any("얼마나 과거까지" in line for line in said), said
+
+
+def test_short_window_is_told_to_widen_the_period(client):
+    """**직전 봉이 이미 20~40이면 그걸 더 줄이라는 말은 소용이 없다.**
+
+    진짜 데이터로 재 보면 그때 듣는 손잡이는 기간이다 — 닮은 과거가 기간에
+    거의 비례해서 는다 (실제 비트코인 1분봉 기준 7일 1개 → 1년 18개).
+    예전에는 이 경우에도 "직전 몇 개 봉을 20~40으로 줄이세요"가 첫 줄로
+    나왔는데, 이미 20인 사람에게는 아무 말도 안 한 것과 같다.
+    """
+    from patternscan.webui.server import _why_nothing_matched
+
+    said = _why_nothing_matched([_odds_stub(samples=2, length=20)])
+    assert "얼마나 과거까지" in said[1], said
+    assert not any("20~40으로 줄여" in line for line in said), said
 
 
 # ------------------------------------------------------- 한 번 죽으면 끝이었다

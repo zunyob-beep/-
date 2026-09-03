@@ -113,7 +113,10 @@ console.log(`\n  ${REPO}의 진짜 파일로 돌립니다. 업비트는 끊었�
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.coin', { timeout: 20000 });
-await page.selectOption('#in-period', '10080');   // 7일
+// 기간은 손으로 정할 수 있게 둔다. 30일치를 골라야 `recent/`가 실제로
+// 쓰이는지 보인다 — 7일치는 꼬리 하나로 끝나서 그 자리를 안 지나간다.
+const PERIOD = process.env.GISIGAM_PERIOD ?? '43200';
+await page.selectOption('#in-period', PERIOD);
 await page.click('#btn-live');
 
 const ended = await page.waitForFunction(

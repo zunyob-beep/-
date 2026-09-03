@@ -20,7 +20,6 @@ import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 import { launchOptions } from './launch.mjs';
 import { seedBody } from './fakeseed.mjs';
-import { DEFAULT_PERIOD } from '../../web/core/analysis.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -209,7 +208,17 @@ check('맨 위 가격도 분봉에서 가져온다', tickerCalls === 0,
 // 앞에 넣으면서 1,440봉이 됐다. 그 정도로는 닮은 과거가 스무 개를 못 넘길
 // 때가 있어서 확률 표가 비고, 아래 '줄이 있다'가 가끔 실패한다. 실제로
 // CI에서 그렇게 한 번 죽었다. 사용자가 실제로 받는 기본값을 그대로 쓴다.
-await page.selectOption('#in-period', String(DEFAULT_PERIOD));
+// **시험이 쓸 기간은 여기서 못 박는다.**
+//
+// 기본값(DEFAULT_PERIOD)을 그대로 쓰면 안 된다. 기본값은 **진짜 데이터에서
+// 통계가 나오는 길이**로 정해져 있는데(1년), 이 시험의 가짜 파일은 그만큼을
+// 담고 있지 않다. 그러면 판이 늘 "미리 받아 둔 과거가 여기까지입니다"로
+// 끝나서, 정작 보려던 화면 흐름을 못 본다.
+//
+// 기본값이 옳은지는 store.test.js가 따로 본다 — 거기서는 길이의 성질만
+// 재므로 데이터가 필요 없다.
+const PERIOD = '10080';   // 7일. 가짜 파일이 넉넉히 덮는다.
+await page.selectOption('#in-period', PERIOD);
 await page.fill('#in-length', '20');
 await page.fill('#in-similarity', '0.6');
 await page.click('#btn-live');

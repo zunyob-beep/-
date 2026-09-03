@@ -15,7 +15,7 @@ import {
   DEFAULT_PERIOD, MAX_BARS, PERIODS, withinLimit,
 } from '../../web/core/analysis.js';
 import {
-  PAGE, PER_SECOND, UpbitClient, parseCandle, toCursor,
+  PAGE, UpbitClient, parseCandle, toCursor,
 } from '../../web/core/upbit.js';
 
 const STEP = 60;
@@ -316,14 +316,39 @@ test('막힌 날에도 끝낼 수 있는 짧은 선택지가 있다', () => {
   assert.ok(shortest <= 10, `가장 짧은 선택지도 ${shortest}번을 받아야 합니다`);
 });
 
-test('처음 골라져 있는 기간은 빨리 끝나고 통계도 나온다', () => {
+test('처음 골라져 있는 기간으로 진짜 데이터에서 통계가 나온다', () => {
+  // **이 시험이 재던 것이 바뀌었다.**
+  //
+  // 예전에는 "업비트에서 받는 데 60초 안에 끝나는가"를 봤다. 이제 기본
+  // 기간은 업비트가 아니라 미리 받아 둔 파일에서 온다 — 그 잣대는 더 이상
+  // 무엇도 지키지 않는다.
+  //
+  // 그리고 그 잣대 때문에 7일이 기본값이었는데, 진짜 비트코인 1분봉으로
+  // 재 보니 7일치로는 **닮은 과거가 1개**뿐이다 (기준 0.85, 최소 20개 필요).
+  // 처음 온 사람이 눌러 보면 "판단할 수 없습니다"만 봤다는 뜻이다.
+  //
+  //     7일 1개 · 30일 3개 · 90일 8개 · 1년 18개 · 2년 36개
+  //
+  // 그래서 이제 세 가지를 본다: 선택지에 있는가, 진짜 데이터에서 표본이
+  // 나올 만큼 긴가, 아이패드가 감당할 만큼 짧은가.
   const chosen = PERIODS.find((p) => p.count === DEFAULT_PERIOD);
   assert.ok(chosen, `기본값 ${DEFAULT_PERIOD}이 선택지에 없습니다`);
-  // 1분봉으로만 받으므로(3·5분봉은 묶어서 만든다) 요청 수는 이게 전부다.
-  const seconds = Math.ceil(DEFAULT_PERIOD / PAGE) / PER_SECOND;
-  assert.ok(seconds <= 60, `처음 받는 데 ${Math.round(seconds)}초가 걸립니다`);
-  // 그러면서 닮은 과거를 셀 만큼은 돼야 한다. 하루치로는 표본이 안 나온다.
-  assert.ok(DEFAULT_PERIOD >= 1440 * 5, '기본값이 통계를 내기엔 너무 짧습니다');
+
+  const days = DEFAULT_PERIOD / 1440;
+  assert.ok(days >= 365,
+    `기본값이 ${Math.round(days)}일입니다 — 진짜 데이터에서는 표본이 안 나옵니다`);
+
+  // 1분봉과 거기서 묶어 만드는 3·5분봉까지, 배열 여섯 개씩 8바이트.
+  const megabytes = DEFAULT_PERIOD * (1 + 1 / 3 + 1 / 5) * 6 * 8 / 1024 / 1024;
+  assert.ok(megabytes <= 64,
+    `기본값이 메모리를 ${Math.round(megabytes)}MB 씁니다 — 아이패드에서 탭이 닫힙니다`);
+});
+
+test('미리 받아 둔 파일 몇 개면 기본 기간이 채워지는가', () => {
+  // 조각 하나가 한 달(43,200봉)이다. 이게 스무 개를 넘으면 처음 여는 사람이
+  // 한참을 기다리게 된다 — 기본값으로 둘 만한 무게가 아니다.
+  const chunks = Math.ceil(DEFAULT_PERIOD / 43200);
+  assert.ok(chunks <= 20, `조각을 ${chunks}개나 받아야 합니다`);
 });
 
 test('상한은 화면이 아니라 계산 쪽에서 건다', () => {
