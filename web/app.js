@@ -182,9 +182,14 @@ function handle(message) {
       } else if (message.more) {
         // 시간에 걸려 끊긴 판. 다시 누르면 이어서 받는다는 걸 같이 말한다 —
         // 안 그러면 다 받은 줄 알고 다시 안 누른다.
-        const { have, want } = message.more;
-        $('job').textContent = `${have.toLocaleString()} / ${want.toLocaleString()}개까지 받고 계산했습니다`
-          + ' — 다시 누르면 이어서 받습니다';
+        const { have, want, ranOut } = message.more;
+        // 시간에 걸린 것과 **애초에 그만큼밖에 없는 것**은 다른 말이어야 한다.
+        // "다시 누르면 이어서 받습니다"를 두 경우에 다 쓰면, 눌러도 안 늘어나는
+        // 쪽에서는 그게 거짓말이 된다.
+        $('job').textContent = `${have.toLocaleString()} / ${want.toLocaleString()}개로 계산했습니다`
+          + (ranOut
+            ? ' — 다시 누르면 이어서 받습니다'
+            : ' — 미리 받아 둔 과거가 여기까지입니다');
       } else {
         $('job').textContent = '계산을 마쳤습니다';
       }

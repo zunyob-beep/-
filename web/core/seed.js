@@ -23,8 +23,13 @@
 // 그래서 바뀌는 것과 안 바뀌는 것을 나눈다.
 //
 //     tail/<종목>.json      최근 2일   10분마다 새로       ~90KB
-//     month/<종목>.json     이번 달    한 시간에 한 번쯤   ~1.3MB
-//     <종목>/<YYYY-MM>.json 지나간 달  한 번 적고 그대로   ~1.3MB
+//     recent/<종목>.json    최근 31일  한 시간에 한 번쯤   ~1.2MB
+//     <종목>/<YYYY-MM>.json 지나간 달  한 번 적고 그대로   ~1.2MB
+//
+// 가운데를 '이번 달'이 아니라 **최근 31일**로 잡았다. 달로 자르면 1일 0시에
+// 그 파일이 몇 줄로 줄어드는데 지난달 조각은 아직 없어서, 그 사이에 30일치를
+// 고른 사람이 이틀치밖에 못 받는다. 31일 창은 지난달을 늘 덮으므로 그
+// 구멍이 안 생긴다.
 //
 // 앞의 둘은 `data` 브랜치에 덮어쓰므로 저장소가 안 불어나고, 지나간 달은
 // `history` 브랜치에 쌓인다 — 안 바뀌므로 각 파일이 딱 한 번 올라간다.
@@ -91,7 +96,15 @@ export function unpackSeed(payload) {
   }
 
   const gaps = payload.t;
-  if (!Array.isArray(gaps) || !Array.isArray(payload.c)) return null;
+  if (!Array.isArray(gaps)) return null;
+  // **칸이 하나라도 짧으면 안 쓴다.**
+  //
+  // 중간에 끊긴 파일을 그대로 읽으면 `undefined`가 NaN이 되어 조용히
+  // 흘러든다. 가격에 NaN이 섞이면 계산은 그대로 돌고 화면에도 숫자가
+  // 찍히는데, 그게 무엇을 뜻하는지는 아무도 모른다.
+  for (const key of ['c', 'o', 'h', 'l', 'v']) {
+    if (!Array.isArray(payload[key]) || payload[key].length < gaps.length) return null;
+  }
   const step = Number(payload.step) || STEP;
   // 배수는 파일이 알려 준다. 정수로 딱 떨어지는 종목은 1이고, 잘게
   // 쪼개지는 종목만 10이나 100이다 (tools/pack.py의 pick_scale).
@@ -114,19 +127,29 @@ export function unpackSeed(payload) {
   return out;
 }
 
-/** 파일 하나를 읽는다. 못 읽으면 `null` — **던지지 않는다.** */
-async function readFile(branch, path, { fetcher, where, onTry }) {
-  for (const url of fileUrls(branch, path, where)) {
+/**
+ * 파일 하나를 읽는다. 못 읽으면 `null` — **던지지 않는다.**
+ *
+ * `io.from`이 **어느 자리가 통했는지 기억한다.** 이게 없으면 4년치를 받을 때
+ * 조각마다 안 되는 자리를 먼저 물어보게 된다 — 깃허브 페이지에는 `./data/`가
+ * 없으므로 조각 48개마다 404가 한 번씩, 쓸데없는 왕복 48번이다.
+ */
+async function readFile(branch, path, io) {
+  const urls = fileUrls(branch, path, io.where);
+  // 통했던 자리를 앞으로 당긴다. 아직 모르면 적힌 순서 그대로.
+  const order = io.from ? [...urls].sort((a, b) => (b.startsWith(io.from) ? 1 : 0) - (a.startsWith(io.from) ? 1 : 0)) : urls;
+  for (const url of order) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const response = await fetcher(url, { cache: 'no-store' });
-      if (!response || response.status >= 400) { onTry?.(url, `${response?.status}`); continue; }
+      const response = await io.fetcher(url, { cache: 'no-store' });
+      if (!response || response.status >= 400) { io.onTry?.(url, `${response?.status}`); continue; }
       // eslint-disable-next-line no-await-in-loop
       const payload = await response.json();
-      onTry?.(url, 'ok');
+      io.onTry?.(url, 'ok');
+      io.from = url.slice(0, url.length - `${branch}/${path}`.length);
       return payload;
     } catch (error) {
-      onTry?.(url, error?.name === 'SyntaxError' ? 'JSON 아님' : '못 읽음');
+      io.onTry?.(url, error?.name === 'SyntaxError' ? 'JSON 아님' : '못 읽음');
     }
   }
   return null;
@@ -161,7 +184,8 @@ export async function loadSeed(market, {
   onChunk = null,
   shouldStop = null,
 } = {}) {
-  const io = { fetcher, where, onTry };
+  // `from`은 통한 자리를 기억하는 칸이다. readFile이 채운다.
+  const io = { fetcher, where, onTry, from: null };
   let got = 0;
   let made = 0;
   let reached = null;   // 지금까지 받아 내려간 가장 오래된 시각
@@ -182,10 +206,10 @@ export async function loadSeed(market, {
   const tail = await readFile('data', `tail/${market}.json`, io);
   if (tail) await take(tail);
 
-  // 2) 이번 달. 이틀치보다 더 필요할 때만.
+  // 2) 최근 31일. 이틀치보다 더 필요할 때만.
   if (wanted > TAIL_DAYS * DAY_BARS && !(shouldStop?.())) {
-    const month = await readFile('data', `month/${market}.json`, io);
-    if (month) await take(month);
+    const recent = await readFile('data', `recent/${market}.json`, io);
+    if (recent) await take(recent);
   }
 
   if (got >= wanted || shouldStop?.()) return { got, made, reached };

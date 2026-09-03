@@ -59,15 +59,15 @@ export function fakeSeed({ market, endTs, bars, priceAt }) {
  *     버리면 그 길이 시험에서 통째로 안 걸린다.
  */
 export function seedBody(rest, {
-  priceAt, lag = 600, tailBars = 2880, monthBars = 20000, months = {},
+  priceAt, lag = 600, tailBars = 2880, recentBars = 20000, months = {},
 } = {}) {
   const now = Math.floor(Date.now() / 1000 / 60) * 60 - lag;
 
   let hit = rest.match(/^\/data\/tail\/(KRW-[A-Z]+)\.json$/);
   if (hit) return JSON.stringify(fakeSeed({ market: hit[1], endTs: now, bars: tailBars, priceAt }));
 
-  hit = rest.match(/^\/data\/month\/(KRW-[A-Z]+)\.json$/);
-  if (hit) return JSON.stringify(fakeSeed({ market: hit[1], endTs: now, bars: monthBars, priceAt }));
+  hit = rest.match(/^\/data\/recent\/(KRW-[A-Z]+)\.json$/);
+  if (hit) return JSON.stringify(fakeSeed({ market: hit[1], endTs: now, bars: recentBars, priceAt }));
 
   if (rest === '/history/manifest.json') return JSON.stringify({ made: now, months });
 

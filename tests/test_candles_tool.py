@@ -202,8 +202,59 @@ def test_앱이_아는_종목과_같다():
 
 
 def test_꼬리는_짧게_담는다():
-    """10분마다 새로 올리는 파일이라 작아야 한다. 이번 달은 따로 담는다."""
+    """10분마다 새로 올리는 파일이라 작아야 한다. 나머지는 따로 담는다."""
     assert tool.TAIL_DAYS <= 3, "꼬리가 너무 깁니다 — 10분마다 그만큼을 올리게 됩니다"
+
+
+def test_가운데_파일이_지난달을_늘_덮는다():
+    """**달 경계에 구멍이 안 생기게 하는 자리다.**
+
+    달로 잘라 담으면 1일 0시에 그 파일이 몇 줄로 줄어드는데, 지난달 조각은
+    과거 채우기가 돌기 전까지 아직 없다. 그 사이에 30일치를 고른 사람은
+    이틀치밖에 못 받는다. 31일 창이면 지난달을 늘 덮으므로 구멍이 없다.
+    """
+    assert tool.RECENT_DAYS >= 31, "31일보다 짧으면 달 경계에 구멍이 생깁니다"
+
+
+def test_상장_전_구간에_닿으면_그_종목은_그만_내려간다(tmp_path, monkeypatch):
+    """빈 달마다 요청이 한 번씩 나가고 아무것도 안 얻는다."""
+    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    asked = []
+
+    def fake_span(client, market, start, end, have=None):
+        asked.append(f"{start:%Y-%m}")
+        return {} if start < datetime(2026, 1, 1, tzinfo=timezone.utc) else {
+            int(start.timestamp()): [int(start.timestamp()), 1, 1, 1, 1, 1],
+        }
+
+    monkeypatch.setattr(tool, "fetch_span", fake_span)
+    tool.do_history(FakeClient(), tmp_path, ["KRW-BTC"], years=4, budget=99, now=now)
+
+    # 2026-02, 2026-01은 있고, 2025-12에서 비어서 멈춘다
+    assert asked == ["2026-02", "2026-01", "2025-12"], asked
+
+
+def test_한_조각이라도_적었으면_판을_실패로_끝내지_않는다(tmp_path, monkeypatch):
+    """**여기서 실패로 끝내면 뒤따르는 올리기 단계가 아예 안 돈다.**
+
+    192조각 중 하나가 실패했다고 나머지 191을 통째로 버리는 셈이다.
+    한 시간 넘게 받아 놓고 그걸 버릴 이유가 없다.
+    """
+    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    seen = {"n": 0}
+
+    def flaky(client, market, start, end, have=None):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise tool.UpbitError("막혔습니다")
+        return {int(start.timestamp()): [int(start.timestamp()), 1, 1, 1, 1, 1]}
+
+    monkeypatch.setattr(tool, "fetch_span", flaky)
+    made, failed = tool.do_history(FakeClient(), tmp_path, ["KRW-BTC"],
+                                   years=1, budget=3, now=now)
+
+    assert failed, "실패를 안 셌습니다"
+    assert made > 0, "실패 하나 때문에 나머지를 안 적었습니다"
 
 
 def test_워크플로가_부르는_방식으로_돌아간다():
@@ -232,3 +283,17 @@ def test_워크플로가_부르는_명령이_실제로_그것이다():
         text = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
         assert "python -m tools.candles" in text, f"{name}이 -m으로 안 부릅니다"
         assert "python tools/candles.py" not in text, f"{name}이 스크립트로 부릅니다"
+
+
+def test_워크플로가_적는_자리와_앱이_읽는_자리가_같다():
+    """**이름이 어긋나면 앱이 404만 받고 조용히 아무것도 안 읽는다.**
+
+    파이썬은 `recent/`에 적는데 자바스크립트가 `month/`를 찾으면, 화면에는
+    "미리 받아 둔 시세를 못 읽었습니다"조차 안 뜨고 그냥 개수가 안 는다.
+    """
+    root = Path(__file__).resolve().parents[1]
+    seed = (root / "web" / "core" / "seed.js").read_text(encoding="utf-8")
+    for path in ("tail/", "recent/", "manifest.json"):
+        assert path in seed, f"앱이 {path}를 안 읽습니다"
+    flow = (root / ".github" / "workflows" / "candles.yml").read_text(encoding="utf-8")
+    assert "data/tail" in flow and "data/recent" in flow, "워크플로가 다른 자리에 적습니다"
