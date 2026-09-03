@@ -8,7 +8,8 @@
     "test:browser": "node tests/js/browser.mjs",
     "test:click": "node tests/js/clickthrough.mjs",
     "test:rough": "node tests/js/rough.mjs",
-    "test:upgrade": "node tests/js/upgrade.mjs"
+    "test:upgrade": "node tests/js/upgrade.mjs",
+    "test:live": "node tests/js/live.mjs"
   },
   "devDependencies": {
     "playwright": "^1.50.0"
