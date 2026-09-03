@@ -17,7 +17,6 @@ import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 import { launchOptions } from './launch.mjs';
 import { seedBody } from './fakeseed.mjs';
-import { DEFAULT_PERIOD } from '../../web/core/analysis.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -174,13 +173,20 @@ note('가로로 삐져나가는 곳이 없다', overflow.length === 0, overflow.
 
 // ── 열자마자 골라져 있는 기간
 //
-// 첫 번째(가장 짧은 1일)가 골라져 있으면 안 된다. 하루치로는 닮은 과거가
-// 스무 개도 안 나와서, 처음 온 사람이 "표본이 모자랍니다"만 보고 고장난
-// 줄 안다. 그렇다고 30일치를 기본으로 두면 막힌 날에 아무것도 못 본다.
+// **7일이었다. 진짜 데이터로 재 보니 그 값으로는 답이 안 나온다.**
+//
+// 실제 비트코인 1분봉으로 직전 20봉과 닮은 과거를 세면 7일치에 1개뿐이다
+// (기준 0.85, 통계가 나오려면 20개). 처음 온 사람이 눌러 보면
+// "판단할 수 없습니다"만 봤다는 뜻이다.
+//
+//     7일 1개 · 30일 3개 · 90일 8개 · 1년 18개 · 2년 36개
+//
+// 7일을 골랐던 이유는 '받는 데 오래 걸려서'였는데, 이제 미리 받아 둔
+// 파일에서 읽으므로 그 이유가 없어졌다.
 const firstPick = await page.locator('#in-period').evaluate(
   (box) => box.options[box.selectedIndex].textContent.trim(),
 );
-note('열자마자 7일이 골라져 있다', firstPick === '7일', firstPick);
+note('열자마자 1년이 골라져 있다', firstPick === '1년', firstPick);
 
 // ── 기간을 바꾸면 안내가 따라 바뀐다
 const noteBefore = await page.locator('#period-note').innerText();
@@ -198,7 +204,17 @@ note('기간을 바꾸면 예상 시간이 바뀐다', noteBefore !== noteAfter,
 // 그러면 아래에서 표의 줄을 누르려다 30초를 기다리다 죽는다.
 // 실제로 CI에서 그렇게 죽었다 — 여기서는 사용자가 실제로 받는 기본값을
 // 그대로 써야 한다.
-await page.selectOption('#in-period', String(DEFAULT_PERIOD));
+// **시험이 쓸 기간은 여기서 못 박는다.**
+//
+// 기본값(DEFAULT_PERIOD)을 그대로 쓰면 안 된다. 기본값은 **진짜 데이터에서
+// 통계가 나오는 길이**로 정해져 있는데(1년), 이 시험의 가짜 파일은 그만큼을
+// 담고 있지 않다. 그러면 판이 늘 "미리 받아 둔 과거가 여기까지입니다"로
+// 끝나서, 정작 보려던 화면 흐름을 못 본다.
+//
+// 기본값이 옳은지는 store.test.js가 따로 본다 — 거기서는 길이의 성질만
+// 재므로 데이터가 필요 없다.
+const PERIOD = '10080';   // 7일. 가짜 파일이 넉넉히 덮는다.
+await page.selectOption('#in-period', PERIOD);
 
 // ── 받아서 계산 (여기서 시간이 제일 오래 걸린다)
 const started = Date.now();
