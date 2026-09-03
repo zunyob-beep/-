@@ -82,7 +82,7 @@ jobs:
           done
 
       - name: 업비트에서 받기
-        run: python tools/candles.py --mode tail --out data
+        run: python -m tools.candles --mode tail --out data
 
       - name: 적어 둔 것 확인
         run: |
