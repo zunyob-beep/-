@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 import { launchOptions } from './launch.mjs';
+import { seedBody } from './fakeseed.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', 'web');
@@ -31,26 +32,10 @@ const TYPES = {
 /**
  * **미리 받아 둔 봉 파일**을 낼지 말지. 시험이 켜고 끈다.
  *
- * 진짜 앱에서는 깃허브 액션이 20분마다 서버에서 받아 `data` 브랜치에 적어
- * 두고, 앱은 그걸 내려받는다. 여기서는 그 자리를 흉내 낸다.
+ * 진짜 앱에서는 깃허브 액션이 서버에서 받아 두 브랜치에 적어 두고, 앱은
+ * 그걸 내려받는다. 여기서는 그 자리를 흉내 낸다 (tests/js/fakeseed.mjs).
  */
 let seedOn = false;
-const SEED_BARS = 12000;
-
-function seedFile(market) {
-  // 10분 전까지만 담는다 — 실제로도 파일은 늘 몇 분 뒤처져 있다. 지금까지
-  // 담아 버리면 '마지막 몇 분을 업비트로 채우는' 길이 시험에서 안 걸린다.
-  const now = Math.floor(Date.now() / 1000 / 60) * 60 - 600;
-  const rows = [];
-  for (let i = SEED_BARS - 1; i >= 0; i -= 1) {
-    const ts = now - i * 60;
-    rows.push([ts, priceAt(ts - 60), priceAt(ts) * 1.0004,
-      priceAt(ts) * 0.9996, priceAt(ts), 2 + (ts % 7) / 3]);
-  }
-  return JSON.stringify({
-    market, timeframe: 'minute1', step: 60, days: 14, made: now, rows,
-  });
-}
 
 function serve() {
   const server = createServer(async (req, res) => {
@@ -58,13 +43,13 @@ function serve() {
     const rest = asked.startsWith(BASE) ? asked.slice(BASE.length) || '/' : null;
     if (rest === null) { res.writeHead(404).end(); return; }
 
-    // 미리 받아 둔 파일. 깃허브 페이지에서는 여기가 404이고 raw 쪽에 있지만,
-    // 시험은 바깥으로 안 나가므로 같은 주소에서 낸다.
-    const seed = rest.match(/^\/data\/(KRW-[A-Z]+)\.min1\.json$/);
-    if (seed) {
-      if (!seedOn) { res.writeHead(404).end(); return; }
+    // 미리 받아 둔 파일. 깃허브 페이지에서는 같은 주소에 없고 raw 쪽에
+    // 있지만, 시험은 바깥으로 안 나가므로 여기서 낸다.
+    if (rest.startsWith('/data/') || rest.startsWith('/history/')) {
+      const body = seedOn ? seedBody(rest, { priceAt }) : null;
+      if (!body) { res.writeHead(404).end(); return; }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(seedFile(seed[1]));
+      res.end(body);
       return;
     }
     const path = join(ROOT, normalize(rest === '/' ? '/index.html' : rest));

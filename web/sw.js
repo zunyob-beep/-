@@ -21,7 +21,7 @@
 // 판 번호를 여기 넣는다. 번호가 바뀌면 캐시 이름이 바뀌고, activate에서
 // 예전 이름을 통째로 지운다. 그래야 고친 것이 실제로 화면까지 간다 —
 // 서비스 워커가 옛 파일을 붙들고 있으면 아무리 밀어 넣어도 안 보인다.
-const CACHE = 'gisigam-v41';
+const CACHE = 'gisigam-v42';
 
 // 상대 경로로 적는다. GitHub Pages는 저장소 이름이 붙은 하위 경로에
 // 얹히므로 /로 시작하면 엉뚱한 곳을 가리킨다.
@@ -94,7 +94,7 @@ self.addEventListener('fetch', (event) => {
   //
   // 못 받아도 손해가 없다. 한 번 읽은 봉은 이미 이 기기 안(IndexedDB)에
   // 있으므로, 인터넷이 없어도 계산은 그대로 된다.
-  if (url.pathname.includes('/data/')) return;
+  if (/\/(data|history)\//.test(url.pathname)) return;
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
