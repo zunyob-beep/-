@@ -292,49 +292,72 @@ check('이론 표에 11줄이 있다', theoryRows === 11, `${theoryRows}줄`);
 // 시험이 하나도 못 잡았다. 명시도 싸움에서 진 것이라 눈으로만 보였다.
 // **과거 성적을 못 낸 줄(quiet)에서도** 방향 색은 남아야 한다 — 봉이
 // 모자라면 열한 줄이 전부 그 줄이 되기 때문이다.
+//
+// **데이터가 그 칸을 내주기를 기다리지 않는다.** 가짜 시세는 시계에 묶인
+// 사인파라, 어느 순간에는 열한 이론이 전부 중립을 말한다. 그러면 up도
+// down도 없는 표가 나와서 이 시험이 까닭 없이 깨졌다 — 실제로 CI에서
+// 그렇게 깨졌다. 여기서 묻는 건 "이 순간 이론이 뭐라고 하는가"가 아니라
+// "up이 붙은 칸이 빨갛게 칠해지는가"이므로, 없으면 우리가 직접 붙여서
+// 본다. 네 조합(up·down × 보통·quiet)을 전부 확인하니 예전보다 촘촘하다.
 const colours = await page.evaluate(() => {
-  const seen = { up: null, down: null, quietUp: null, quietDown: null };
-  for (const td of document.querySelectorAll('table.theories td.now-cell')) {
-    const quiet = td.closest('tr').classList.contains('quiet');
-    const way = td.classList.contains('up') ? 'up' : td.classList.contains('down') ? 'down' : null;
-    if (!way) continue;
-    const key = quiet ? (way === 'up' ? 'quietUp' : 'quietDown') : way;
-    seen[key] ??= getComputedStyle(td).color;
-  }
-  return seen;
+  const cells = [...document.querySelectorAll('table.theories td.now-cell')];
+  if (!cells.length) return null;
+  const WAYS = ['up', 'down', 'flat'];
+
+  // 그 조합인 칸이 이미 있으면 그대로 읽고, 없으면 아무 칸에 잠깐
+  // 붙였다 뗀다. 붙였다 떼는 쪽도 진짜 표의 진짜 칸이라 캐스케이드는
+  // 똑같이 걸린다.
+  const read = (way, quiet) => {
+    const found = cells.find((td) => td.classList.contains(way)
+      && td.closest('tr').classList.contains('quiet') === quiet);
+    if (found) return { colour: getComputedStyle(found).color, real: true };
+
+    const td = cells[0];
+    const row = td.closest('tr');
+    const hadWays = WAYS.filter((c) => td.classList.contains(c));
+    const hadQuiet = row.classList.contains('quiet');
+    td.classList.remove(...WAYS);
+    td.classList.add(way);
+    row.classList.toggle('quiet', quiet);
+    const colour = getComputedStyle(td).color;
+    td.classList.remove(way);
+    td.classList.add(...hadWays);
+    row.classList.toggle('quiet', hadQuiet);
+    return { colour, real: false };
+  };
+
+  return {
+    up: read('up', false),
+    down: read('down', false),
+    quietUp: read('up', true),
+    quietDown: read('down', true),
+  };
 });
 // 업비트와 같은 색: 오르면 빨강, 내리면 파랑. 회색으로 덮이면 안 된다.
 const reddish = (c) => /^rgba?\((\d+), (\d+), (\d+)/.test(c)
   && Number(RegExp.$1) > Number(RegExp.$3) + 40;
 const bluish = (c) => /^rgba?\((\d+), (\d+), (\d+)/.test(c)
   && Number(RegExp.$3) > Number(RegExp.$1) + 40;
-const painted = Object.entries(colours).filter(([, c]) => c !== null);
+const painted = Object.entries(colours ?? {});
 check(
   '이론 표의 방향 색이 살아 있다',
-  painted.length > 0 && painted.every(([key, c]) => (key.toLowerCase().includes('up')
-    ? reddish(c) : bluish(c))),
-  painted.map(([k, c]) => `${k}=${c}`).join(' · ') || '방향이 있는 칸이 없었습니다',
+  painted.length === 4 && painted.every(([key, { colour }]) => (
+    key.toLowerCase().includes('up') ? reddish(colour) : bluish(colour))),
+  painted.map(([k, { colour, real }]) => `${k}=${colour}${real ? '' : '(직접 칠함)'}`)
+    .join(' · ') || '이론 표에 칸이 하나도 없었습니다',
 );
 
 // 여기서는 봉이 넉넉해서 quiet 줄이 안 나온다. 하지만 **깨진 자리가 정확히
-// 거기였다** — 아이패드에서는 봉이 모자라 열한 줄이 전부 quiet였다. 데이터가
-// 그 상태가 되기를 기다리지 말고, 줄에 직접 quiet를 걸어 색이 버티는지 본다.
-const quietKeeps = await page.evaluate(() => {
-  const td = document.querySelector('table.theories td.now-cell.up')
-    ?? document.querySelector('table.theories td.now-cell.down');
-  if (!td) return null;
-  const row = td.closest('tr');
-  const had = row.classList.contains('quiet');
-  const before = getComputedStyle(td).color;
-  row.classList.add('quiet');
-  const after = getComputedStyle(td).color;
-  if (!had) row.classList.remove('quiet');
-  return { before, after };
-});
+// 거기였다** — 아이패드에서는 봉이 모자라 열한 줄이 전부 quiet였다. quiet가
+// 걸려도 방향 색이 그대로여야 한다(흐려지기만 해야 한다).
 check(
   '과거 성적을 못 낸 줄에서도 방향 색이 남는다',
-  quietKeeps !== null && quietKeeps.before === quietKeeps.after,
-  quietKeeps ? `${quietKeeps.before} → ${quietKeeps.after}` : '방향이 있는 칸이 없었습니다',
+  colours !== null && colours.up.colour === colours.quietUp.colour
+    && colours.down.colour === colours.quietDown.colour,
+  colours
+    ? `${colours.up.colour} → ${colours.quietUp.colour} · `
+      + `${colours.down.colour} → ${colours.quietDown.colour}`
+    : '이론 표에 칸이 하나도 없었습니다',
 );
 
 // ── 넣을 금액이 실제로 반영되는가
