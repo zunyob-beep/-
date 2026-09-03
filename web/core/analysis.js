@@ -333,6 +333,9 @@ function projectionJson(forward, series) {
     high: six(forward.high),
     worst: six(forward.worst),
     best: six(forward.best),
+    fan: (forward.fan ?? []).map((band) => ({
+      at: band.at, with: band.with, lo: six(band.lo), hi: six(band.hi),
+    })),
     spread: forward.spread,
   };
 }

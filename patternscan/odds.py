@@ -385,7 +385,10 @@ class Projection:
     high: list[float]     # 75%
     worst: list[float]    # 10%
     best: list[float]     # 90%
-    price_now: float
+    price_now: float = 0.0
+    #: 겹겹이 쌓을 띠. FAN이 정한 백분위 쌍마다 {at, with, lo, hi}.
+    #: 위의 넷은 화면 오른쪽 글에 그대로 쓰는 것이라 이름을 따로 남겼다.
+    fan: list[dict] = field(default_factory=list)
     #: 닮았던 과거 중 **실제로 간 길** 몇 개. 중앙값은 매끄러울 수밖에
     #: 없지만(100개의 중앙값이니까) 실제 경로는 톱니처럼 꺾인다. 그
     #: 꺾임을 안 보여주면 "앞으로 이렇게 미끄러지듯 간다"로 읽힌다.
@@ -408,6 +411,15 @@ class Projection:
 
 #: 실제 경로를 몇 개나 겹쳐 그릴지.
 SHOWN_WALKS = 8
+
+#: **앞으로를 몇 겹의 띠로 그릴지.** 각 줄은 (아래 백분위, 위 백분위)다.
+#:
+#: 예전에는 두 겹뿐이었다(10~90, 25~75). 그러면 흩어진 모양이 네모 두 개로만
+#: 보여서, 어디가 빽빽하고 어디가 성긴지가 안 드러난다 — 실제로 화면을 찍어
+#: 보니 가운뎃값이 그냥 직선 하나로 읽혔다.
+#:
+#: 네 겹으로 늘린다. 바깥일수록 옅게 칠하면 분포 자체가 모양으로 보인다.
+FAN = ((5, 95), (10, 90), (25, 75), (40, 60))
 
 
 def project(
@@ -445,12 +457,15 @@ def project(
         # 0에서 시작한다 — 지금 값이 기준점이라 그래야 선이 이어진다.
         return [0.0] + [round(float(v), 6) for v in np.percentile(grid, q, axis=0)]
 
+    fan = [{"at": lo, "with": hi, "lo": pick(lo), "hi": pick(hi)} for lo, hi in FAN]
+
     return Projection(
         timeframe=series.timeframe,
         length=int(matches.query.size),
         samples=int(grid.shape[0]),
         median=pick(50), low=pick(25), high=pick(75),
         worst=pick(10), best=pick(90),
+        fan=fan,
         price_now=float(closes[-1]),
         walks=[[0.0] + [round(float(v), 6) for v in paths[i]] for i in keep],
     )

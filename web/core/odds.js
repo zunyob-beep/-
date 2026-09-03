@@ -269,6 +269,18 @@ export function oddsFor(series, length, options = {}) {
 export const SHOWN_WALKS = 8;
 
 /**
+ * **앞으로를 몇 겹의 띠로 그릴지.** 각 줄은 [아래 백분위, 위 백분위]다.
+ *
+ * 예전에는 두 겹뿐이었다(10~90, 25~75). 그러면 흩어진 모양이 네모 두 개로만
+ * 보여서, 어디가 빽빽하고 어디가 성긴지가 안 드러난다 — 실제로 화면을 찍어
+ * 보니 가운뎃값이 그냥 직선 하나로 읽혔다.
+ *
+ * 네 겹으로 늘린다. 바깥일수록 옅게 칠하면 **분포 자체가 모양으로** 보인다.
+ * 백분위는 이미 정렬해 둔 배열에서 꺼내므로 겹을 늘려도 계산이 거의 안 는다.
+ */
+export const FAN = [[5, 95], [10, 90], [25, 75], [40, 60]];
+
+/**
  * 닮았던 과거 구간들의 **직후 경로**를 모아 가운뎃값과 띠를 낸다.
  *
  * 새 이론을 들이지 않는다. 이 도구가 원래 하던 일(닮은 과거 찾기)을
@@ -293,18 +305,30 @@ export function project(series, matches, ahead) {
 
   if (paths.length < MIN_SAMPLES) return null;
 
-  // 시점별로 모아 정렬해 두고 백분위를 뽑는다.
+  // 시점별로 모아 정렬해 두고 백분위를 뽑는다. 0에서 시작한다 — 지금 값이
+  // 기준점이라 그래야 선이 이어진다.
   const column = new Float64Array(paths.length);
-  const bands = { median: [0], low: [0], high: [0], worst: [0], best: [0] };
+  const median = [0];
+  const fan = FAN.map(([lo, hi]) => ({ at: lo, with: hi, lo: [0], hi: [0] }));
   for (let k = 0; k < ahead; k += 1) {
     for (let i = 0; i < paths.length; i += 1) column[i] = paths[i].path[k];
     const sorted = Float64Array.from(column).sort();
-    bands.median.push(percentileSorted(sorted, 50));
-    bands.low.push(percentileSorted(sorted, 25));
-    bands.high.push(percentileSorted(sorted, 75));
-    bands.worst.push(percentileSorted(sorted, 10));
-    bands.best.push(percentileSorted(sorted, 90));
+    median.push(percentileSorted(sorted, 50));
+    for (const band of fan) {
+      band.lo.push(percentileSorted(sorted, band.at));
+      band.hi.push(percentileSorted(sorted, band.with));
+    }
   }
+  // 화면 오른쪽 글에 그대로 쓰는 두 겹은 이름을 붙여 둔다.
+  const named = (at) => fan.find((b) => b.at === at);
+  const bands = {
+    median,
+    fan,
+    low: named(25).lo,
+    high: named(25).hi,
+    worst: named(10).lo,
+    best: named(10).hi,
+  };
 
   // 가장 닮았던 것부터 몇 개만 실제 경로로 겹쳐 그린다. 너무 많으면
   // 선이 뭉개져서 띠와 구분이 안 된다.
